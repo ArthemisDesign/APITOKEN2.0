@@ -114,3 +114,25 @@ sales-web keeps serving `admin.partners.apitoken.sale` and its own loopback heal
 deployment or verification path changed. `deploy/Caddyfile` is Ubuntu-host-dependent, so the change
 carries the full host-installer proof: it was run locally under Colima, where `install-caddy.sh
 --check` and `caddy validate` accepted the rewritten vhost before the merge gate ran the same proof.
+
+## Third pass — money integrity and throughput
+
+`apps/sales-api/src/sync-financial-integrity.integration.test.ts` exercises the money path against
+real SQL:
+
+- **Nothing is lost.** 250 billable events at a 10% rate produce exactly 250 commission rows
+  totalling $25.00 — one commission per event, no gaps.
+- **Nothing is paid twice.** Resetting the cursor to zero simulates a crash between the commission
+  write and the cursor advance; replaying the same page leaves the totals identical, because the
+  writer is idempotent by `commerce_event_id` and rejects a replay whose immutable fields differ.
+- **Nothing is invented.** An event for a user nobody referred writes no commission at all, and two
+  partners on different rates are each paid from their own referral only.
+- **A backlog is drained inside one tick.** 2,137 events spanning three pages were consumed in three
+  passes of a single tick, measured at 1,269 events/second end to end on a laptop against local
+  PostgreSQL.
+
+The throughput ceiling this removes was real: one page per interval meant 1,000 events a minute
+(~17/s), so sustained traffic above that left partner earnings lagging by hours. Payout correctness
+was never at risk — `drainForPayout` already forced the feeds to their heads before signing — but
+the numbers a partner saw were stale. The loop now keeps pulling while any feed is short of its
+committed head, bounded by `SYNC_MAX_CATCHUP_PASSES` (default 50, ≈50,000 events per tick).

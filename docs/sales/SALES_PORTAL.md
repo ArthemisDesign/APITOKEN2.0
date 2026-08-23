@@ -380,7 +380,14 @@ of reaching SQL as an out-of-range value.
 Consumers on the sales side (`apps/sales-api`, reach commerce via `COMMERCE_BASE_URL`):
 
 - `sync.service.ts` — sync loop over cursors (stored in the sales DB, interval `SYNC_INTERVAL_MS`,
-  default 60 s): attributions → assignment of the user to a partner + atomic replay of a legacy
+  default 60 s). A tick is not one page: while any feed is still short of its committed head the
+  loop keeps pulling, bounded by `SYNC_MAX_CATCHUP_PASSES` (default 50). One page per interval used
+  to cap the money path at 1,000 billable events a minute — about 17 a second — so a busy hour left
+  partner earnings hours behind even though payouts stayed correct through their own drain. The
+  catch-up loop measured 1,269 events/s end to end against local PostgreSQL
+  (`apps/sales-api/src/sync-financial-integrity.integration.test.ts`). The feeds themselves are
+  unchanged: at-least-once delivery with idempotent writes, so a replayed page pays nothing twice.
+  The order is attributions → assignment of the user to a partner + atomic replay of a legacy
   one-time marker claim (retained for old rows; it has no pricing effect);
   `topups-v2` → `referred_topups` (history/analytics only, create no commissions; replay starts at
   sequence zero and is idempotent by `commerce_payment_id`); usage events →

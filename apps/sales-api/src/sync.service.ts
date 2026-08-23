@@ -26,6 +26,8 @@ import type { Environment } from "./config.js";
 import { SALES_DATABASE } from "./infrastructure.module.js";
 
 const POSTGRES_BIGINT_MAX = 9_223_372_036_854_775_807n;
+/** One attributions page; a full page means the backlog probably continues past it. */
+const ATTRIBUTION_PAGE_SIZE = 500;
 const canonicalPostgresBigintStringSchema = z.string()
   .max(19)
   .regex(/^(0|[1-9]\d*)$/)
@@ -213,11 +215,21 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
 
   private async run(): Promise<void> {
     const intervalMs = this.config.get("SYNC_INTERVAL_MS", { infer: true });
+    const maxCatchUpPasses = this.config.get("SYNC_MAX_CATCHUP_PASSES", { infer: true });
     this.logger.log("commerce feed sync started");
     while (!this.stopped) {
       // The loop itself is the overlap guard: the next tick starts only after this one ends.
+      // One page per interval used to cap the money path at a page a minute, so a busy hour left
+      // partner earnings hours behind. A tick now keeps pulling while a feed is still short of its
+      // committed head, bounded so a permanent backlog cannot starve the sleep or hammer Commerce.
       try {
-        await this.syncOnce();
+        for (let pass = 0; pass < maxCatchUpPasses; pass += 1) {
+          const caughtUp = await this.syncOnce();
+          if (caughtUp || this.stopped) break;
+          if (pass + 1 === maxCatchUpPasses) {
+            this.logger.warn(`feed backlog still open after ${maxCatchUpPasses} catch-up passes`);
+          }
+        }
       } catch (error) {
         this.logger.error(`sync iteration failed: ${message(error)}`);
       }
@@ -225,10 +237,11 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
-  private async syncAttributions(): Promise<void> {
+  private async syncAttributions(): Promise<boolean | undefined> {
     const after = await getSyncCursor(this.database, "attributions");
     const page = await this.fetchFeed("attributions", `attributions?after_id=${after}&limit=500`, attributionSchema);
-    if (!page || page.items.length === 0) return;
+    if (!page) return undefined;
+    if (page.items.length === 0) return true;
     const rows = page.items;
     // Продвигаем курсор только по успешно обработанным строкам (rows идут по возрастанию id).
     // Флип в B2B идемпотентен; сбой останавливает батч (курсор до последней хорошей строки),
@@ -263,35 +276,41 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     } finally {
       if (lastOk !== after) await advanceSyncCursor(this.database, "attributions", lastOk);
     }
+    // A full page means the backlog probably continues past it.
+    return rows.length < ATTRIBUTION_PAGE_SIZE;
   }
 
   /** Testable single-iteration boundary; production run() uses the same ordered pipeline. */
-  async syncOnce(): Promise<void> {
+  async syncOnce(): Promise<boolean> {
     const previous = this.syncWork;
     let release!: () => void;
     this.syncWork = new Promise<void>((resolve) => { release = resolve; });
     await previous;
     try {
-      await this.syncPipelineOnce();
+      return await this.syncPipelineOnce();
     } finally {
       release();
     }
   }
 
-  private async syncPipelineOnce(): Promise<void> {
-    await this.syncAttributions();
+  private async syncPipelineOnce(): Promise<boolean> {
+    const attributionsAtHead = await this.syncAttributions();
     await this.syncTopups();
-    await this.syncUsageEvents();
+    const usageAtHead = await this.syncUsageEvents();
     const replayed = await reconcilePendingReferralEvents(this.database);
     if (replayed > 0) this.logger.log(`reconciled ${replayed} buffered referral events`);
     const replayedV2 = await reconcilePendingReferralUsageEventsV2(this.database);
     if (replayedV2 > 0) this.logger.log(`reconciled ${replayedV2} buffered release-v2 usage events`);
-    await this.syncFundingLots();
+    const fundingAtHead = await this.syncFundingLots();
     const funding = await reconcilePartnerFundingEvidence(this.database);
     if (funding.completed > 0) {
       this.logger.log(`completed funding evidence for ${funding.completed} usage events`);
     }
-    await this.syncPaymentReversals();
+    const reversalsAtHead = await this.syncPaymentReversals();
+    // A feed whose page ended short of its committed head still has a backlog. `undefined` means
+    // the feed was unavailable this pass, which is a reason to retry rather than to claim caught up.
+    return attributionsAtHead === true && usageAtHead === true
+      && fundingAtHead === true && reversalsAtHead === true;
   }
 
   /** Last successfully parsed source watermarks. Payouts also refresh these through drainForPayout. */
@@ -511,7 +530,7 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
    * every locally stored usage/commission row has complete funding evidence. The page writer owns
    * the cursor transaction; no generic post-write cursor advance is allowed here.
    */
-  private async syncPaymentReversals(): Promise<void> {
+  private async syncPaymentReversals(): Promise<boolean | undefined> {
     const after = await getSyncCursor(this.database, "payment_reversals");
     const page = await this.fetchFeed(
       "payment_reversals",
@@ -519,12 +538,12 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
       paymentReversalSchema,
       after,
     );
-    if (!page) return;
+    if (!page) return undefined;
     if (page.sourceHead === null) {
       throw new Error("commerce feed payment_reversals did not expose its committed source head");
     }
     this.sourceHeads.paymentReversals = page.sourceHead;
-    if (page.nextCursor === after) return;
+    if (page.nextCursor === after) return page.nextCursor === page.sourceHead;
     // Feed identifiers live in independent PostgreSQL sequences and must never be compared. These
     // post-page requests prove both older causal streams are drained through a visibility cutoff
     // no earlier than the one that exposed this reversal.
@@ -532,12 +551,12 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
     const fundingLotsAtHead = await this.syncFundingLots();
     if (usageAtHead !== true || fundingLotsAtHead !== true) {
       this.logger.warn(`payment reversal page ${page.nextCursor} waits for causal source feed heads`);
-      return;
+      return false;
     }
     await reconcilePartnerFundingEvidence(this.database);
     if (await hasIncompletePartnerFundingEvidence(this.database)) {
       this.logger.warn(`payment reversal page ${page.nextCursor} waits for complete funding evidence`);
-      return;
+      return false;
     }
     await recordPaymentReversalPage(this.database, page.items.map((row) => ({
       commerceReversalId: row.id,
@@ -547,6 +566,7 @@ export class SyncService implements OnModuleInit, OnApplicationShutdown {
       amountNano: row.amountNano,
       reversedAt: row.reversedAt,
     })), page.nextCursor);
+    return page.nextCursor === page.sourceHead;
   }
 
   /**

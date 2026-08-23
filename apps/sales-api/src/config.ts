@@ -51,6 +51,9 @@ const environmentSchema = z.object({
   SMTP_USERNAME: z.string().min(1).optional(),
   SMTP_PASSWORD: z.string().min(1).optional(),
   SYNC_INTERVAL_MS: z.coerce.number().int().min(1_000).default(60_000),
+  // Pages pulled in one tick while a feed is behind its committed head. 50 × 1000 usage rows keeps
+  // roughly 800 billable events per second flowing without letting a backlog hammer Commerce.
+  SYNC_MAX_CATCHUP_PASSES: z.coerce.number().int().min(1).max(1_000).default(50),
   EMAIL_POLL_INTERVAL_MS: z.coerce.number().int().min(100).default(5_000),
   PARTNER_EFFECT_POLL_INTERVAL_MS: z.coerce.number().int().min(100).max(60_000).default(1_000),
   PARTNER_EFFECT_LEASE_SECONDS: z.coerce.number().int().min(10).max(3_600).default(60),
