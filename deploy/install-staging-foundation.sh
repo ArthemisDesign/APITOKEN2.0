@@ -17,6 +17,7 @@ fi
 # phase2-userns-apply-v1: replay after the rootless user-namespace sandbox change.
 # phase2-detach-apply-v1: replay after detached-netns compatibility changed.
 # phase2-sandbox-apply-v1: replay after RootlessKit namespace filtering changed.
+# phase2-tmp-apply-v1: replay after the RootlessKit private tmp change.
 for command in rootlesskit slirp4netns fuse-overlayfs newuidmap newgidmap dockerd-rootless.sh; do
   command -v "$command" >/dev/null || { echo "staging-foundation: missing rootless Docker prerequisite: $command" >&2; exit 1; }
 done
