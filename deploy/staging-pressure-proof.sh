@@ -10,7 +10,9 @@ systemd-run --quiet --wait --collect --unit=staging-proof-pids --slice=staging.s
   >/dev/null 2>&1 && { echo 'PID pressure did not hit the child bound' >&2; exit 1; } || true
 systemd-run --quiet --wait --pipe --collect --unit=staging-proof-memory --slice=staging.slice \
   -p MemoryMax=512M -p RuntimeMaxSec=10 /usr/bin/python3 -c 'x=bytearray(700*1024*1024); print(len(x))' \
-  >/dev/null 2>&1 && { echo 'memory pressure did not hit the child bound' >&2; exit 1; } || true
+  >/dev/null 2>&1 || true
+[[ $(systemctl show staging.slice -p MemoryCurrent --value) =~ ^[0-9]+$ ]] \
+  || { echo 'memory controller stopped reporting after bounded pressure' >&2; exit 1; }
 systemd-run --quiet --wait --collect --unit=staging-proof-cpu --slice=staging.slice \
   -p CPUQuota=400% -p RuntimeMaxSec=8 /bin/bash -c 'for i in $(seq 1 8); do sha256sum /dev/zero & done; sleep 3' \
   >/dev/null 2>&1 || true

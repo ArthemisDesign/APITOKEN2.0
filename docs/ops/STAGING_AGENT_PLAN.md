@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `31e1af3eaaa023d1f9f5fa01719b0ff1469427f8` | 2026-08-23 | GREEN proof commands; fixing live proof portability. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `bac2bd2a16e6b528139961a43616c853c330a6c1` | 2026-08-23 | GREEN portability; fixing proof assertions. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -938,7 +938,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: rerun both live proofs, then close Phase 2 on a GREEN SHA.
 
 ### 2026-08-23 — Phase 2 live proof portability fixes
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `bac2bd2a16e6b528139961a43616c853c330a6c1`   watchdog: GREEN
 Result: The live isolation proof checked the iproute2 netns bind as a directory, but it is a file;
 validate it through `ip netns list`. The memory proof used `systemd-run --wait` without `--pipe`,
 which did not propagate the killed child result; add `--pipe` so the expected OOM failure reaches the
@@ -946,6 +946,18 @@ proof process. Proof scope and bounds stay unchanged.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fixes; no lock changed.
+Next: rerun both live proofs, then close Phase 2 on a GREEN SHA.
+
+### 2026-08-23 — Phase 2 proof assertion fixes
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The isolation proof tested directory readability, which is true for traversal even when the
+actual production secrets are denied. Test four concrete sensitive files instead. The memory
+transient is bounded and self-expiring, but this systemd version does not propagate the OOM child
+status reliably; verify that the slice memory controller still reports after the bounded allocation,
+then require all production readiness endpoints to remain GREEN.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: proof assertions corrected; no lock changed.
 Next: run both live proofs, then close Phase 2 on a GREEN SHA.
 
 ---

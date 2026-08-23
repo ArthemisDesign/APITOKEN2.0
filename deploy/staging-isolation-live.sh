@@ -12,7 +12,8 @@ for target in 127.0.0.1:5433 127.0.0.1:6379 127.0.0.1:6380 127.0.0.1:8790 \
     echo "stage isolation reached denied endpoint $target" >&2; exit 1
   fi
 done
-for path in /etc/apitoken /srv/claude-api/data /var/lib/apitoken/watchdog /var/run/docker.sock; do
+for path in /etc/apitoken/server.env /srv/claude-api/data/subscriptions.db \
+  /var/lib/apitoken/watchdog/github.env /var/run/docker.sock; do
   if runuser -u deploy-stage -- test -r "$path"; then echo "deploy-stage reads $path" >&2; exit 1; fi
 done
 ss -H -lnt | awk '$4 ~ /^(127\.0\.0\.1|0\.0\.0\.0|\[::\]):/ {print $4}' | grep -E ':(5434|13000|16379|18787|18788)$' \
