@@ -6,7 +6,7 @@ raw=${SSH_ORIGINAL_COMMAND:-${*:-status}}
 read -r -a words <<<"$raw"
 case "${words[0]:-}" in
   status|help) ((${#words[@]} == 1)) || exit 2 ;;
-  ready|store-logs) ((${#words[@]} == 2)) || exit 2 ;;
+  ready|store-logs|proof) ((${#words[@]} == 2)) || exit 2 ;;
   logs)
     if ((${#words[@]} == 2)); then
       :

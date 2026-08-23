@@ -15,7 +15,7 @@ unit_allowed() {
   esac
 }
 case "${words[0]:-}" in
-  help) printf '%s\n' 'stage status|ready <port>|logs <stage-unit> [--since <text>]|store-logs <store>' ;;
+  help) printf '%s\n' 'stage status|ready <port>|logs <stage-unit> [--since <text>]|store-logs <store>|proof <isolation|pressure>' ;;
   status)
     systemctl is-active staging.slice apitoken-staging-foundation-install.service \
       apitoken-rootless-docker-stage.service apitoken-staging-image-seed.service \
@@ -38,6 +38,14 @@ case "${words[0]:-}" in
   store-logs)
     ((${#words[@]} == 2)) || exit 2
     /usr/local/lib/apitoken-watchdog/stage-store-diagnostics.sh "${words[1]}"
+    ;;
+  proof)
+    ((${#words[@]} == 2)) || exit 2
+    case "${words[1]}" in
+      isolation) /usr/local/lib/apitoken-watchdog/staging-isolation-live.sh ;;
+      pressure) /usr/local/lib/apitoken-watchdog/staging-pressure-proof.sh ;;
+      *) exit 2 ;;
+    esac
     ;;
   *) exit 2 ;;
 esac

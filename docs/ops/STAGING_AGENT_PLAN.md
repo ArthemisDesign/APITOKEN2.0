@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `23ee01a83ad85e197edb7ab512fdc5338133d766` | 2026-08-23 | GREEN named volume config; forcing full replay. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `ff13fd0170e087dcd22a0209dd6c866603dbe904` | 2026-08-23 | GREEN live stores; exposing exact Phase 2 proof commands. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -919,13 +919,23 @@ but Docker owns the mapped permissions instead of a direct host bind.
 Next: force a full named-volume replay, then verify stores, isolation, and pressure.
 
 ### 2026-08-23 — named PostgreSQL volume full-apply marker
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `ff13fd0170e087dcd22a0209dd6c866603dbe904`   watchdog: GREEN
 Result: Add an immutable marker to the stateful foundation installer so the GREEN rootless named
 volume reruns the trusted store transaction. No runtime behavior or lock value changes.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
-Next: verify live stores, isolation, and pressure.
+Next: run the exact live isolation and pressure proofs.
+
+### 2026-08-23 — forced Phase 2 proof commands
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: All foundation and store units are active. Add exact read-only forced commands for
+`proof isolation` and `proof pressure`. They execute only the two reviewed root proof scripts; all
+other proof names and arities fail closed. No general shell or root command is exposed.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: run both live proofs, then close Phase 2 on a GREEN SHA.
 
 ---
 
