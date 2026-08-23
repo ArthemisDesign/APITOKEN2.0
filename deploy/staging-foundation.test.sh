@@ -45,6 +45,7 @@ for host_state_path in deploy/install-staging-foundation.sh deploy/staging-postg
 done
 grep -Fq 'phase2-prerequisite-apply-v2' "$I"
 grep -Fq 'phase2-userns-apply-v1' "$I"
+grep -Fq 'phase2-detach-apply-v1' "$I"
 for prerequisite in slirp4netns fuse-overlayfs newuidmap newgidmap; do
   grep -Fq "$prerequisite" "$I"
 done
