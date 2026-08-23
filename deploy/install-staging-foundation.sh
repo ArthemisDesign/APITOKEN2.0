@@ -23,6 +23,7 @@ fi
 # phase2-seed-id-apply-v1: replay after content-ID reference repair.
 # phase2-source-tag-apply-v1: replay after stable source-tag export changed.
 # phase2-local-tags-apply-v1: replay after local-only Compose tags changed.
+# phase2-explicit-seed-apply-v1: replay after explicit source tag mapping changed.
 for command in rootlesskit slirp4netns fuse-overlayfs newuidmap newgidmap dockerd-rootless.sh; do
   command -v "$command" >/dev/null || { echo "staging-foundation: missing rootless Docker prerequisite: $command" >&2; exit 1; }
 done
