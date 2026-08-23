@@ -17,7 +17,7 @@
     "branch": "stage"
   },
   "github": {
-    "reporting_helper": "/usr/local/lib/apitoken-stage/watchdog-github-stage",
+    "reporting_helper": "/usr/local/lib/apitoken-watchdog/stage/watchdog-github-stage",
     "config_file": "/etc/apitoken-staging/github-reporting.proxy",
     "status_contexts": {
       "watchdog": "deploy/stage",
@@ -41,7 +41,7 @@
     "ci_next_cache": "/var/lib/apitoken-staging/watchdog/ci-home/next-cache",
     "ci_typescript_artifact_cache": "/var/lib/apitoken-staging/watchdog/ci-home/typescript-artifacts",
     "ci_toolchain": "/opt/apitoken-staging/rust-toolchain",
-    "controller": "/usr/local/lib/apitoken-stage/controller",
+    "controller": "/usr/local/lib/apitoken-watchdog/stage/controller",
     "engine_release": "/srv/claude-api-staging/releases",
     "commerce_release": "/opt/apitoken-staging/releases",
     "sales_release": "/opt/apitoken-staging/sales-releases",

@@ -10,10 +10,10 @@ User=deploy-stage
 Group=deploy-stage
 Slice=staging.slice
 Environment=HOME=/home/deploy-stage
-Environment=CONTOUR_CONFIG_FILE=/usr/local/lib/apitoken-stage/contour-stage.json
-Environment=CONTOUR_SCHEMA_FILE=/usr/local/lib/apitoken-stage/contour-config.schema.json
-Environment=CONTOUR_CONFIG_LOADER=/usr/local/lib/apitoken-stage/contour-config.py
-ExecStart=/usr/local/lib/apitoken-stage/stage-watchdog.sh
+Environment=CONTOUR_CONFIG_FILE=/usr/local/lib/apitoken-watchdog/stage/contour-stage.json
+Environment=CONTOUR_SCHEMA_FILE=/usr/local/lib/apitoken-watchdog/stage/contour-config.schema.json
+Environment=CONTOUR_CONFIG_LOADER=/usr/local/lib/apitoken-watchdog/stage/contour-config.py
+ExecStart=/usr/local/lib/apitoken-watchdog/stage/stage-watchdog.sh
 TimeoutStartSec=20min
 Nice=15
 IOSchedulingClass=best-effort

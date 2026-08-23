@@ -1064,7 +1064,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED de
 Next: add the pre-provisioned stage controller root to the watchdog writable namespace.
 
 ### 2026-08-23 — stage controller writable namespace fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `dde547fa8ac68042b8f1cbe677ca07b5d8323bc7`   watchdog: RED
 Result: `d23b3c17` proved the remaining root cause: `ProtectSystem=full` makes an absent path under
 `/usr/local/lib` read-only before the installer can create it. Pre-create the trusted root in the
 Phase 2 manager oneshot and add only that exact path to the production watchdog `ReadWritePaths`.
@@ -1072,6 +1072,20 @@ The controller installer now refuses if the pre-provisioned directory is absent 
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED delivery; no lock changed.
+Next: publish below the existing watchdog controller root.
+
+### 2026-08-23 — stage controller subdirectory fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: `dde547fa` proved that a new `ReadWritePaths` entry cannot bind an absent path at service
+start, so the manager oneshot never ran. Move the stage controller to
+`/usr/local/lib/apitoken-watchdog/stage`, below the existing writable controller root. The installer
+creates that fixed subdirectory and applies the same root/deploy-stage ownership. Remove the extra
+service write grant and Phase 2 pre-provisioning.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash deploy/contour-config.test.sh`; `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED delivery; controller
+path remains master-sourced and root-owned.
 Next: verify the stage timer live, then initialize `stage` through the stage client.
 
 ---

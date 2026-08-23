@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT=/usr/local/lib/apitoken-stage
+ROOT=/usr/local/lib/apitoken-watchdog/stage
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'watchdog-github-stage: root required' >&2; exit 1; }
 [[ ${SUDO_USER:-} == deploy-stage ]] || { echo 'watchdog-github-stage: caller rejected' >&2; exit 1; }
 case "${1:-}" in

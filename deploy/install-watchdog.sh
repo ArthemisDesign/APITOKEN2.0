@@ -275,24 +275,23 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/contour-production.json
   install -o root -g root -m 0644 "$ROOT/deploy/contour-stage.json" \
     /usr/local/lib/apitoken-watchdog/contour-stage.json
-  [[ -d /usr/local/lib/apitoken-stage && ! -L /usr/local/lib/apitoken-stage ]] \
-    || { echo 'missing trusted stage controller root' >&2; return 1; }
-  chown root:deploy-stage /usr/local/lib/apitoken-stage
-  chmod 0750 /usr/local/lib/apitoken-stage
+  install -d -o root -g deploy-stage -m 0750 /usr/local/lib/apitoken-watchdog/stage
+  chown root:deploy-stage /usr/local/lib/apitoken-watchdog/stage
+  chmod 0750 /usr/local/lib/apitoken-watchdog/stage
   install -o root -g deploy-stage -m 0640 "$ROOT/deploy/contour-stage.json" \
-    /usr/local/lib/apitoken-stage/contour-stage.json
+    /usr/local/lib/apitoken-watchdog/stage/contour-stage.json
   install -o root -g deploy-stage -m 0640 "$ROOT/deploy/contour-config.schema.json" \
-    /usr/local/lib/apitoken-stage/contour-config.schema.json
+    /usr/local/lib/apitoken-watchdog/stage/contour-config.schema.json
   install -o root -g deploy-stage -m 0750 "$ROOT/deploy/contour-config.py" \
-    /usr/local/lib/apitoken-stage/contour-config.py
+    /usr/local/lib/apitoken-watchdog/stage/contour-config.py
   install -o root -g deploy-stage -m 0640 "$ROOT/deploy/contour-config.sh" \
-    /usr/local/lib/apitoken-stage/contour-config.sh
+    /usr/local/lib/apitoken-watchdog/stage/contour-config.sh
   for stage_runtime in stage-watchdog.sh stage-watchdog-validate.sh; do
     install -o root -g deploy-stage -m 0750 "$ROOT/deploy/$stage_runtime" \
-      "/usr/local/lib/apitoken-stage/$stage_runtime"
+      "/usr/local/lib/apitoken-watchdog/stage/$stage_runtime"
   done
   install -o root -g root -m 0755 "$ROOT/deploy/watchdog-github-stage.sh" \
-    /usr/local/lib/apitoken-stage/watchdog-github-stage
+    /usr/local/lib/apitoken-watchdog/stage/watchdog-github-stage
   install -o root -g root -m 0755 "$ROOT/deploy/stage-unit-renderer.py" \
     /usr/local/lib/apitoken-watchdog/stage-unit-renderer.py
   for stage_helper in install-staging-foundation.sh apitoken-observe-stage.sh \
