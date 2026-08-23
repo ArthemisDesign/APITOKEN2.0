@@ -13,7 +13,7 @@ import type { AdminPartnerApplication, PartnerApplicationStatus, PartnerApplicat
 
 type Draft = { action: "approve" | "reject"; note: string; commission: string; teamShare: string; b2bMax: string };
 
-const DEFAULT_DRAFT: Omit<Draft, "action"> = { note: "", commission: "10", teamShare: "20", b2bMax: "0" };
+const DEFAULT_DRAFT: Omit<Draft, "action"> = { note: "", commission: "10", teamShare: "20", b2bMax: "50" };
 
 function statusKind(status: PartnerApplicationStatus): "ok" | "warn" | "bad" {
   if (status === "approved") return "ok";
@@ -74,7 +74,7 @@ export default function PartnerApplicationsPage() {
         teamInvitesEnabled: true,
         b2bEnabled: b2bMaxDiscountBps > 0,
         b2bMaxDiscountBps,
-        b2bCanDelegate: false,
+        b2bCanDelegate: b2bMaxDiscountBps > 0,
       };
     }
     setBusy(true);
@@ -140,7 +140,7 @@ export default function PartnerApplicationsPage() {
         {draft.action === "approve" ? <div className="partner-approved-terms">
           <label className="field"><span>{t("Commission", "Комиссия")}</span><div className="percent-input"><input id="application-commission" name="applicationCommission" type="text" inputMode="decimal" autoComplete="off" value={draft.commission} onChange={(event) => setDraft({ ...draft, commission: event.target.value })} disabled={busy} /><i>%</i></div><small>{t("Standard terms start at 10%", "Стандартные условия начинаются с 10%")}</small></label>
           <label className="field"><span>{t("Team ceiling", "Потолок команды")}</span><div className="percent-input"><input id="application-team-share" name="applicationTeamShare" type="text" inputMode="decimal" autoComplete="off" value={draft.teamShare} onChange={(event) => setDraft({ ...draft, teamShare: event.target.value })} disabled={busy} /><i>%</i></div><small>{t("Platform hard maximum 20%", "Жёсткий максимум платформы 20%")}</small></label>
-          <label className="field"><span>{t("B2B ceiling", "B2B-потолок")}</span><div className="percent-input"><input id="application-b2b-max" name="applicationB2bMax" type="text" inputMode="numeric" autoComplete="off" value={draft.b2bMax} onChange={(event) => setDraft({ ...draft, b2bMax: event.target.value.replace(/\D/g, "") })} disabled={busy} /><i>%</i></div><small>{t("0% keeps B2B self-service off", "0% оставляет B2B-самообслуживание выключенным")}</small></label>
+          <label className="field"><span>{t("B2B ceiling", "B2B-потолок")}</span><div className="percent-input"><input id="application-b2b-max" name="applicationB2bMax" type="text" inputMode="numeric" autoComplete="off" value={draft.b2bMax} onChange={(event) => setDraft({ ...draft, b2bMax: event.target.value.replace(/\D/g, "") })} disabled={busy} /><i>%</i></div><small>{t("The ceiling for this partner's own B2B terms; 0% switches B2B off", "Потолок собственных B2B-условий партнёра; 0% выключает B2B")}</small></label>
         </div> : null}
         <label className="field"><span>{t("Reviewer note — optional", "Комментарий проверяющего — необязательно")}</span><textarea id="application-note" name="applicationNote" autoComplete="off" rows={4} maxLength={2000} value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} disabled={busy} placeholder={t("Why this account is a good partner…", "Почему этот аккаунт подходит…")} /></label>
         <div className="dlg-actions">

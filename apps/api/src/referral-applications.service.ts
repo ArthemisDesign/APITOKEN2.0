@@ -15,11 +15,12 @@ import { ReferralService, type PartnerAuthorityInput } from "./referral.service.
 export const DEFAULT_APPLICATION_TERMS: { commissionBps: number; authority: PartnerAuthorityInput } = {
   commissionBps: 1_000,
   authority: {
+    // Building a Team and setting B2B terms are ordinary capabilities; only their ceilings are set.
     teamOverrideMaxBps: 2_000,
     teamInvitesEnabled: true,
-    b2bEnabled: false,
-    b2bMaxDiscountBps: 0,
-    b2bCanDelegate: false,
+    b2bEnabled: true,
+    b2bMaxDiscountBps: 5_000,
+    b2bCanDelegate: true,
   },
 };
 

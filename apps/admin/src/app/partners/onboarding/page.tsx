@@ -1,25 +1,39 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { Banner, PageHead, Pill, SectionHeader } from "@/components/ui";
+import { Banner, EmptyRow, PageHead, Pill, SectionHeader, TableCard } from "@/components/ui";
 import { send } from "@/lib/api";
-import { useI18n } from "@/lib/i18n";
+import { formatDate } from "@/lib/format";
+import { localeFor, useI18n } from "@/lib/i18n";
+import { useResource } from "@/lib/resources";
 import { toast } from "@/lib/toast";
+import type { AdminUsersPage } from "../../users/users-lib";
 import {
   DEFAULT_PARTNER_TERMS,
+  PartnerOnboardingDialog,
   PartnerTermsFields,
   partnerOnboardingPayload,
+  type PartnerOnboardingTarget,
   type PartnerTermsDraft,
 } from "../partner-onboarding-form";
 
 const ACCOUNT_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function PartnerOnboardingPage() {
-  const { t } = useI18n();
+  const { lang, t } = useI18n();
+  const locale = localeFor(lang);
   const [email, setEmail] = useState("");
   const [terms, setTerms] = useState<PartnerTermsDraft>(DEFAULT_PARTNER_TERMS);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Finding the account is part of the job: the same server-side user search the Users page uses,
+  // so an operator never has to copy an email between two tabs.
+  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
+  const [target, setTarget] = useState<PartnerOnboardingTarget | null>(null);
+  const { data: found, isLoading: searching, refresh } = useResource<AdminUsersPage>(
+    query ? `/admin/users?limit=20&offset=0&sort=created_at&dir=desc&q=${encodeURIComponent(query)}` : "",
+  );
 
   function fail(message: string, fieldId: string) {
     setError(message);
@@ -65,5 +79,55 @@ export default function PartnerOnboardingPage() {
       <PartnerTermsFields idPrefix="partner-onboard" value={terms} onChange={setTerms} disabled={busy} />
       <div className="partner-authority-actions"><span className="partner-terms-proof">$100 × 10% = $10 · Team 20% → $8 {t("member", "участнику")} + $2 {t("parent", "родителю")}</span><button className="btn" type="submit" disabled={busy}>{busy ? t("Enabling…", "Подключаем…") : t("Enable Partner Access", "Сделать партнёром")}</button></div>
     </form>
+
+    <SectionHeader
+      title={t("Find the account", "Найти аккаунт")}
+      sub={t("Search the site's users by email or name and enable partner access from the row.", "Ищите пользователей сайта по email или имени и включайте партнёрский доступ прямо из строки.")}
+    />
+    <form
+      className="partner-request-toolbar"
+      onSubmit={(event) => { event.preventDefault(); setQuery(search.trim()); }}
+    >
+      <label className="field partner-user-search">
+        <span>{t("Email or name", "Email или имя")}</span>
+        <input
+          id="partner-user-search"
+          name="partnerUserSearch"
+          type="search"
+          autoComplete="off"
+          spellCheck={false}
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder={t("client@example.com", "client@example.com")}
+          translate="no"
+        />
+      </label>
+      <button type="submit" className="btn">{t("Search", "Найти")}</button>
+      {query ? <button type="button" className="btn ghost" onClick={() => { setSearch(""); setQuery(""); }}>{t("Clear", "Сбросить")}</button> : null}
+    </form>
+    {query ? <TableCard>
+      <table className="partner-requests-table">
+        <thead><tr>
+          <th className="left">{t("Account", "Аккаунт")}</th>
+          <th>{t("Status", "Статус")}</th>
+          <th>{t("Type", "Тип")}</th>
+          <th>{t("Registered", "Регистрация")}</th>
+          <th><span className="sr-only">{t("Actions", "Действия")}</span></th>
+        </tr></thead>
+        <tbody>
+          {(found?.users ?? []).length ? (found?.users ?? []).map((user) => <tr key={user.id ?? user.email}>
+            <td className="left"><b translate="no">{user.email ?? "—"}</b>{user.display_name ? <div className="sub" translate="no">{user.display_name}</div> : null}</td>
+            <td><Pill kind={user.status === "active" ? "ok" : "bad"}>{user.status ?? "—"}</Pill></td>
+            <td>{user.customer_type === "b2b" ? "B2B" : "B2C"}</td>
+            <td>{user.created_at ? formatDate(user.created_at, false, locale) : "—"}</td>
+            <td>{user.id && user.email && user.status === "active"
+              ? <button type="button" className="btn" onClick={() => setTarget({ id: user.id!, email: user.email! })}>{t("Make partner", "Сделать партнёром")}</button>
+              : <span className="sub">{t("Account is not active", "Аккаунт неактивен")}</span>}</td>
+          </tr>) : <EmptyRow columns={5} text={searching ? t("Searching…", "Ищем…") : t("No accounts match this search", "По этому запросу аккаунтов нет")} />}
+        </tbody>
+      </table>
+    </TableCard> : null}
+
+    <PartnerOnboardingDialog target={target} onClose={() => setTarget(null)} onCreated={refresh} />
   </>;
 }

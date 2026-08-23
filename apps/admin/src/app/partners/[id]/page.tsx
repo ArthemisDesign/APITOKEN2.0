@@ -69,7 +69,7 @@ export default function PartnerDetailPage() {
     setError(null);
     const commissionBps = parsePercentBps(draft.commission, 10_000);
     const teamOverrideMaxBps = parsePercentBps(draft.teamMaximum, 2_000);
-    const b2bMaxDiscountBps = draft.b2bEnabled ? parsePercentBps(draft.b2bMaximum, 9_500) : 0;
+    const b2bMaxDiscountBps = parsePercentBps(draft.b2bMaximum, 9_500);
     if (commissionBps === null || teamOverrideMaxBps === null || b2bMaxDiscountBps === null) {
       fail(t("Check the percentages: commission ≤ 100%, Team share ≤ 20%, B2B discount ≤ 95%.", "Проверьте проценты: комиссия ≤ 100%, Team-доля ≤ 20%, B2B-скидка ≤ 95%."), commissionBps === null ? "partner-direct-commission" : teamOverrideMaxBps === null ? "partner-team-maximum" : "partner-b2b-maximum");
       return;
@@ -80,10 +80,10 @@ export default function PartnerDetailPage() {
         email: partner.email,
         commissionBps,
         teamOverrideMaxBps,
-        teamInvitesEnabled: draft.teamInvitesEnabled,
-        b2bEnabled: draft.b2bEnabled,
+        teamInvitesEnabled: true,
+        b2bEnabled: b2bMaxDiscountBps > 0,
         b2bMaxDiscountBps,
-        b2bCanDelegate: draft.b2bEnabled && draft.b2bCanDelegate,
+        b2bCanDelegate: b2bMaxDiscountBps > 0,
         status: draft.status,
         programEnabled: draft.programEnabled,
       });
@@ -121,14 +121,9 @@ export default function PartnerDetailPage() {
         <label className="field"><span>{t("Maximum Retained Team Share", "Максимальная удерживаемая Team-доля")}</span><div className="percent-input"><input id="partner-team-maximum" name="teamShareMaximumPercent" type="number" inputMode="decimal" autoComplete="off" min="0" max="20" step="0.01" value={draft.teamMaximum} onChange={(event) => setDraft({ ...draft, teamMaximum: event.target.value })} disabled={busy} /><i>%</i></div><small>{t("The partner chooses a smaller share for each direct Team member", "Партнёр выбирает меньшую долю для каждого прямого участника Team")}</small></label>
         <label className="field"><span>{t("Partner Status", "Статус партнёра")}</span><select name="partnerStatus" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value as Draft["status"] })} disabled={busy}><option value="active">{t("Active", "Активен")}</option><option value="suspended">{t("Suspended", "Приостановлен")}</option><option value="pending">{t("Pending", "Ожидает")}</option></select></label>
         <label className="field"><span>{t("Created", "Создан")}</span><input name="partnerCreatedAt" autoComplete="off" value={formatDate(partner.createdAt, true, locale)} readOnly aria-label={t("Partner Created At", "Дата создания партнёра")} /></label>
-        <fieldset className="partner-permissions"><legend>{t("Delegated Capabilities", "Делегируемые возможности")}</legend>
+        <label className="field"><span>{t("Maximum Customer Discount", "Максимальная скидка клиенту")}</span><div className="percent-input"><input id="partner-b2b-maximum" name="b2bMaximumPercent" type="number" inputMode="decimal" autoComplete="off" min="0" max="95" step="1" value={draft.b2bMaximum} onChange={(event) => setDraft({ ...draft, b2bMaximum: event.target.value })} disabled={busy} /><i>%</i></div><small>{t("The ceiling for the partner's own B2B terms; 0% switches B2B off for them", "Потолок собственных B2B-условий партнёра; 0% выключает B2B для него")}</small></label>
+        <fieldset className="partner-permissions"><legend>{t("Access", "Доступ")}</legend>
           <label className="admin-check"><input name="programEnabled" type="checkbox" checked={draft.programEnabled} onChange={(event) => setDraft({ ...draft, programEnabled: event.target.checked })} disabled={busy} /><span><b>{t("Partner Program Enabled", "Партнёрская программа включена")}</b><small>{t("Disable access without deleting history", "Отключает доступ без удаления истории")}</small></span></label>
-          <label className="admin-check"><input name="teamInvitesEnabled" type="checkbox" checked={draft.teamInvitesEnabled} onChange={(event) => setDraft({ ...draft, teamInvitesEnabled: event.target.checked })} disabled={busy} /><span><b>{t("Team Invitations", "Приглашения в Team")}</b><small>{t("Invites existing Commerce accounts by email", "Приглашает существующие Commerce-аккаунты по email")}</small></span></label>
-          <label className="admin-check"><input name="b2bEnabled" type="checkbox" checked={draft.b2bEnabled} onChange={(event) => setDraft({ ...draft, b2bEnabled: event.target.checked, b2bCanDelegate: event.target.checked && draft.b2bCanDelegate })} disabled={busy} /><span><b>{t("B2B Self-Service", "Самостоятельный перевод в B2B")}</b><small>{t("Sets pricing for owned referrals without a request", "Назначает условия своим рефералам без заявки")}</small></span></label>
-          {draft.b2bEnabled ? <>
-            <label className="field partner-b2b-limit"><span>{t("Maximum Customer Discount", "Максимальная скидка клиенту")}</span><div className="percent-input"><input id="partner-b2b-maximum" name="b2bMaximumPercent" type="number" inputMode="decimal" autoComplete="off" min="0" max="95" step="0.01" value={draft.b2bMaximum} onChange={(event) => setDraft({ ...draft, b2bMaximum: event.target.value })} disabled={busy} /><i>%</i></div></label>
-            <label className="admin-check"><input name="b2bCanDelegate" type="checkbox" checked={draft.b2bCanDelegate} onChange={(event) => setDraft({ ...draft, b2bCanDelegate: event.target.checked })} disabled={busy} /><span><b>{t("May Delegate B2B", "Может делегировать B2B")}</b><small>{t("Passes a smaller ceiling to Team members", "Передаёт меньший лимит участникам Team")}</small></span></label>
-          </> : null}
         </fieldset>
         <div className="partner-authority-actions"><span>{t("No account deletion: financial history remains auditable.", "Удаления аккаунта нет: финансовая история остаётся доступной для аудита.")}</span><button type="submit" className="btn" disabled={busy}>{busy ? t("Saving…", "Сохраняем…") : t("Save Partner Settings", "Сохранить настройки")}</button></div>
       </form>

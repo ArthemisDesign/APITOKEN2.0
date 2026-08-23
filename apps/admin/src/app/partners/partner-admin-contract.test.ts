@@ -14,11 +14,14 @@ describe("unified Partner Admin UI contract", () => {
     expect(source("../../lib/nav.ts")).toContain('href: "/partners"');
   });
 
-  it("onboards an existing Commerce account with every authority boundary", () => {
+  it("onboards an existing Commerce account by email or from a searched user row", () => {
     const onboarding = source("./onboarding/page.tsx");
     const fields = source("./partner-onboarding-form.tsx");
     expect(onboarding).toContain('send("/admin/referral/partners", "POST"');
     expect(onboarding).toContain('type="email"');
+    // The same server-side user search the Users page uses, with the onboarding dialog on the row.
+    expect(onboarding).toContain("/admin/users?limit=20&offset=0&sort=created_at&dir=desc&q=");
+    expect(onboarding).toContain("PartnerOnboardingDialog");
     for (const field of [
       "commissionBps",
       "teamOverrideMaxBps",
@@ -29,6 +32,9 @@ describe("unified Partner Admin UI contract", () => {
     ]) {
       expect(fields).toContain(field);
     }
+    // Building a Team and setting B2B terms are capabilities, not grants: no permission toggles.
+    expect(fields).not.toContain("Delegated capabilities");
+    expect(source("./[id]/page.tsx")).not.toContain("B2B Self-Service");
   });
 
   it("reviews partner access applications and approves them onto explicit terms", () => {

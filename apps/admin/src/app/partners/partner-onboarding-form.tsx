@@ -7,13 +7,15 @@ import { useI18n } from "@/lib/i18n";
 import { toast } from "@/lib/toast";
 import { parsePercentBps } from "./helpers";
 
+/**
+ * Building a Team and setting B2B terms are ordinary partner capabilities, not grants: an operator
+ * only chooses how far each one may go. The draft therefore carries the two maximums and nothing
+ * else, and both remain editable on the partner afterwards.
+ */
 export type PartnerTermsDraft = {
   commission: string;
   teamMaximum: string;
-  teamInvitesEnabled: boolean;
-  b2bEnabled: boolean;
   b2bMaximum: string;
-  b2bCanDelegate: boolean;
 };
 
 export type PartnerOnboardingPayload = {
@@ -30,25 +32,24 @@ export type PartnerOnboardingPayload = {
 export const DEFAULT_PARTNER_TERMS: PartnerTermsDraft = {
   commission: "10",
   teamMaximum: "20",
-  teamInvitesEnabled: true,
-  b2bEnabled: false,
-  b2bMaximum: "0",
-  b2bCanDelegate: false,
+  b2bMaximum: "50",
 };
 
 export function partnerOnboardingPayload(value: PartnerTermsDraft): PartnerOnboardingPayload | null {
   const commissionBps = parsePercentBps(value.commission, 10_000);
   const teamOverrideMaxBps = parsePercentBps(value.teamMaximum, 2_000);
-  const b2bMaxDiscountBps = value.b2bEnabled ? parsePercentBps(value.b2bMaximum, 9_500) : 0;
+  const b2bMaxDiscountBps = parsePercentBps(value.b2bMaximum, 9_500);
   if (commissionBps === null || teamOverrideMaxBps === null || b2bMaxDiscountBps === null) return null;
   return {
     commissionBps,
     authority: {
       teamOverrideMaxBps,
-      teamInvitesEnabled: value.teamInvitesEnabled,
-      b2bEnabled: value.b2bEnabled,
+      // Everyone may build a Team and set B2B terms; a zero ceiling is how an operator switches
+      // one of them off for a specific partner, and both stay editable afterwards.
+      teamInvitesEnabled: true,
+      b2bEnabled: b2bMaxDiscountBps > 0,
       b2bMaxDiscountBps,
-      b2bCanDelegate: value.b2bEnabled && value.b2bCanDelegate,
+      b2bCanDelegate: b2bMaxDiscountBps > 0,
     },
   };
 }
@@ -66,15 +67,7 @@ export function PartnerTermsFields(props: {
       <label className="field"><span>{t("Direct commission", "Прямая комиссия")}</span><div className="percent-input"><input id={`${props.idPrefix}-commission`} name="commissionPercent" type="number" inputMode="decimal" autoComplete="off" min="0" max="100" step="0.01" value={value.commission} onChange={(event) => onChange({ ...value, commission: event.target.value })} disabled={props.disabled} /><i>%</i></div><small>{t("Paid by the platform from real paid spend", "Платформа начисляет её с реального оплаченного расхода")}</small></label>
       <label className="field"><span>{t("Maximum retained Team share", "Максимальная удерживаемая Team-доля")}</span><div className="percent-input"><input id={`${props.idPrefix}-team-maximum`} name="teamShareMaximumPercent" type="number" inputMode="decimal" autoComplete="off" min="0" max="20" step="0.01" value={value.teamMaximum} onChange={(event) => onChange({ ...value, teamMaximum: event.target.value })} disabled={props.disabled} /><i>%</i></div><small>{t("A parent can retain less for each member; the platform hard cap is 20%", "Родитель задаёт меньше для каждого участника; предел платформы — 20%")}</small></label>
     </div>
-    <fieldset className="partner-permissions">
-      <legend>{t("Delegated capabilities", "Делегируемые возможности")}</legend>
-      <label className="admin-check"><input name={`${props.idPrefix}-teamInvitesEnabled`} type="checkbox" checked={value.teamInvitesEnabled} onChange={(event) => onChange({ ...value, teamInvitesEnabled: event.target.checked })} disabled={props.disabled} /><span><b>{t("Team invitations", "Приглашения в Team")}</b><small>{t("The partner can invite existing Commerce accounts by email", "Партнёр может приглашать существующие Commerce-аккаунты по email")}</small></span></label>
-      <label className="admin-check"><input name={`${props.idPrefix}-b2bEnabled`} type="checkbox" checked={value.b2bEnabled} onChange={(event) => onChange({ ...value, b2bEnabled: event.target.checked, b2bCanDelegate: event.target.checked && value.b2bCanDelegate })} disabled={props.disabled} /><span><b>{t("B2B self-service", "Самостоятельный перевод в B2B")}</b><small>{t("The partner can set pricing for owned referrals without a request", "Партнёр может назначать условия своим рефералам без заявки")}</small></span></label>
-      {value.b2bEnabled ? <>
-        <label className="field partner-b2b-limit"><span>{t("Maximum customer discount", "Максимальная скидка клиенту")}</span><div className="percent-input"><input id={`${props.idPrefix}-b2b-maximum`} name="b2bMaximumPercent" type="number" inputMode="decimal" autoComplete="off" min="0" max="95" step="0.01" value={value.b2bMaximum} onChange={(event) => onChange({ ...value, b2bMaximum: event.target.value })} disabled={props.disabled} /><i>%</i></div></label>
-        <label className="admin-check"><input name={`${props.idPrefix}-b2bCanDelegate`} type="checkbox" checked={value.b2bCanDelegate} onChange={(event) => onChange({ ...value, b2bCanDelegate: event.target.checked })} disabled={props.disabled} /><span><b>{t("May delegate B2B", "Может делегировать B2B")}</b><small>{t("A Team member receives a smaller ceiling", "Участник Team получает меньший лимит")}</small></span></label>
-      </> : null}
-    </fieldset>
+    <label className="field"><span>{t("Maximum customer discount", "Максимальная скидка клиенту")}</span><div className="percent-input"><input id={`${props.idPrefix}-b2b-maximum`} name="b2bMaximumPercent" type="number" inputMode="decimal" autoComplete="off" min="0" max="95" step="1" value={value.b2bMaximum} onChange={(event) => onChange({ ...value, b2bMaximum: event.target.value })} disabled={props.disabled} /><i>%</i></div><small>{t("The partner sets B2B terms for their own referrals up to this ceiling; 0% switches B2B off for them", "Партнёр назначает B2B-условия своим рефералам в пределах этого потолка; 0% выключает B2B для него")}</small></label>
   </>;
 }
 

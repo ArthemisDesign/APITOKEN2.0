@@ -289,6 +289,12 @@ discount.
   Both are session-owned; the browser never sends a partner id.
   A waiting invitation is also marked outside the page: the Dashboard sidebar shows one accent dot on
   the Referral item, and nothing else changes for that account.
+- Building a Team and setting B2B terms are ordinary partner capabilities, not per-partner grants.
+  An operator sets only how far each one may go: the retained-share ceiling (platform hard maximum
+  20%, default 20%) and the B2B discount ceiling (default 50%, hard maximum 95%). A zero ceiling is
+  how one of them is switched off for a single partner. Both are set at onboarding — by email or
+  from the searched user row in Admin → Partners → Enable Partner — carried by an approved access
+  application, and editable afterwards on the partner's own card.
 - **Team** — an invitation is an account email plus the share you retain from that member's own
   platform commission; every partner may build a Team, so that is no longer a permission and the
   invitation form carries no permission controls. The retained share is capped by the platform hard
