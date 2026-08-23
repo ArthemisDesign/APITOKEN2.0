@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `110a1073dbcba4c9672bcb4292866f4ff5ac5c96` | 2026-08-23 | GREEN diagnostics; overriding PostgreSQL 18 PGDATA. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `c90e657091c0974e1f825a1f0758212a8e806b4b` | 2026-08-23 | GREEN PGDATA config; forcing full store replay. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -869,13 +869,22 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: override PostgreSQL 18 `PGDATA`, then verify stores, isolation, and pressure.
 
 ### 2026-08-23 — PostgreSQL 18 PGDATA forward fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `c90e657091c0974e1f825a1f0758212a8e806b4b`   watchdog: GREEN
 Result: Bounded logs show PostgreSQL 18 defaults to `/var/lib/postgresql/18/docker` and cannot create
 that path under rootless permissions. Set `PGDATA=/var/lib/postgresql/data`, the existing
 loopback-backed writable mount. The database remains empty and uses stage-only credentials.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: force a full PGDATA replay, then verify stores, isolation, and pressure.
+
+### 2026-08-23 — PostgreSQL PGDATA full-apply marker
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Add an immutable marker to the stateful foundation installer so the GREEN PGDATA override
+reruns the trusted store transaction. No runtime behavior or lock value changes.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: verify live stores, isolation, and pressure.
 
 ---

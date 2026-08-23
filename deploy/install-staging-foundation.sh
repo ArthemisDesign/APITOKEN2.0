@@ -27,6 +27,7 @@ fi
 # phase2-cgroup-apply-v1: replay after delegated container cgroup parent changed.
 # phase2-cgroupfs-apply-v1: replay after delegated cgroupfs changed.
 # phase2-postgres-volume-apply-v1: replay after stage PostgreSQL data mount changed.
+# phase2-pgdata-apply-v1: replay after PostgreSQL 18 PGDATA changed.
 for command in rootlesskit slirp4netns fuse-overlayfs newuidmap newgidmap dockerd-rootless.sh; do
   command -v "$command" >/dev/null || { echo "staging-foundation: missing rootless Docker prerequisite: $command" >&2; exit 1; }
 done
