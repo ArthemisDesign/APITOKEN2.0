@@ -173,6 +173,7 @@ policy_sha256=$(
     deploy/stage-emergency-guard.sh \
     deploy/stage-eligible-publish.sh \
     deploy/stage-attestation.py \
+    deploy/stage-promotion-helper.sh \
     deploy/stage-degrade-gate.py \
     deploy/stage-degradation-policy.json \
     deploy/stage-load-generator.py \

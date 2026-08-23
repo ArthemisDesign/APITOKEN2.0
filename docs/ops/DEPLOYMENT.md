@@ -7,7 +7,9 @@ This is the operator runbook for `84.32.48.2`. Controller internals live in
 
 Production delivery is fail-closed. First move the exact SHA to `stage` with
 `deploy/agent-merge-stage.sh`. After GREEN stage deployment/degradation and explicit operator
-attestation, fast-forward that same SHA to `master` with `deploy/agent-merge.sh`. The watchdog rejects
+attestation (`deploy/promotion-attest.sh <sha> <actor> <reason>`), fast-forward that same SHA to
+`master` with `deploy/agent-merge.sh`. After a hotfix, run `deploy/stage-sync.sh --after-hotfix <sha>`;
+it invalidates stale approval before requesting exact stage convergence. The watchdog rejects
 an unattested master SHA and records `admission-rejected.sha`. A valid host-owned hotfix attestation
 remains usable when staging is down; a `hotfix/*` name is not authorization.
 

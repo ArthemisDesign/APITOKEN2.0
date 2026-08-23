@@ -15,12 +15,12 @@ if [[ ! -f $PROD/staging-admission.enabled ]]; then
 fi
 now=$(date +%s)
 tree=$(git -c safe.directory="$REPO" -C "$REPO" rev-parse "$sha^{tree}")
-for file in "$STAGE/promotion-eligible.json" "$PROD/hotfix-eligible.json"; do
+for spec in "promotion:$STAGE/promotion-eligible.json" "hotfix:$PROD/hotfix-eligible.json"; do
+  mode=${spec%%:*}; file=${spec#*:}
   [[ -f $file && ! -L $file ]] || continue
-  if jq -e --arg sha "$sha" --arg tree "$tree" --argjson now "$now" '
+  if jq -e --arg sha "$sha" --arg tree "$tree" --arg mode "$mode" --argjson now "$now" '
       .commit_sha==$sha and .tree_sha==$tree and .unix_user=="deploy" and
-      .issued_at <= $now and .expires_at > $now and
-      .mode == (if input_filename|contains("hotfix") then "hotfix" else "promotion" end) and
+      .issued_at <= $now and .expires_at > $now and .mode==$mode and
       (.policy_digest|test("^[0-9a-f]{64}$")) and (.record_digest|test("^[0-9a-f]{64}$"))
     ' "$file" >/dev/null; then
     echo "promotion-admission: admitted $sha via $(basename "$file")"

@@ -6,8 +6,10 @@ mkdir -p "$T/usr/local/lib/apitoken-watchdog"; cp "$ROOT/deploy/stage-degradatio
 # The test fallback reads the repository policy when the installed absolute path is absent.
 (cd "$ROOT" && STAGE_POLICY_FILE=deploy/stage-degradation-policy.json python3 deploy/stage-attestation.py --mode promotion --commit "$sha" --actor owner --reason drill --state-root "$state" --repo "$repo" --now 1000 >"$T/promotion.json")
 jq -e '.mode=="promotion" and .unix_user=="deploy" and .expires_at==87400 and (.record_digest|test("^[0-9a-f]{64}$"))' "$T/promotion.json" >/dev/null
+cmp -s "$T/promotion.json" "$state/promotion-eligible.json"
 (cd "$ROOT" && STAGE_POLICY_FILE=deploy/stage-degradation-policy.json python3 deploy/stage-attestation.py --mode hotfix --commit "$sha" --actor owner --reason emergency --state-root "$state" --repo "$repo" --now 2000 >"$T/hotfix.json")
 jq -e '.mode=="hotfix" and .reason=="emergency"' "$T/hotfix.json" >/dev/null
+cmp -s "$T/hotfix.json" "$state/hotfix-eligible.json"
 echo 0000000000000000000000000000000000000000 >"$state/deployed.sha"
 if (cd "$ROOT" && STAGE_POLICY_FILE=deploy/stage-degradation-policy.json python3 deploy/stage-attestation.py --mode promotion --commit "$sha" --actor owner --reason stale --state-root "$state" --repo "$repo" >/dev/null 2>&1); then exit 1; fi
 printf 'staging-phase6-drills.test: PASS\n'

@@ -322,7 +322,7 @@ install_controller_definitions() {
     stage-observe-helper.sh apitoken-stage-ctl.sh stage-ctl-helper.sh \
     staging-isolation-live.sh staging-pressure-proof.sh staging-image-seed.sh \
     stage-store-diagnostics.sh stage-sync.sh promotion-attest.sh stage-seed.sh stage-gc.sh \
-    stage-degrade-proof.sh; do
+    stage-degrade-proof.sh stage-promotion-helper.sh; do
     install -o root -g root -m 0755 "$ROOT/deploy/$stage_helper" \
       "/usr/local/lib/apitoken-watchdog/$stage_helper"
   done

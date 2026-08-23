@@ -14,5 +14,5 @@ policy=policy_path.read_bytes()
 record={'mode':a.mode,'unix_user':'deploy','github_actor':a.actor,'commit_sha':a.commit,'tree_sha':tree,'artifact_digests':{},'policy_digest':hashlib.sha256(policy).hexdigest(),'contour_id':'stage','issued_at':a.now,'expires_at':a.now+86400,'reason':a.reason,'candidate_marker':marker}
 payload=json.dumps(record,sort_keys=True,separators=(',',':'))
 record['record_digest']=hashlib.sha256(payload.encode()).hexdigest()
-out=root/'promotion-approved.json'; tmp=root/'.promotion-approved.tmp'; tmp.write_text(json.dumps(record,sort_keys=True)+'\n'); os.chmod(tmp,0o600); os.replace(tmp,out)
+out=root/('hotfix-eligible.json' if a.mode=='hotfix' else 'promotion-eligible.json'); tmp=root/f'.{out.name}.tmp'; tmp.write_text(json.dumps(record,sort_keys=True)+'\n'); os.chmod(tmp,0o600); os.replace(tmp,out)
 print(json.dumps(record,sort_keys=True))

@@ -1663,7 +1663,7 @@ on to see”, you are violating the plan.
 - [x] Auto emergency-stop: production contour calls `stage-emergency-stop` when
       `MemAvailable < 12G` or production SLO is red and staging CPU/RAM share is above the
       documented threshold. Staging down does **not** block hotfix.
-- [ ] Recovery lock order after failed promotion / stage-sync. No leftover stale approval.
+- [x] Recovery lock order after failed promotion / stage-sync. No leftover stale approval.
 
 ### Exit criteria
 
@@ -1715,7 +1715,7 @@ no later-SHA admission condition is weakened.
 Next: transition one exact SHA through stage and host-owned eligibility.
 
 ### 2026-08-23 — host-owned eligibility transition helper
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `feb8587056f551990341d64ea9f019fc2d5daec5`   watchdog: GREEN
 Result: Add a fixed root-owned publisher that accepts an explicit operator SHA, actor, and reason only
 when source/candidate/deployed/processed stage markers all match. It binds the exact tree and trusted
 policy digest, sets a 24-hour TTL, and atomically publishes `promotion-eligible.json`. The forced
@@ -1725,8 +1725,27 @@ Checks actually run: `bash deploy/staging-phase7.test.sh`; `bash deploy/staging-
 `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: this forward fix exists to make the first real
 post-enforcement attestation possible without weakening admission.
-Next: merge through the recovered GREEN watchdog, converge stage, validate the final Phase 7 SHA,
-issue explicit operator eligibility, then close Phase 7. Do not start Phase 8.
+Next: complete the real attestation and recovery lock contracts.
+
+Next: complete the real attestation and recovery lock contracts.
+
+### 2026-08-23 — Phase 7 attestation and recovery completion
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Fix admission mode matching without jq `input_filename`, publish the actual
+`promotion-eligible.json` or `hotfix-eligible.json` record, enable the forced `stage-ctl attest` and
+`sync` commands with exact arguments, and serialize them on the stage promotion lock. Sync removes
+approval, eligibility, and degradation records before it records the required master SHA. Tests now
+prove bootstrap, unattested rejection/audit, exact promotion admission, exact hotfix admission, and
+expired-hotfix rejection. The one-time owner-authorized bootstrap recovery removed only the enable and
+quarantine markers; `5ead49fd` then deployed GREEN through the repository watchdog.
+Checks actually run: `bash deploy/staging-phase7.test.sh`; `bash deploy/staging-phase6-drills.test.sh`;
+`bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: the bootstrap deadlock needed one explicit
+owner-authorized root repair. The final code contains no root SSH recovery path and all later SHA
+admission is fail-closed.
+Next: land this exact SHA through the normal stage→attest→master flow, gather live evidence, and close
+Phase 7. Do not start Phase 8.
 
 ---
 
