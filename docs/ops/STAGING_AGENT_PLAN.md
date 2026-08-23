@@ -1227,13 +1227,24 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: admit the fixed source Git directory, then verify stage statuses.
 
 ### 2026-08-23 — source Git-directory safety fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `a47f61f8b3f2143cc6f019b8c73fdb05d67933c5`   watchdog: GREEN
 Result: Cloning from the fixed `.git` path needs that Git directory itself in the command-local
 safe-directory list. Add only `/opt/apitoken/repo/.git`; keep the working-tree and target fixed paths.
 No global configuration or caller path is accepted.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: copy the fixed Git object store, then verify stage statuses.
+
+### 2026-08-23 — stage Git object copy fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Git still applies ownership checks to a local repository used as a clone source. After the
+exact `stage` ref is fetched and resolved as `deploy`, copy only the fixed `.git` tree with `tar` into
+the stage checkout and assign it to `deploy-stage`. No working-tree files or candidate command run.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: source publication uses a byte copy of the
+already-fetched Git object store instead of Git's local clone transport.
 Next: verify informational stage statuses and close Phase 3.
 
 ---
