@@ -99,6 +99,7 @@ for group in deploy docker apitoken-ci observe adm systemd-journal; do
 done
 install -d -o deploy-stage -g deploy-stage -m 0700 /var/lib/apitoken-staging/{docker,postgres,redis,spool,watchdog}
 install -d -o deploy-stage -g deploy-stage -m 0700 /run/apitoken-staging
+install -o deploy-stage -g deploy-stage -m 0600 /dev/null /run/lock/apitoken-stage-watchdog.lock
 
 ip netns list | awk '{print $1}' | grep -Fxq apitoken-stage || ip netns add apitoken-stage
 if ! ip link show veth-stage-host >/dev/null 2>&1; then

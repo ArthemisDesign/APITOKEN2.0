@@ -50,6 +50,7 @@ bash "$ROOT/deploy/stage-watchdog.test.sh"
 grep -Fq 'for stage_unit in staging.slice apitoken-rootless-docker-stage.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'install -d -o root -g deploy-stage -m 0750 /usr/local/lib/apitoken-watchdog/stage' "$ROOT/deploy/install-watchdog.sh"
 ! grep -Fq '/usr/local/lib/apitoken-watchdog/stage /usr/local/bin' "$ROOT/systemd/apitoken-deploy-watchdog.service"
+grep -Fq '/run/lock/apitoken-stage-watchdog.lock' "$I"
 grep -Fq 'systemctl start --no-block apitoken-rootless-docker-stage.service' "$I"
 for host_state_path in deploy/install-staging-foundation.sh deploy/staging-postgres.compose.yaml deploy/staging-redis.compose.yaml; do
   if bash -c 'source "$1/deploy/watchdog-lib.sh"; wd_path_is_controller_definition "$2"' \

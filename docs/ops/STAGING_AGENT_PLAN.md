@@ -1089,13 +1089,23 @@ path remains master-sourced and root-owned.
 Next: expose the stage watchdog unit through read-only observation, then initialize `stage`.
 
 ### 2026-08-23 — stage watchdog read-only observation
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `0167090623616f9c68dde39a540c796f6ca84b26`   watchdog: GREEN
 Result: The stage timer is installed, but the approved observer whitelist cannot inspect its unit or
 journal. Add the exact watchdog service and timer to `observe-stage`; include the timer in status.
 No write command or broader unit wildcard is added.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: provision the stage watchdog lock file, then initialize `stage`.
+
+### 2026-08-23 — stage watchdog lock ownership fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Live observation shows the timer is active, but `deploy-stage` cannot create its lock directly
+under root-owned `/run/lock`. Provision the exact lock file from the trusted foundation oneshot with
+`deploy-stage:deploy-stage` ownership and mode `0600`. No lock directory or wildcard write is granted.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
 Next: initialize `stage` through the stage client and verify informational statuses.
 
 ---
