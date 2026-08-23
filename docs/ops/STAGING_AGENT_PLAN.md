@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Forward fix for activation deadlock on `602a1790`. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `24b1628b53f405266ff4ce2ba5ffc1ee505bde25` | 2026-08-23 | GREEN deadlock fix; correcting rootless network driver. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -486,7 +486,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: remove the nested synchronous activation deadlock on a new SHA.
 
 ### 2026-08-23 — staging activation deadlock forward fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `24b1628b53f405266ff4ce2ba5ffc1ee505bde25`   watchdog: GREEN
 Result: Restarting the foundation exposed a systemd dependency cycle: the still-activating oneshot
 waited synchronously for rootless Docker, while rootless Docker required that oneshot to finish.
 Queue Docker and store starts with `--no-block` so the foundation can commit before the dependency
@@ -494,7 +494,17 @@ jobs run. Keep the same units, resources, and isolation policy.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
-Next: wait for GREEN, then verify stores, isolation, and pressure.
+Next: correct the rootless network driver, then verify stores, isolation, and pressure.
+
+### 2026-08-23 — rootless Docker network forward fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The live rootless wrapper rejects `host` as an unsupported RootlessKit driver. Use the
+installed `slirp4netns` driver and port driver inside the already isolated systemd network namespace.
+The namespace nftables policy remains the outer default-drop boundary.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: verify live stores, isolation, and pressure.
 
 ---
 
