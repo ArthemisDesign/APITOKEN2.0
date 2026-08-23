@@ -50,7 +50,7 @@ to the existing fenced payout execution state machine); authentication
 - `src/components/ui.tsx` — `PageHead`, `SectionHeader`, `CardGrid`, `StatCard`,
   `Banner`, `Dot`, `Pill`, `TableCard`, `EmptyRow`, `LoadingGrid`, `Modal`
   (Esc/overlay close, Tab trap, focus restore; `wide` for wide modals).
-- `src/components/sidebar.tsx` — sidebar with navigation, realtime health, current-screen refresh, and theme.
+- `src/components/sidebar.tsx` — sidebar with navigation, realtime health, current-screen refresh, and theme. On viewports ≤920px it becomes a sticky 56px chrome plus a full-screen section drawer (`#admin-nav`, Escape / route change / burger close); the previous horizontal 18-item scroller is gone.
 - `src/components/error-center.tsx` — `<ErrorCenter/>` (mounted in the layout):
   red cards for failing sources with ↻/×, reads the shared request-cache error registry.
 - `src/components/spend-stats-modal.tsx` — the "Кто тратит" ("Who is spending") modal (`/spend-stats`,

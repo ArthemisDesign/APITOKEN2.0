@@ -44,6 +44,7 @@ calibration until the plan has its own live measurement.
 - No workspace dependencies besides Next/React — in TypeScript contexts this is a separate
   `admin` context with root `apps/admin` (like `web` → `apps/web`).
 - Health endpoint: `GET /api/health` → 200 `{"ok":true}`.
+- Mobile chrome (viewport ≤920px): a sticky top bar (`--admin-chrome`, 56px plus safe-area) keeps brand, realtime dot, language, refresh and theme reachable. The 18 admin sections open from a burger into a full-height grouped drawer (`#admin-nav`); the drawer closes on route change, Escape, or a second burger tap, and `main` is `inert` while it is open. Error Center docks to the bottom of the viewport and hides while the drawer is open, so a source failure cannot cover the chrome or the page title. Tables keep an internal horizontal scroller. Toolbars, partner subnav chips, forms and drawer links use a 44px tap floor; chrome icon buttons stay 40px so `apiToken.sale` still fits on a 375px phone. The viewport meta sets `viewport-fit=cover` so safe-area insets reach the chrome, toasts and Error Center. Desktop (≥921px) keeps the existing 238px sticky sidebar.
 
 The dedicated `/request-analytics` page consumes only the managed-admin backend routes
 `/admin/request-analytics/summary`, `/admin/request-analytics`, and
@@ -78,7 +79,8 @@ The layout opens only the SSE feeds whose prefixes the current screen can consum
 Subscriptions opens engine/openai/gemini/kimi; Proxies opens Authbot; ordinary `/partners`
 management reads use the Commerce feed, while the payout execution screen may additionally open the
 Sales feed during the producer-first transition). Overlapping feeds stay
-open across navigation; unused ones close. The sidebar `live/total` counts those opened feeds.
+open across navigation; unused ones close. The sidebar `live/total` counts those opened feeds;
+on mobile the same health is the compact chrome dot, and the counts remain on the `aria-label`.
 Because invalidation delivery is deliberately not durable, the app also revalidates only the
 currently mounted URL resources every 30 seconds **while opened feeds are not fully live**, and
 only while the tab is visible and online. Returning to a visible tab or restoring network access
