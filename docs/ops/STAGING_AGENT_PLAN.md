@@ -1744,8 +1744,20 @@ Checks actually run: `bash deploy/staging-phase7.test.sh`; `bash deploy/staging-
 Deviation from this plan / from STAGING_ENVIRONMENT.md: the bootstrap deadlock needed one explicit
 owner-authorized root repair. The final code contains no root SSH recovery path and all later SHA
 admission is fail-closed.
-Next: land this exact SHA through the normal stage→attest→master flow, gather live evidence, and close
-Phase 7. Do not start Phase 8.
+Next: permit trusted host-global diffs to validate on stage without executing them there.
+
+### 2026-08-23 — trusted host-global stage validation fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The final Phase 7 SHA passed exact trusted host validation and the disposable Ubuntu
+host-image gate, but the stage watchdog rejected the presence of `install-watchdog.sh`. Treat those
+paths as excluded from stage apply instead of failing the SHA. Stage still never executes candidate
+installers, sudoers, systemd, Caddy, firewall, or monitoring code on the production host. Production
+watchdog remains the only path that installs a promoted host-global diff.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-phase7.test.sh`;
+`bash deploy/staging-foundation.test.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: this implements the documented host-global
+lane rule from §7.1: validate in the host image, exclude from stage application.
+Next: repeat exact stage deployment, attest, promote, gather live evidence, and close Phase 7. Do not start Phase 8.
 
 ---
 

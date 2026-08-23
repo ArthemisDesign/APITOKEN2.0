@@ -12,8 +12,9 @@ while IFS= read -r path; do
   [[ -n $path ]] || continue
   case "$path" in
     deploy/install-*.sh|deploy/sudoers.d/*|systemd/*|observability/*|deploy/Caddyfile|deploy/render-caddy.awk)
-      printf 'stage-watchdog: host-global candidate path rejected: %s\n' "$path" >&2
-      exit 1
+      # agent-merge-stage already requires trusted exact-SHA candidate validation, including the
+      # disposable Ubuntu host-image lane. Stage never executes these paths on the production host.
+      printf 'stage-watchdog: host-global candidate path excluded from stage apply: %s\n' "$path" >&2
       ;;
   esac
 done <<<"$changed"

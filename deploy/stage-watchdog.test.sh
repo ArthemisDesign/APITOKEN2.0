@@ -24,7 +24,7 @@ grep -Fq 'CONTOUR_GITHUB_CONFIG_OVERRIDE=/etc/apitoken/github-watchdog.env' "$RO
 grep -Fq 'CONTOUR_GITHUB_CONFIG_OVERRIDE:-' "$ROOT/deploy/watchdog-github.sh"
 grep -Fq 'deploy-stage ALL=(root) NOPASSWD: APITOKEN_STAGE_REPORT' "$ROOT/deploy/sudoers.d/96-apitoken-stage"
 grep -Fq '"$sha^".."$sha"' "$ROOT/deploy/stage-watchdog-validate.sh"
-grep -Fq 'host-global candidate path rejected' "$ROOT/deploy/stage-watchdog-validate.sh"
+grep -Fq 'host-global candidate path excluded from stage apply' "$ROOT/deploy/stage-watchdog-validate.sh"
 grep -Fq 'runuser -u deploy -- git' "$ROOT/deploy/stage-source-fetch.sh"
 grep -Fq 'safe.directory="$SOURCE"' "$ROOT/deploy/stage-source-fetch.sh"
 grep -Fq 'tar -C "$SOURCE" -cf - .git | tar -C "$TARGET" -xf -' "$ROOT/deploy/stage-source-fetch.sh"
