@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `a713b55bc2fba06a88051e92001273ce010824d8` | 2026-08-23 | GREEN tag replay; resolving load by content ID. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `a6a37da1fb1f195493c7450e9d6fe7e10063732a` | 2026-08-23 | GREEN content-ID repair; forcing seed replay. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -698,13 +698,22 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: repair digest reference by source content ID, then verify stores, isolation, and pressure.
 
 ### 2026-08-23 — rootless image ID forward fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `a6a37da1fb1f195493c7450e9d6fe7e10063732a`   watchdog: GREEN
 Result: `docker load` returned no named reference for the archive. Record the production image content
 ID before export, verify that exact ID exists after rootless import, and tag only that ID with the
 hard-coded digest reference. No dynamic or unpinned reference enters the bridge.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: force a full content-ID seed replay, then verify stores, isolation, and pressure.
+
+### 2026-08-23 — image ID full-apply marker
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Add an immutable marker to the stateful foundation installer so the GREEN content-ID repair
+reruns the trusted seed and store transaction. No runtime behavior or lock value changes.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: verify live stores, isolation, and pressure.
 
 ---
