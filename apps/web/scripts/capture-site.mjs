@@ -155,7 +155,6 @@ const dashboardCaptures = [
   ["dashboard-referral-referrals-light", "/dashboard?view=referral&tab=referrals", 1440, 1000, "light"],
   ["dashboard-referral-b2b-dialog-light", "/dashboard?view=referral&tab=referrals", 1440, 1000, "light", "en", "referral-b2b-open"],
   ["dashboard-referral-team-dark", "/dashboard?view=referral&tab=team", 1440, 1000, "dark"],
-  ["dashboard-referral-requests-light", "/dashboard?view=referral&tab=requests", 1440, 1000, "light"],
   ["dashboard-referral-payouts-russian-dark", "/dashboard?view=referral&tab=payouts", 1440, 1000, "dark", "ru"],
   ["dashboard-referral-docs-light", "/dashboard?view=referral&tab=docs", 1440, 1000, "light"],
   ["dashboard-referral-ordinary-light", "/dashboard?view=referral&partner-preview=no-access", 1440, 1000, "light"],
@@ -1199,7 +1198,7 @@ async function verifyReferralLayout(client) {
   const loaded = client.once("Page.loadEventFired");
   await client.send("Page.navigate", { url: new URL("/dashboard?view=referral", baseUrl).href });
   await loaded;
-  await waitForCondition(client, `document.querySelectorAll('.referral-subnav button').length === 6 && document.querySelectorAll('.referral-earnings-graph .uchart-col').length === 30`, "active Referral overview");
+  await waitForCondition(client, `document.querySelectorAll('.referral-subnav button').length === 5 && document.querySelectorAll('.referral-earnings-graph .uchart-col').length === 30`, "active Referral overview");
   const overviewResult = await client.send("Runtime.evaluate", {
     expression: `(() => {
       const tabs = [...document.querySelectorAll('.referral-subnav button')];
@@ -1211,7 +1210,7 @@ async function verifyReferralLayout(client) {
         legend: [...document.querySelectorAll('.referral-earnings-graph .usage-chart-legend span')].map((item) => item.textContent.trim()),
         activeColumns: activeColumns.length,
         everyColumnNamed: activeColumns.every((column) => /Claude|GPT|Gemini/.test(column.getAttribute('aria-label') || '')),
-        providerCards: [...document.querySelectorAll('.referral-provider-section .uprovider-name strong')].map((item) => item.textContent.trim()),
+        providerCards: [...document.querySelectorAll('.uprovider-grid .uprovider-name strong')].map((item) => item.textContent.trim()),
         hasUuid: /[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/i.test(body),
         forbiddenCopy: /markup|promo.?code|промокод/i.test(body),
         hasLongShareExplanation: body.includes('retained from a member') || body.includes('total remains $10'),
@@ -1220,7 +1219,7 @@ async function verifyReferralLayout(client) {
     returnByValue: true,
   });
   const overview = JSON.parse(overviewResult.result.value);
-  if (overview.tabs.join("|") !== "Overview|Referrals|Team|Requests|Payouts|Docs" || overview.current !== "Overview" ||
+  if (overview.tabs.join("|") !== "Overview|Referrals|Team|Payouts|Docs" || overview.current !== "Overview" ||
       overview.legend.join("|") !== "Claude|GPT|Gemini" || overview.activeColumns !== 30 || !overview.everyColumnNamed ||
       overview.providerCards.join("|") !== "Claude|GPT|Gemini|Kimi" || overview.hasUuid || overview.forbiddenCopy || overview.hasLongShareExplanation) {
     throw new Error(`Referral overview semantics failed: ${JSON.stringify(overview)}`);

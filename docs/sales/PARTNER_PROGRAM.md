@@ -255,10 +255,13 @@ discount.
 
 ## 8. Partner dashboard (Commerce Dashboard → Referral)
 
-- The six compact subviews are **Overview**, **Referrals**, **Team**, **Requests**, **Payouts** and
-  **Docs**. There is no separate partner Settings page; account identity and theme/language remain
-  owned by the main Dashboard.
-- **Overview** — key metrics plus a 30-day split of earnings by the provider that served the
+- The five compact subviews are **Overview**, **Referrals**, **Team**, **Payouts** and **Docs**.
+  There is no separate partner Settings page and no Requests subview; account identity and
+  theme/language remain owned by the main Dashboard. The workspace reproduces the partner cabinet
+  (partners.apitoken.sale) layout: uppercase page and card titles, one joined stat strip, the
+  commission formula, the referral link with copy, bullet explainers and bordered tables.
+- **Overview** — the partner cabinet landing page: four key metrics, the commission formula, the
+  referral link, a "How your commission works" explainer, a 30-day split of earnings by the provider that served the
   referrals' requests (the provider series in
   `GET /v1/internal/referral/partner/:commerceUserId`), and
   a stacked daily chart. Provider cards and the graph intentionally reuse the main Usage geometry,
@@ -268,7 +271,8 @@ discount.
   commission on every provider. Spend recorded
   before the portal stored the provider (migration 0022) appears as one "no provider on record"
   line rather than being dropped, so the parts always sum to the whole. The longer commission/Team
-  explanation lives in Docs rather than occupying the Overview.
+  explanation lives in Docs and Team rather than occupying the Overview, which closes with the
+  latest accounts attributed to the partner.
 - **Referrals** — the users brought in, identified by their authoritative Commerce account email,
   their type, discount, top-ups, paid spend and partner earnings. The list has client-side email
   search and exposes conversion/pricing on the owned referral row. That dialog always shows the
@@ -288,12 +292,16 @@ discount.
   The Dashboard uses the Commerce `/v1/referral/*` boundary, which calls Sales
   `/v1/internal/referral/*`; the browser never receives `SALES_CONTROL_KEY` or a Sales partner id as
   proof of identity.
-- **Requests** — the commission-increase form and the complete request history, including owned-
-  referral B2B decisions created from Referrals, delivery status and retry/terminal state. Customer
-  identity is email; the internal Commerce UUID is not the product label.
+- There is no Requests subview. A partner without a self-service B2B grant still submits a reviewed
+  B2B request from the owned referral row; the request is decided by an administrator and its effect
+  is delivered by the same durable pipeline. Commission-change requests are handled outside the
+  Dashboard.
 - Promo-code creation and redemption are absent from the active partner/customer/admin interfaces.
   Historical credit/accounting records remain readable by backend reconciliation only; they are
   not a product capability.
+- **Docs** — the partner cabinet documentation, numbered and personalised with the partner's own
+  rate, Team ceiling, B2B ceiling and minimum payout; section 3 embeds the same commission formula
+  shown on Overview.
 - **Payouts** — the multi-lane accrual → 7-day lock → 3-day payout roadmap, completed on-chain
   payments, four current-state KPI cards, BSC wallet binding, explicit debt after refunds, net
   history by periods and a "How payouts work" explanation. The snapshot also returns the minimum

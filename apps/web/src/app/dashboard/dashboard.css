@@ -1203,3 +1203,98 @@ body.app-body .bg-decor{display:none!important}
 @media(max-width:700px){
   .topup-history-table td .pill{justify-self:start;width:max-content;max-width:100%;padding-inline:10px}
 }
+
+/* ===== Referral — partner-cabinet layer =====
+   Ports the visual contract of partners.apitoken.sale (apps/sales-web) into the
+   Dashboard: uppercase page/card titles, one joined stat strip, bordered tables,
+   bullet explainers, the commission formula and the payout wallet chip. Prefixed
+   so the host Dashboard primitives keep their own look everywhere else. */
+.rp{--rp-radius:6px;min-width:0}
+.rp-stack{display:flex;min-width:0;flex-direction:column;gap:24px}
+.rp-title{margin:0 0 4px;color:var(--txt);font:600 13px/1.35 var(--font-mono);letter-spacing:.1em;text-transform:uppercase}
+.rp-sub{max-width:92ch;margin:0 0 24px;color:var(--txt-3);font-size:13px;line-height:1.65}
+.rp-sub strong{color:var(--txt);font-weight:650}
+.rp-card{min-width:0;max-width:100%;padding:24px;border:1px solid var(--line);border-radius:var(--rp-radius);background:var(--bg-card)}
+.rp-card-title{margin:0 0 4px;color:var(--txt);font:600 12px/1.35 var(--font-mono);letter-spacing:.08em;text-transform:uppercase}
+.rp-card-sub{max-width:92ch;margin:0 0 16px;color:var(--txt-3);font-size:13px;line-height:1.6}
+.rp-card>.rp-card-sub:last-child{margin-bottom:0}
+.rp-stats{display:grid;grid-template-columns:repeat(4,1fr);overflow:hidden;border:1px solid var(--line);border-radius:var(--rp-radius);background:var(--bg-card)}
+.rp-stat{min-width:0;padding:18px 20px;border-right:1px solid var(--line)}
+.rp-stat:last-child{border-right:0}
+.rp-stat-l{margin-bottom:8px;color:var(--txt-4);font:500 11px/1.3 var(--font-mono);letter-spacing:.06em;text-transform:uppercase}
+.rp-stat-v{color:var(--txt);font:700 22px/1.25 var(--font-mono);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.rp-stat-v.accent{color:var(--accent)}
+.rp-stat-f{margin-top:6px;color:var(--txt-4);font-size:12px;line-height:1.5}
+.rp-table-wrap{max-width:100%;overflow-x:auto;border:1px solid var(--line);border-radius:var(--rp-radius);background:var(--bg-card)}
+.rp-table-wrap:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.rp-table{width:100%;min-width:680px;border-collapse:collapse;font-family:var(--font-ui);font-size:13px}
+.rp-table th{padding:11px 16px;border-bottom:1px solid var(--line);background:var(--bg-soft);color:var(--txt-4);font:500 11px/1.3 var(--font-mono);letter-spacing:.05em;text-align:left;text-transform:uppercase;white-space:nowrap}
+.rp-table td{padding:12px 16px;border-bottom:1px solid var(--line);color:var(--txt-2);font-variant-numeric:tabular-nums;vertical-align:middle}
+.rp-table tbody tr:last-child td{border-bottom:0}
+.rp-table tbody tr:hover{background:var(--accent-soft)}
+.rp-table .rp-num,.rp-table th.rp-num{text-align:right;font-variant-numeric:tabular-nums}
+.rp-table td small{display:block;max-width:52ch;margin-top:3px;overflow:hidden;color:var(--txt-4);font-size:11px;line-height:1.5;text-overflow:ellipsis}
+.rp-table .rp-earned{color:var(--ok);font-weight:680}
+.rp-empty{padding:44px 24px;color:var(--txt-4);font-size:13px;text-align:center}
+.rp-empty b{display:block;margin-bottom:4px;color:var(--txt-3);font-weight:650}
+.rp-note{padding:11px 14px;border:1px solid var(--line-strong);border-radius:var(--rp-radius);background:var(--bg-soft);color:var(--txt-3);font-size:13px;line-height:1.6}
+.rp-note strong{color:inherit;font-weight:700}
+.rp-note.ok{border-color:color-mix(in srgb,var(--ok) 35%,var(--line));background:color-mix(in srgb,var(--ok) 8%,var(--bg-card));color:var(--ok)}
+.rp-note.bad{border-color:color-mix(in srgb,var(--danger) 35%,var(--line));background:color-mix(in srgb,var(--danger) 7%,var(--bg-card));color:var(--danger)}
+.rp-live{min-height:20px;font-size:12px;line-height:1.5}
+.rp-live.ok{color:var(--ok)}
+.rp-live.bad{color:var(--danger)}
+.rp-how{display:flex;flex-direction:column;gap:8px;margin:0;padding-left:18px}
+.rp-how li{color:var(--txt-2);font-size:13px;line-height:1.6}
+.rp-how li::marker{color:var(--accent)}
+.rp-how strong{color:var(--txt);font-weight:650}
+.rp-formula{padding:22px 18px;border:1px solid var(--line);border-radius:var(--rp-radius);background:var(--bg-soft);text-align:center}
+.rp-formula-l{margin-bottom:12px;color:var(--txt-4);font:500 11px/1.4 var(--font-mono);letter-spacing:.08em;text-transform:uppercase}
+.rp-formula-v{color:var(--txt);font:800 clamp(21px,3.4vw,30px)/1.25 var(--font-mono);letter-spacing:-.4px}
+.rp-formula-v em{font-style:normal;color:var(--accent);white-space:nowrap}
+.rp-formula-v i{margin:0 8px;font-style:normal;opacity:.55}
+.rp-formula-b{max-width:62ch;margin:14px auto 0;color:var(--txt-3);font-size:13px;line-height:1.55}
+.rp-formula-x{margin:10px 0 0;color:var(--txt-2);font-size:13px;font-weight:600;line-height:1.55}
+.rp-reflink{display:flex;align-items:stretch;gap:10px}
+.rp-reflink input{flex:1;min-width:0;min-height:42px;padding:10px 12px;border:1px solid var(--line-strong);border-radius:8px;background:var(--bg-soft);color:var(--txt);font:500 13px/1.4 var(--font-mono)}
+.rp-reflink input:focus-visible{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);outline:none}
+.rp-reflink .btn{flex:none}
+.rp-code{margin:10px 0 0;color:var(--txt-4);font-size:12px}
+.rp-code b{color:var(--txt-3);font-family:var(--font-mono)}
+.rp-activity{display:flex;flex-direction:column}
+.rp-activity-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--line);font-size:13px;line-height:1.6}
+.rp-activity-row:last-child{border-bottom:0}
+.rp-activity-row b{color:var(--ok);font-weight:680}
+.rp-activity-date{flex:none;color:var(--txt-4);font-size:12px;white-space:nowrap}
+.rp-wallet-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.rp-wallet-chip{display:inline-flex;min-width:0;align-items:center;gap:12px;padding:10px 14px;border:1px solid var(--line);border-radius:8px;background:var(--bg-soft)}
+.rp-wallet-net{flex:none;padding:2px 8px;border:1px solid var(--accent);border-radius:999px;color:var(--accent);font:700 10px/1.7 var(--font-mono);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+.rp-wallet-addr{min-width:0;overflow:hidden;color:var(--txt);font:600 13px/1.5 var(--font-mono);text-overflow:ellipsis;white-space:nowrap}
+.rp-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.rp-toolbar{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap}
+.rp-toolbar>.referral-field{width:min(100%,360px)}
+.rp-toolbar>span{margin-bottom:11px;color:var(--txt-4);font:600 11px/1 var(--font-mono);white-space:nowrap}
+.rp-toolbar>.referral-ceiling-chip{margin-left:auto}
+.rp-grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.rp-docs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.rp-docs .rp-card{display:flex;flex-direction:column;gap:10px}
+.rp-docs .rp-card>div{color:var(--txt-2);font-size:13px;line-height:1.65}
+@media (max-width:1040px){
+  .rp-stats{grid-template-columns:repeat(2,1fr)}
+  .rp-stat{border-bottom:1px solid var(--line)}
+  .rp-stat:nth-child(2n){border-right:0}
+  .rp-stat:nth-last-child(-n+2){border-bottom:0}
+  .rp-docs,.rp-grid-2{grid-template-columns:1fr}
+}
+@media (max-width:640px){
+  .rp-card{padding:18px}
+  .rp-stats{grid-template-columns:1fr}
+  .rp-stat{border-right:0;border-bottom:1px solid var(--line)}
+  .rp-stat:last-child{border-bottom:0}
+  .rp-reflink{flex-direction:column}
+  .rp-activity-row{align-items:flex-start;flex-direction:column;gap:2px}
+  .rp-toolbar>.referral-ceiling-chip{margin-left:0}
+}
+/* The cabinet card already carries the chart title, so only the legend stays inside. */
+.rp .rp-card .uchart-head{justify-content:flex-end;margin-bottom:14px}
+.rp .rp-card .referral-earnings-graph{margin-top:0}
