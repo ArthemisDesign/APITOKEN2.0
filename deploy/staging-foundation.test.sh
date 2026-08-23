@@ -39,6 +39,7 @@ for host_state_path in deploy/install-staging-foundation.sh deploy/staging-postg
     echo "stateful stage definition classified controller-only: $host_state_path" >&2; exit 1
   fi
 done
+grep -Fq 'phase2-prerequisite-apply-v2' "$I"
 for prerequisite in slirp4netns fuse-overlayfs newuidmap newgidmap; do
   grep -Fq "$prerequisite" "$I"
 done

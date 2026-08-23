@@ -13,6 +13,7 @@ if ! command -v slirp4netns >/dev/null || ! command -v fuse-overlayfs >/dev/null
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     slirp4netns fuse-overlayfs uidmap
 fi
+# phase2-prerequisite-apply-v2: keep stateful foundation changes on the full trusted lane.
 for command in rootlesskit slirp4netns fuse-overlayfs newuidmap newgidmap dockerd-rootless.sh; do
   command -v "$command" >/dev/null || { echo "staging-foundation: missing rootless Docker prerequisite: $command" >&2; exit 1; }
 done
