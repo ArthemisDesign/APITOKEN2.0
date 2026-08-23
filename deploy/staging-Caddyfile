@@ -1,0 +1,21 @@
+{
+  admin off
+  auto_https off
+}
+
+10.254.32.2:3900 {
+  bind 10.254.32.2
+  log {
+    output file /var/lib/apitoken-staging/logs/caddy.json
+    format json
+  }
+  handle /ready {
+    respond "ready" 200
+  }
+  handle /mock/* {
+    reverse_proxy 10.254.32.2:3901
+  }
+  handle {
+    respond "staging twin has no public route" 404
+  }
+}

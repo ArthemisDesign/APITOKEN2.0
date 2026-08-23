@@ -111,7 +111,7 @@ Read order at the start of work:
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
 | **Phase 2 — trusted contour foundation** | **DONE** | `76263deea700fe0fb32ebcfe53af24b0def409cd` | 2026-08-23 | GREEN live stores, isolation, pressure, and read-only observation. |
 | **Phase 3 — observe-only stage watchdog** | **DONE** | `0bb3eaff44d56bd68d712f26b6afe7576461a437` | 2026-08-23 | GREEN serial stage deployment and informational contexts. |
-| Phase 4 — data, twin inventory, stubs | **IN PROGRESS** | — | 2026-08-23 | Started only after Phase 3 live status acceptance. |
+| Phase 4 — data, twin inventory, stubs | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Closed inventory, local sinks, stage Caddy, env placeholders, GC. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
 | Phase 6 — attestation dry-run + drills | BLOCKED on 5 | — | — | Injected-fault **and** hotfix drills. |
 | Phase 7 — fail-closed enforcement | BLOCKED on 6 | — | — | Only after both drills. |
@@ -1351,17 +1351,17 @@ Out (do not add):
 
 ### In scope
 
-- [ ] Operator-provisioned stage env files under staging roots, mode 0600, never in git.
+- [x] Operator-provisioned stage env files under staging roots, mode 0600, never in git.
       Document the list and the “operator fills once” step in `docs/ops/INFRASTRUCTURE.md`.
       Stage `CONTROL_KEY` ≠ production `CONTROL_KEY`.
-- [ ] Seed once. Later reseed only via `stage-ctl reseed` after an explicit operator order.
-- [ ] Local stubs: payments, mail, webhooks. Zero vendor egress. Tests prove no dial.
-- [ ] Unprivileged stage Caddy. No global Caddy reload. No public vhost.
-- [ ] Production Prometheus scrapes trusted static staging veth targets with `env=staging`.
+- [x] Seed once. Later reseed only via `stage-ctl reseed` after an explicit operator order.
+- [x] Local stubs: payments, mail, webhooks. Zero vendor egress. Tests prove no dial.
+- [x] Unprivileged stage Caddy. No global Caddy reload. No public vhost.
+- [x] Production Prometheus scrapes trusted static staging veth targets with `env=staging`.
       Candidate dashboards/rules do not land on production until promotion. Cardinality budget
       documented.
-- [ ] Engine mock-first. No production fleet ownership. No full Control API credential.
-- [ ] Snapshot/GC inside the 80G loopback. KEEP=3. Emergency GC before ENOSPC.
+- [x] Engine mock-first. No production fleet ownership. No full Control API credential.
+- [x] Snapshot/GC inside the 80G loopback. KEEP=3. Emergency GC before ENOSPC.
 
 ### Exit criteria
 
@@ -1371,7 +1371,22 @@ Out (do not add):
 
 ### Execution log
 
-*(empty)*
+### 2026-08-23 — Phase 4 twin inventory and safe sinks
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Add a closed twin inventory for every required Phase 4 component and excluded component,
+mode-0600 operator env placeholders, an empty reseed request path, KEEP=3 GC inside loopback roots,
+a local-only payments/mail/webhook/log sink, and unprivileged stage Caddy on the veth only. Add a
+static Prometheus veth target with `env=staging` and bounded labels/samples. Real application units
+remain disabled by empty env files and missing release symlinks; the twin is mock-first and cannot
+reach vendors or customers.
+Checks actually run: `bash deploy/staging-twin.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash deploy/stage-watchdog.test.sh`; `bash deploy/contour-config.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: Phase 4 represents all application members in
+a closed inventory and local sink surface, but it does not start real binaries until the operator
+fills the documented stage-only env files and trusted releases exist. This preserves zero external
+side effects and no customer path.
+Next: merge on GREEN, verify Caddy/sinks and isolation live, then close Phase 4.
 
 ---
 

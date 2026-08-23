@@ -7,7 +7,10 @@ case "$1" in
     systemctl stop staging.slice
     loginctl terminate-user deploy-stage >/dev/null 2>&1 || true
     ;;
-  attest|sync|reseed)
+  reseed)
+    /usr/local/lib/apitoken-watchdog/stage-seed.sh reseed
+    ;;
+  attest|sync)
     echo "stage-ctl: $1 is phase-disabled" >&2
     exit 2
     ;;

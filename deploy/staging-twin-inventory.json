@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "components": [
+    "anthropic", "openai", "gemini", "kimi", "router",
+    "commerce-api", "commerce-worker", "sales-api", "sales-web",
+    "openkeys", "admin", "mock-authbot", "log-sink-devbot",
+    "stage-postgres", "stage-redis", "stage-caddy", "mock-upstream", "load-generator"
+  ],
+  "databases": ["commerce", "claude_engine", "sales", "openkeys"],
+  "excluded": ["content-studio", "crm", "suno", "tripo3d", "glm-plane"],
+  "external_side_effects": false,
+  "public_inbound": false,
+  "release_keep": 3
+}

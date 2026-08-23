@@ -6,7 +6,8 @@ Cmnd_Alias APITOKEN_STAGE_REPORT = /usr/local/lib/apitoken-watchdog/stage/watchd
 Cmnd_Alias APITOKEN_STAGE_CTL = /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh emergency-stop, \
     /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh attest, \
     /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh sync, \
-    /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh reseed
+    /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh reseed, \
+    /usr/local/lib/apitoken-watchdog/stage-seed.sh reseed
 observe-stage ALL=(root) NOPASSWD: APITOKEN_STAGE_OBSERVE
 stage-ctl ALL=(root) NOPASSWD: APITOKEN_STAGE_CTL
 deploy-stage ALL=(root) NOPASSWD: APITOKEN_STAGE_REPORT

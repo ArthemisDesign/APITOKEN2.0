@@ -91,6 +91,13 @@ for item in opt:/opt/apitoken-staging srv:/srv/claude-api-staging var:/var/lib/a
   mountpoint -q "$dst" || mount --bind "$src" "$dst"
 done
 install -d -o root -g deploy-stage -m 0750 /etc/apitoken-staging
+install -d -o deploy-stage -g deploy-stage -m 0750 /etc/apitoken-staging/caddy \
+  /var/lib/apitoken-staging/{backups,caddy,logs} /srv/claude-api-staging/releases \
+  /opt/apitoken-staging/releases
+for env in anthropic openai gemini kimi router api worker sales-api sales-web openkeys admin authbot devbot sinks; do
+  path=/etc/apitoken-staging/$env.env
+  if [[ ! -e $path ]]; then install -o root -g deploy-stage -m 0600 /dev/null "$path"; fi
+done
 make_user stage-ci /var/lib/apitoken-staging/watchdog/ci-home /usr/sbin/nologin
 for group in deploy docker apitoken-ci observe adm systemd-journal; do
   if getent group "$group" >/dev/null && id -Gn stage-ci | tr ' ' '\n' | grep -Fxq "$group"; then
@@ -144,5 +151,6 @@ loginctl enable-linger deploy-stage || echo 'staging-foundation: linger deferred
 # Do not synchronously start a unit that Requires this still-activating oneshot. Queue no-block jobs
 # after the foundation has committed, so dependency ordering cannot deadlock the manager transaction.
 systemctl start --no-block apitoken-rootless-docker-stage.service \
-  apitoken-staging-image-seed.service apitoken-postgres-stage.service apitoken-redis-stage.service
+  apitoken-staging-image-seed.service apitoken-postgres-stage.service apitoken-redis-stage.service \
+  apitoken-stage-safe-sinks.service apitoken-stage-caddy.service
 printf 'staging-foundation: ready\n'

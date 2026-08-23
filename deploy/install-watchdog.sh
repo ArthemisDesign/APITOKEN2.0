@@ -298,10 +298,16 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/stage-report-publish
   install -o root -g root -m 0755 "$ROOT/deploy/stage-unit-renderer.py" \
     /usr/local/lib/apitoken-watchdog/stage-unit-renderer.py
+  install -o root -g root -m 0755 "$ROOT/deploy/stage-stub-server.py" \
+    /usr/local/lib/apitoken-watchdog/stage-stub-server.py
+  install -o root -g root -m 0644 "$ROOT/deploy/staging-twin-inventory.json" \
+    /usr/local/lib/apitoken-watchdog/staging-twin-inventory.json
+  install -o root -g deploy-stage -m 0640 "$ROOT/deploy/staging-Caddyfile" \
+    /etc/apitoken-staging/caddy/Caddyfile
   for stage_helper in install-staging-foundation.sh apitoken-observe-stage.sh \
     stage-observe-helper.sh apitoken-stage-ctl.sh stage-ctl-helper.sh \
     staging-isolation-live.sh staging-pressure-proof.sh staging-image-seed.sh \
-    stage-store-diagnostics.sh stage-sync.sh promotion-attest.sh; do
+    stage-store-diagnostics.sh stage-sync.sh promotion-attest.sh stage-seed.sh stage-gc.sh; do
     install -o root -g root -m 0755 "$ROOT/deploy/$stage_helper" \
       "/usr/local/lib/apitoken-watchdog/$stage_helper"
   done
@@ -320,7 +326,8 @@ install_controller_definitions() {
   if [[ -d /etc/systemd/system ]]; then
     for stage_unit in staging.slice apitoken-rootless-docker-stage.service \
       apitoken-staging-image-seed.service apitoken-postgres-stage.service apitoken-redis-stage.service \
-      apitoken-stage-watchdog.service apitoken-stage-watchdog.timer; do
+      apitoken-stage-watchdog.service apitoken-stage-watchdog.timer \
+      apitoken-stage-safe-sinks.service apitoken-stage-caddy.service; do
       install -o root -g root -m 0644 "$ROOT/systemd/$stage_unit" "/etc/systemd/system/$stage_unit"
     done
     systemctl daemon-reload
@@ -487,7 +494,7 @@ install_systemd_definitions() {
     apitoken-redis-stage.service apitoken-stage-source-fetch.service apitoken-stage-source-fetch.timer \
     apitoken-stage-report.service apitoken-stage-report.path \
     apitoken-stage-watchdog.service apitoken-stage-watchdog.timer \
-    staging.slice \
+    apitoken-stage-safe-sinks.service apitoken-stage-caddy.service staging.slice \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \

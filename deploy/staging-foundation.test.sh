@@ -48,6 +48,7 @@ grep -Fq 'systemctl restart apitoken-staging-foundation-install.service' "$ROOT/
 grep -Fq 'systemctl enable apitoken-stage-source-fetch.timer apitoken-stage-report.path apitoken-stage-watchdog.timer' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'systemctl start apitoken-stage-source-fetch.timer apitoken-stage-report.path apitoken-stage-watchdog.timer' "$ROOT/deploy/install-watchdog.sh"
 bash "$ROOT/deploy/stage-watchdog.test.sh"
+bash "$ROOT/deploy/staging-twin.test.sh"
 grep -Fq 'for stage_unit in staging.slice apitoken-rootless-docker-stage.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'install -d -o root -g deploy-stage -m 0750 /usr/local/lib/apitoken-watchdog/stage' "$ROOT/deploy/install-watchdog.sh"
 ! grep -Fq '/usr/local/lib/apitoken-watchdog/stage /usr/local/bin' "$ROOT/systemd/apitoken-deploy-watchdog.service"
@@ -112,7 +113,8 @@ grep -Fq 'make_user stage-ci' "$I" || exit 1
 stage_ci_line=$(grep -nF 'make_user stage-ci' "$I" | cut -d: -f1)
 bind_line=$(grep -nF 'mount --bind "$src" "$dst"' "$I" | cut -d: -f1)
 [[ $stage_ci_line -gt $bind_line ]] || { echo 'stage-ci is created before loopback bind roots' >&2; exit 1; }
-grep -Fq 'attest|sync|reseed' "$ROOT/deploy/stage-ctl-helper.sh"
+grep -Fq 'attest|sync)' "$ROOT/deploy/stage-ctl-helper.sh"
+grep -Fq 'stage-seed.sh reseed' "$ROOT/deploy/stage-ctl-helper.sh"
 grep -Fq 'phase-disabled' "$ROOT/deploy/stage-ctl-helper.sh"
 grep -Fq 'systemctl stop staging.slice' "$ROOT/deploy/stage-ctl-helper.sh"
 if SSH_ORIGINAL_COMMAND='shell' bash "$ROOT/deploy/apitoken-observe-stage.sh" >/dev/null 2>&1; then exit 1; fi

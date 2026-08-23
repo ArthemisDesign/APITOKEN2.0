@@ -164,6 +164,11 @@ policy_sha256=$(
     deploy/stage-watchdog-validate.sh \
     deploy/stage-source-fetch.sh \
     deploy/stage-report-publish.sh \
+    deploy/staging-twin-inventory.json \
+    deploy/staging-Caddyfile \
+    deploy/stage-stub-server.py \
+    deploy/stage-seed.sh \
+    deploy/stage-gc.sh \
     deploy/watchdog-github-stage.sh \
     deploy/stage-sync.sh \
     deploy/promotion-attest.sh \
@@ -178,6 +183,8 @@ policy_sha256=$(
     systemd/apitoken-redis-stage.service \
     systemd/apitoken-stage-source-fetch.service \
     systemd/apitoken-stage-source-fetch.timer \
+    systemd/apitoken-stage-safe-sinks.service \
+    systemd/apitoken-stage-caddy.service \
     systemd/apitoken-stage-report.service \
     systemd/apitoken-stage-report.path \
     systemd/apitoken-stage-watchdog.service \

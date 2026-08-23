@@ -1,0 +1,22 @@
+[Unit]
+Description=Unprivileged staging-only HTTP router placeholder
+Requires=apitoken-stage-safe-sinks.service
+After=apitoken-stage-safe-sinks.service
+
+[Service]
+Type=simple
+User=deploy-stage
+Group=deploy-stage
+Slice=staging.slice
+NetworkNamespacePath=/run/netns/apitoken-stage
+ExecStart=/usr/local/bin/caddy run --config /etc/apitoken-staging/caddy/Caddyfile --adapter caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/apitoken-staging/caddy/Caddyfile --adapter caddyfile
+Restart=on-failure
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/apitoken-staging/caddy /var/lib/apitoken-staging/logs
+RestrictAddressFamilies=AF_INET AF_UNIX
+MemoryMax=512M
+TasksMax=256

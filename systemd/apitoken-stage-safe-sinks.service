@@ -1,0 +1,22 @@
+[Unit]
+Description=Local-only staging mock upstream and side-effect sinks
+Requires=apitoken-staging-foundation-install.service
+After=apitoken-staging-foundation-install.service
+
+[Service]
+Type=simple
+User=deploy-stage
+Group=deploy-stage
+Slice=staging.slice
+NetworkNamespacePath=/run/netns/apitoken-stage
+Environment=STAGE_STUB_PORT=3901
+Environment=STAGE_STUB_ROLE=payments-mail-webhook-log-sink
+ExecStart=/usr/local/lib/apitoken-watchdog/stage-stub-server.py
+Restart=on-failure
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+RestrictAddressFamilies=AF_INET AF_UNIX
+MemoryMax=256M
+TasksMax=128
