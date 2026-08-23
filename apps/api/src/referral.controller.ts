@@ -53,7 +53,7 @@ const partnerPatchSchema = z.object({
   message: "at least one partner setting is required",
 }).refine(
   (value) => value.b2bEnabled !== false
-    || ((value.b2bMaxDiscountBps ?? 0) === 0 && value.b2bCanDelegate !== true),
+    || (value.b2bMaxDiscountBps === 0 && value.b2bCanDelegate === false),
   "a disabled B2B grant cannot retain a ceiling or delegation",
 );
 const teamInvitationSchema = z.object({
@@ -73,7 +73,7 @@ const teamMemberPatchSchema = z.object({
   message: "at least one Team setting is required",
 }).refine(
   (value) => value.b2bEnabled !== false
-    || ((value.b2bMaxDiscountBps ?? 0) === 0 && value.b2bCanDelegate !== true),
+    || (value.b2bMaxDiscountBps === 0 && value.b2bCanDelegate === false),
   "a disabled B2B grant cannot retain a ceiling or delegation",
 );
 const commissionRequestSchema = z.object({
@@ -172,7 +172,11 @@ export class ReferralController {
     const parsed = commissionRequestSchema.safeParse(body);
     const parsedKey = idempotencyKey.safeParse(key);
     if (!parsed.success || !parsedKey.success) throw new BadRequestException("valid request and Idempotency-Key are required");
-    return this.referral.requestCommission(current.user.id, { ...parsed.data, idempotencyKey: parsedKey.data });
+    return this.referral.requestCommission(
+      current.user.id,
+      current.user.email,
+      { ...parsed.data, idempotencyKey: parsedKey.data },
+    );
   }
 
   @Post("requests/b2b")
@@ -185,7 +189,11 @@ export class ReferralController {
     const parsed = b2bRequestSchema.safeParse(body);
     const parsedKey = idempotencyKey.safeParse(key);
     if (!parsed.success || !parsedKey.success) throw new BadRequestException("valid request and Idempotency-Key are required");
-    return this.referral.requestB2B(current.user.id, { ...parsed.data, idempotencyKey: parsedKey.data });
+    return this.referral.requestB2B(
+      current.user.id,
+      current.user.email,
+      { ...parsed.data, idempotencyKey: parsedKey.data },
+    );
   }
 
   @Post("referrals/business-pricing")

@@ -83,4 +83,49 @@ describe("Referral session identity boundary", () => {
       .toThrow(BadRequestException);
     expect(fake.service.inviteTeamMember).not.toHaveBeenCalled();
   });
+
+  it("forwards the authenticated email for immediate request projection", async () => {
+    const fake = controller();
+    fake.service.requestCommission.mockResolvedValue({ request: { id: "opaque" } });
+
+    await fake.controller.requestCommission(
+      currentAuth(),
+      "commission-request-0001",
+      { requestedCommissionBps: 1_500, reason: "larger managed account portfolio" },
+    );
+
+    expect(fake.service.requestCommission).toHaveBeenCalledWith(
+      SESSION_USER_ID,
+      "owner@example.test",
+      {
+        requestedCommissionBps: 1_500,
+        reason: "larger managed account portfolio",
+        idempotencyKey: "commission-request-0001",
+      },
+    );
+  });
+
+  it("requires an atomic zero ceiling and disabled delegation when a Team B2B grant is disabled", async () => {
+    const fake = controller();
+    fake.service.updateTeamMember.mockResolvedValue({ authority: { email: "member@example.test" } });
+
+    expect(() => fake.controller.updateTeamMember(currentAuth(), {
+      email: "member@example.test",
+      b2bEnabled: false,
+    })).toThrow(BadRequestException);
+    expect(fake.service.updateTeamMember).not.toHaveBeenCalled();
+
+    await expect(fake.controller.updateTeamMember(currentAuth(), {
+      email: "member@example.test",
+      b2bEnabled: false,
+      b2bMaxDiscountBps: 0,
+      b2bCanDelegate: false,
+    })).resolves.toMatchObject({ authority: { email: "member@example.test" } });
+    expect(fake.service.updateTeamMember).toHaveBeenCalledWith(SESSION_USER_ID, {
+      email: "member@example.test",
+      b2bEnabled: false,
+      b2bMaxDiscountBps: 0,
+      b2bCanDelegate: false,
+    });
+  });
 });

@@ -457,4 +457,33 @@ describe("Referral Commerce identity projection", () => {
       "requesterDisplayName",
     ]));
   });
+
+  it("projects the current requester email in an immediate commission request response", async () => {
+    const sales = { call: vi.fn().mockResolvedValue({ request: {
+      ...request(),
+      requestType: "commission_change",
+      customerCommerceUserId: null,
+      customerEmail: null,
+      requestedCommissionBps: 1_500,
+      requestedDiscountBps: null,
+    } }) };
+    const service = new ReferralService({} as never, sales as never);
+
+    const result = await service.requestCommission(
+      OWNER_USER_ID,
+      "current-owner@example.test",
+      {
+        requestedCommissionBps: 1_500,
+        reason: "larger managed account portfolio",
+        idempotencyKey: "commission-request-0001",
+      },
+    );
+
+    expect(result).toMatchObject({ request: {
+      requesterEmail: "current-owner@example.test",
+      customerEmail: null,
+    } });
+    expect(JSON.stringify(result)).not.toContain("stale-requester@sales.test");
+    expect(JSON.stringify(result)).not.toContain(REQUESTER_PARTNER_ID);
+  });
 });

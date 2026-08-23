@@ -101,7 +101,7 @@ export class ReferralService {
     return { authority: { ...authority, email: account.email } };
   }
 
-  async requestCommission(commerceUserId: string, input: {
+  async requestCommission(commerceUserId: string, currentEmail: string, input: {
     requestedCommissionBps: number;
     reason: string;
     idempotencyKey: string;
@@ -115,10 +115,10 @@ export class ReferralService {
         body: { requestedCommissionBps: input.requestedCommissionBps, reason: input.reason },
       },
     );
-    return { request: publicRequest(result.request, new Map(), null) };
+    return { request: publicRequest(result.request, new Map(), currentEmail) };
   }
 
-  async requestB2B(commerceUserId: string, input: {
+  async requestB2B(commerceUserId: string, currentEmail: string, input: {
     customerEmail: string;
     requestType: "b2b_conversion" | "b2b_pricing";
     requestedDiscountBps: number;
@@ -146,7 +146,7 @@ export class ReferralService {
         },
       },
     );
-    return { request: publicRequest(result.request, new Map([[account.id, account]]), null) };
+    return { request: publicRequest(result.request, new Map([[account.id, account]]), currentEmail) };
   }
 
   async setBusinessPricing(commerceUserId: string, input: {
