@@ -1109,7 +1109,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: bridge exact source fetch through the production repository identity.
 
 ### 2026-08-23 — stage source fetch bridge
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `c3be03462e010a053bc6f2b2d6bd74075cb5ecda`   watchdog: GREEN
 Result: The stage netns correctly has no public DNS or egress, so its unprivileged poller cannot clone
 GitHub directly. Add a root-owned, caller-bound bridge that accepts only `deploy-stage` and the
 literal branch `stage`. It fetches that ref into the production source checkout but executes no
@@ -1119,6 +1119,18 @@ Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-
 `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: GitHub fetch uses a narrow master-sourced
 bridge outside the no-egress netns; reporting stays caller-bound and stage candidate code stays unprivileged.
+Next: allow the two exact root bridges through the stage service sandbox.
+
+### 2026-08-23 — stage watchdog bridge sandbox fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The stage service uses sudo only for the closed source and reporting bridges, but
+`NoNewPrivileges=yes` prevents sudo from executing any root command. Set it to `no` for this dedicated
+unit. Sudoers still permits only the exact stage source command and stage reporter operations; the
+service remains `deploy-stage`, inside `staging.slice` and the stage netns, with strict filesystem paths.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: narrow bridge execution requires dropping
+NoNewPrivileges for this unit; command authorization remains closed in sudoers.
 Next: initialize `stage` through the stage client and verify informational statuses.
 
 ---

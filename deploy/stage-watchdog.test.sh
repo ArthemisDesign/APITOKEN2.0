@@ -24,6 +24,7 @@ grep -Fq 'phase-disabled' "$ROOT/deploy/stage-sync.sh"
 grep -Fq 'phase-disabled' "$ROOT/deploy/promotion-attest.sh"
 grep -Fxq 'User=deploy-stage' "$ROOT/systemd/apitoken-stage-watchdog.service"
 grep -Fxq 'Slice=staging.slice' "$ROOT/systemd/apitoken-stage-watchdog.service"
+grep -Fxq 'NoNewPrivileges=no' "$ROOT/systemd/apitoken-stage-watchdog.service"
 grep -Fxq 'NetworkNamespacePath=/run/netns/apitoken-stage' "$ROOT/systemd/apitoken-stage-watchdog.service"
 grep -Fxq 'OnUnitInactiveSec=15s' "$ROOT/systemd/apitoken-stage-watchdog.timer"
 python3 "$ROOT/deploy/contour-config.py" --schema "$ROOT/deploy/contour-config.schema.json" \
