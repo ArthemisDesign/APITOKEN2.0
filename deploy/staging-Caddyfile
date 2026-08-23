@@ -3,7 +3,7 @@
   auto_https off
 }
 
-10.254.32.2:3900 {
+:3900 {
   bind 10.254.32.2
   log {
     output file /var/lib/apitoken-staging/logs/caddy.json

@@ -1451,13 +1451,24 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: send the exact Caddy Host header, then close Phase 4.
 
 ### 2026-08-23 — stage readiness Host header fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `ef35f8f951894fb42aa18ff2036a9bafcb1e1f7d`   watchdog: GREEN
 Result: The Caddy site address includes port 3900, but curl sends an IP Host header without the port
 in this environment, so Caddy rejects the request before path matching. Set the fixed
 `Host: 10.254.32.2:<port>` header in the read-only helper. No target or forwarding scope changes.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics fix; no lock changed.
+Next: remove Host matching from the private stage site, then close Phase 4.
+
+### 2026-08-23 — stage Caddy host catch-all fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The exact Host header still returns 400 before the readiness matcher. Use a port-only site
+address with `bind 10.254.32.2`, so Caddy accepts any Host only inside the private netns listener.
+There is still no public bind, TLS, DNS name, or global Caddy route.
+Checks actually run: `bash deploy/staging-twin.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; the private site no longer
+matches Host because the veth bind is the isolation boundary.
 Next: verify Caddy/sinks and isolation live, then close Phase 4.
 
 ---
