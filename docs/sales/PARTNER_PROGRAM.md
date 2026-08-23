@@ -261,7 +261,7 @@ discount.
   (partners.apitoken.sale) layout: uppercase page and card titles, one joined stat strip, the
   commission formula, the referral link with copy, bullet explainers and bordered tables.
 - **Overview** — the partner cabinet landing page: four key metrics, the commission formula, the
-  referral link, a "How your commission works" explainer, a 30-day split of earnings by the provider that served the
+  referral link, the daily earnings chart and a 30-day split of earnings by the provider that served the
   referrals' requests (the provider series in
   `GET /v1/internal/referral/partner/:commerceUserId`), and
   a stacked daily chart. Provider cards and the graph intentionally reuse the main Usage geometry,
@@ -271,8 +271,7 @@ discount.
   commission on every provider. Spend recorded
   before the portal stored the provider (migration 0022) appears as one "no provider on record"
   line rather than being dropped, so the parts always sum to the whole. The longer commission/Team
-  explanation lives in Docs and Team rather than occupying the Overview, which closes with the
-  latest accounts attributed to the partner.
+  explanation lives in Docs rather than occupying the Overview.
 - **Referrals** — the users brought in, identified by their authoritative Commerce account email,
   their type, discount, top-ups, paid spend and partner earnings. The list has client-side email
   search and exposes conversion/pricing on the owned referral row. That dialog always shows the
@@ -281,14 +280,16 @@ discount.
   with a required reason. If Commerce cannot resolve one account for a response, the row says that
   email data is unavailable; the Commerce Dashboard never substitutes a UUID, Telegram handle or
   display name. Sales never persists or guesses the email.
-- **Team** — create one-time, 30-day invitations for sub-salespeople, review invitation status, and
-  see each direct member's referral count, direct earnings, and your retained Team share. The form
-  shows the fixed 10% platform rate read-only and lets the inviter set an edge share plus a delegated
-  ceiling within their own maximum. Existing direct-member controls are editable; lowering a
-  ceiling clamps dependent grants atomically. The immutable commission chain carries each exact
-  edge up to ten active levels. A pending email invitation can be revoked by its owner; exact
-  revocation retries are safe, while an already activated membership cannot be revoked through the
-  invitation endpoint.
+- **Team** — an invitation is an account email plus the share you retain from that member's own
+  platform commission; every partner may build a Team, so that is no longer a permission and the
+  invitation form carries no permission controls. The retained share is capped by the platform hard
+  maximum of 20% and by the inviter's own maximum. The tab opens with what the Team produced
+  (retained earnings, member earnings, referrals brought in, active members) and states the split as
+  a formula: member commission × your retained share, never on top of it. The only per-member
+  setting is B2B — whether that member may set B2B terms and the ceiling they may use, never above
+  the owner's own ceiling; delegation follows the owner's own delegation grant. Lowering a ceiling
+  clamps dependent grants atomically, the immutable commission chain carries each exact edge up to
+  ten active levels, and a pending invitation can be revoked by its owner until it is accepted.
   The Dashboard uses the Commerce `/v1/referral/*` boundary, which calls Sales
   `/v1/internal/referral/*`; the browser never receives `SALES_CONTROL_KEY` or a Sales partner id as
   proof of identity.
