@@ -34,13 +34,20 @@ node - "$repo/packages/db/migrations/meta/_journal.json" <<'NODE'
 const fs = require("node:fs");
 const path = process.argv[2];
 const journal = JSON.parse(fs.readFileSync(path, "utf8"));
-journal.entries.push({
-  idx: journal.entries.length,
+const existing49 = journal.entries.findIndex((entry) => entry.idx === 49);
+const nextWhen = existing49 >= 0
+  ? journal.entries[existing49].when - 1
+  : journal.entries[journal.entries.length - 1].when + 1;
+const contraction = {
+  idx: 49,
   version: journal.version,
-  when: journal.entries[journal.entries.length - 1].when + 1,
+  when: nextWhen,
   tag: "0049_retire_pricing_schema",
   breakpoints: true,
-});
+};
+if (existing49 >= 0) journal.entries.splice(existing49, 0, contraction);
+else journal.entries.push(contraction);
+journal.entries.forEach((entry, index) => { entry.idx = index; });
 fs.writeFileSync(path, `${JSON.stringify(journal, null, 2)}\n`);
 NODE
 printf '%s\n' '-- fixture engine contraction' \

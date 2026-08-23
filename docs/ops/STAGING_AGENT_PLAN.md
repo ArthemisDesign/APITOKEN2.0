@@ -1040,6 +1040,18 @@ baseline. The stage ref is serially frozen after one unpromoted SHA.
 Next: merge on GREEN production watchdog, create the initial stage ref through the stage client, and
 verify informational statuses before closing Phase 3.
 
+### 2026-08-23 — pricing retirement fixture forward fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Trusted validation exposed a pre-existing static-suite defect after migration `0050` landed:
+the pricing retirement fixture appended a synthetic `0049` as journal entry 50, so it no longer
+modeled the canonical contraction. Insert the synthetic contraction before the real entry 49 and
+renumber the fixture journal with monotonic timestamps. Runtime migration history is unchanged.
+Checks actually run: `bash deploy/pricing-retirement-admission.test.sh`;
+`bash deploy/watchdog-lib.test.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: unrelated merge-gate forward fix required to
+obtain a valid exact-SHA trusted verdict; no staging lock changed.
+Next: renew exact-SHA validation and merge Phase 3.
+
 ---
 
 ## 11. Phase 4 — data, twin inventory, safe sinks
