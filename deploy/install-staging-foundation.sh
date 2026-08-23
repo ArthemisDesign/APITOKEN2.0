@@ -91,6 +91,7 @@ for item in opt:/opt/apitoken-staging srv:/srv/claude-api-staging var:/var/lib/a
   mountpoint -q "$dst" || mount --bind "$src" "$dst"
 done
 install -d -o root -g deploy-stage -m 0750 /etc/apitoken-staging
+install -d -o root -g deploy-stage -m 0750 /usr/local/lib/apitoken-stage
 make_user stage-ci /var/lib/apitoken-staging/watchdog/ci-home /usr/sbin/nologin
 for group in deploy docker apitoken-ci observe adm systemd-journal; do
   if getent group "$group" >/dev/null && id -Gn stage-ci | tr ' ' '\n' | grep -Fxq "$group"; then

@@ -1053,11 +1053,22 @@ obtain a valid exact-SHA trusted verdict; no staging lock changed.
 Next: fix stage controller root publication on a new SHA; do not retry this SHA.
 
 ### 2026-08-23 — stage controller root publication fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `d23b3c17239c99b841788745c576787542802316`   watchdog: RED
 Result: Production delivery of `b287697c` failed because GNU `install -d -o -g -m` cannot create and
 attribute a missing final directory in this protected controller transaction. Create the root first,
 then apply the locked owner, group, and mode in separate operations. No stage candidate code or
 production state is broadened.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED delivery; no lock changed.
+Next: add the pre-provisioned stage controller root to the watchdog writable namespace.
+
+### 2026-08-23 — stage controller writable namespace fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: `d23b3c17` proved the remaining root cause: `ProtectSystem=full` makes an absent path under
+`/usr/local/lib` read-only before the installer can create it. Pre-create the trusted root in the
+Phase 2 manager oneshot and add only that exact path to the production watchdog `ReadWritePaths`.
+The controller installer now refuses if the pre-provisioned directory is absent or a symlink.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED delivery; no lock changed.
