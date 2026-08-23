@@ -1075,7 +1075,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED de
 Next: publish below the existing watchdog controller root.
 
 ### 2026-08-23 — stage controller subdirectory fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `8a8fe6e2b9f24900e0e21704b8aec349a582bc79`   watchdog: GREEN
 Result: `dde547fa` proved that a new `ReadWritePaths` entry cannot bind an absent path at service
 start, so the manager oneshot never ran. Move the stage controller to
 `/usr/local/lib/apitoken-watchdog/stage`, below the existing writable controller root. The installer
@@ -1086,7 +1086,17 @@ Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED delivery; controller
 path remains master-sourced and root-owned.
-Next: verify the stage timer live, then initialize `stage` through the stage client.
+Next: expose the stage watchdog unit through read-only observation, then initialize `stage`.
+
+### 2026-08-23 — stage watchdog read-only observation
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The stage timer is installed, but the approved observer whitelist cannot inspect its unit or
+journal. Add the exact watchdog service and timer to `observe-stage`; include the timer in status.
+No write command or broader unit wildcard is added.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: initialize `stage` through the stage client and verify informational statuses.
 
 ---
 
