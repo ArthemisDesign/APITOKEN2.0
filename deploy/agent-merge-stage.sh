@@ -10,7 +10,7 @@ fi
 trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
 git -C "$ROOT" fetch origin master stage 2>/dev/null || git -C "$ROOT" fetch origin master
 master=$(git -C "$ROOT" rev-parse origin/master)
-stage=$(git -C "$ROOT" rev-parse origin/stage 2>/dev/null || true)
+stage=$(git -C "$ROOT" rev-parse --verify refs/remotes/origin/stage 2>/dev/null || true)
 [[ -z $stage || $stage == "$master" ]] \
   || { echo "agent-merge-stage: stage is frozen at unpromoted SHA $stage" >&2; exit 1; }
 export AGENT_MERGE_TARGET=master

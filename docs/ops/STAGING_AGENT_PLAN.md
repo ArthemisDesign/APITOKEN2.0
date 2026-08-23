@@ -1156,10 +1156,19 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: migrate the old lock-file name, then initialize `stage`.
 
 ### 2026-08-23 — stage client lock name migration
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `300d9703715fc61dad5f656c6fed209d7398af4d`   watchdog: GREEN
 Result: The failed `flock` implementation left a regular file at the original lock path, so the new
 atomic directory lock correctly refused to replace it. Use a new `.d` lock path. The old file remains
 inert. Serial ownership and cleanup semantics stay unchanged.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: resolve an absent `origin/stage` fail-closed, then initialize `stage`.
+
+### 2026-08-23 — absent stage ref parsing fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: When `stage` does not exist, plain `git rev-parse origin/stage` prints the unresolved token
+with exit zero. The serial freeze treated that string as an unpromoted SHA. Use `rev-parse --verify`
+against the full remote ref so absence becomes an empty initial state and malformed refs fail closed.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
 Next: initialize `stage` through the stage client and verify informational statuses.
