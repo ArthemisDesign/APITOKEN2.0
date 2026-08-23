@@ -1165,12 +1165,23 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: resolve an absent `origin/stage` fail-closed, then initialize `stage`.
 
 ### 2026-08-23 — absent stage ref parsing fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `719ccd400591145119b41dab1569479eb8d401a6`   watchdog: GREEN
 Result: When `stage` does not exist, plain `git rev-parse origin/stage` prints the unresolved token
 with exit zero. The serial freeze treated that string as an unpromoted SHA. Use `rev-parse --verify`
 against the full remote ref so absence becomes an empty initial state and malformed refs fail closed.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: use the existing trusted validation queue, then initialize `stage`.
+
+### 2026-08-23 — stage client validation environment fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The stage client requested `staging-candidate-validation`, but the existing trusted validator
+consumes only `candidate-validation`. The request stayed queued indefinitely. Reuse that installed
+exact-SHA validation environment for the validate-only precondition. Keep the stage ref lock,
+post-push `deploy/stage` wait, and informational contexts separate.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: the existing trusted validation environment
+is reused; stage post-push and state roots remain separate.
 Next: initialize `stage` through the stage client and verify informational statuses.
 
 ---

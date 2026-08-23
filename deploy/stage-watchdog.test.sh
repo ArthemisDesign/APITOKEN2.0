@@ -5,7 +5,7 @@ for file in agent-merge-stage.sh stage-watchdog.sh stage-watchdog-validate.sh st
   watchdog-github-stage.sh stage-sync.sh promotion-attest.sh; do
   bash -n "$ROOT/deploy/$file"
 done
-grep -Fq 'AGENT_MERGE_VALIDATION_ENVIRONMENT=staging-candidate-validation' "$ROOT/deploy/agent-merge-stage.sh"
+grep -Fq 'AGENT_MERGE_VALIDATION_ENVIRONMENT=candidate-validation' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq '"$ROOT/deploy/agent-merge.sh" --validate-only' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq 'stage is frozen at unpromoted SHA' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq 'stage-merge.lock.d' "$ROOT/deploy/agent-merge-stage.sh"

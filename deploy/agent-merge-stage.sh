@@ -16,7 +16,7 @@ stage=$(git -C "$ROOT" rev-parse --verify refs/remotes/origin/stage 2>/dev/null 
 export AGENT_MERGE_TARGET=master
 export AGENT_MERGE_LOCK=${LOCK}.validation
 export AGENT_MERGE_REQUIRED_CONTEXT=deploy/watchdog
-export AGENT_MERGE_VALIDATION_ENVIRONMENT=staging-candidate-validation
+export AGENT_MERGE_VALIDATION_ENVIRONMENT=candidate-validation
 "$ROOT/deploy/agent-merge.sh" --validate-only "$@"
 candidate=$(git -C "$ROOT" rev-parse HEAD)
 lease=${stage:-0000000000000000000000000000000000000000}
