@@ -16,6 +16,7 @@ Environment=XDG_RUNTIME_DIR=/run/apitoken-staging
 Environment=DOCKER_HOST=unix:///run/apitoken-staging/docker.sock
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=/run/apitoken-staging/rootlesskit
 ExecStart=/usr/bin/dockerd-rootless.sh --data-root=/var/lib/apitoken-staging/docker --host=unix:///run/apitoken-staging/docker.sock --storage-driver=fuse-overlayfs --exec-opt native.cgroupdriver=systemd
 Restart=on-failure
 NoNewPrivileges=yes

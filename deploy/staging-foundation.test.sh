@@ -31,6 +31,7 @@ grep -Fq 'unix:///run/apitoken-staging/docker.sock' "$ROOT/systemd/apitoken-root
 grep -Fq '/usr/local/bin/apitoken-observe-stage' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq '/usr/local/bin/apitoken-stage-ctl' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'systemctl restart apitoken-staging-foundation-install.service' "$ROOT/deploy/install-watchdog.sh"
+grep -Fq 'for stage_unit in staging.slice apitoken-rootless-docker-stage.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'systemctl start --no-block apitoken-rootless-docker-stage.service' "$I"
 ! grep -Eq 'systemctl (enable )?--now apitoken-rootless-docker-stage|systemctl start apitoken-rootless-docker-stage' "$I"
 for compose in staging-postgres.compose.yaml staging-redis.compose.yaml; do

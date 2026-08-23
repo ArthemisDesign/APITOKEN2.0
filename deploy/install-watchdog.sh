@@ -293,6 +293,15 @@ install_controller_definitions() {
     install -o root -g root -m 0755 "$ROOT/deploy/apitoken-stage-ctl.sh" \
       /usr/local/bin/apitoken-stage-ctl
   fi
+  # Stage manager units execute from /etc/systemd/system. Refresh their trusted definitions in
+  # every controller transaction so unit-only fixes do not require a full installer replay.
+  if [[ -d /etc/systemd/system ]]; then
+    for stage_unit in staging.slice apitoken-rootless-docker-stage.service \
+      apitoken-postgres-stage.service apitoken-redis-stage.service; do
+      install -o root -g root -m 0644 "$ROOT/systemd/$stage_unit" "/etc/systemd/system/$stage_unit"
+    done
+    systemctl daemon-reload
+  fi
   install -o root -g root -m 0644 "$ROOT/systemd/staging.slice" \
     /usr/local/lib/apitoken-watchdog/staging.slice
   install -o root -g root -m 0644 "$ROOT/systemd/apitoken-rootless-docker-stage.service" \
