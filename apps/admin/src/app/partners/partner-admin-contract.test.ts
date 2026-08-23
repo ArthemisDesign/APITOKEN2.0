@@ -7,7 +7,7 @@ function source(relative: string): string {
 
 describe("unified Partner Admin UI contract", () => {
   it("owns every operator workflow in the main admin", () => {
-    for (const route of ["directory", "onboarding", "requests", "payouts"]) {
+    for (const route of ["applications", "directory", "onboarding", "requests", "payouts"]) {
       expect(existsSync(new URL(`./${route}/page.tsx`, import.meta.url))).toBe(true);
     }
     expect(existsSync(new URL("./[id]/page.tsx", import.meta.url))).toBe(true);
@@ -29,6 +29,21 @@ describe("unified Partner Admin UI contract", () => {
     ]) {
       expect(fields).toContain(field);
     }
+  });
+
+  it("reviews partner access applications and approves them onto explicit terms", () => {
+    const applications = source("./applications/page.tsx");
+    // The queue and the decision both live on the Commerce boundary, never on Sales directly.
+    expect(applications).toContain("/admin/referral/applications?");
+    expect(applications).toContain('send(`/admin/referral/applications/${selected.id}/decision`, "POST", body)');
+    // A decision is always attributable: the reviewer note is required for approve and reject.
+    expect(applications).toContain("A reviewer note is required.");
+    // Approval carries the terms the partner starts on, bounded by the platform maximums.
+    for (const field of ["commissionBps", "teamOverrideMaxBps", "teamInvitesEnabled", "b2bEnabled", "b2bMaxDiscountBps"]) {
+      expect(applications).toContain(field);
+    }
+    expect(applications).toContain("parsePercentBps(draft.teamShare, 2_000)");
+    expect(source("./layout.tsx")).toContain('href: "/partners/applications"');
   });
 
   it("uses Commerce referral routes for identity, settings, requests, and manual payouts", () => {

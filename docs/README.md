@@ -122,6 +122,7 @@ document, update this index.
 - [2026-08-21-CODEX-CLI-0.149-LIVE-ACCEPTANCE.md](audits/2026-08-21-CODEX-CLI-0.149-LIVE-ACCEPTANCE.md) — exact 0.149 `--profile apitoken` live acceptance, terminal usage and cost evidence, and the public-vs-native proof boundary at that checkpoint.
 - [2026-08-21-CODEX-NATIVE-0.149-PIN-ADMISSION.md](audits/2026-08-21-CODEX-NATIVE-0.149-PIN-ADMISSION.md) — official device-flow private ChatGPT models/usage/Responses proof admitting the internal 0.149 wire identity pin.
 - [2026-08-22-REFERRAL-SYSTEM-AUDIT.md](audits/2026-08-22-REFERRAL-SYSTEM-AUDIT.md) — local implementation and production-readiness audit of the Commerce-account referral system: email identity, conserved Team commission, authority cascades, payout accounting, unified Dashboard/Admin, full PostgreSQL suites and the remaining producer-first gate.
+- [2026-08-23-REFERRAL-PRODUCTION-AUDIT.md](audits/2026-08-23-REFERRAL-PRODUCTION-AUDIT.md) — production acceptance of the referral system: what landed and went GREEN, the live route surface before and after the release, the PostgreSQL proof behind each stage from application to payout, and what this session could not verify.
 
 ## Next to the code (do not move here)
 
