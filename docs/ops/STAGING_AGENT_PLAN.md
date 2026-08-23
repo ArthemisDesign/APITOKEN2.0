@@ -1431,13 +1431,23 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: make read-only readiness output unambiguous, then close Phase 4.
 
 ### 2026-08-23 — stage readiness output fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `7de76a8e1a9ded7e8bec06a978f2f3ff3b6ca972`   watchdog: GREEN
 Result: The read-only helper used `curl -f -w`, so an HTTP error printed both the real status and a
 synthetic `000`; this obscured live diagnostics. Capture one non-failing HTTP status. Print `000`
 only for transport failure. No target, path, timeout, or forwarding permission changes.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: diagnostics fix; no lock changed.
+Next: use an explicit Caddy path matcher, then close Phase 4.
+
+### 2026-08-23 — explicit stage Caddy readiness matcher
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Caddy's inline wildcard form still returns 400 for the helper's concrete readiness request.
+Use an explicit named path matcher for `/ready` and `/ready/*`. The placeholder remains veth-only,
+HTTP-only, and non-public.
+Checks actually run: `bash deploy/staging-twin.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
 Next: verify Caddy/sinks and isolation live, then close Phase 4.
 
 ---
