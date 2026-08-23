@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { useI18n } from "@/components/i18n-provider";
 import {
   api,
@@ -34,7 +34,7 @@ const copy = {
     chartTitle: "Earnings over time", chartWindow: "Last 30 days", noEarnings: "No partner earnings in this period yet.", providerSummary: "Period summary", providerCards: "Earnings by provider", providerCardsSub: "The same provider view as Usage, calculated only from eligible paid referral usage.", ready: "Active", events: "events", earned: "Earned", spend: "Paid usage", adjustments: "Adjustments", net: "Net", dailyAverage: "Daily average", peakDay: "Peak day",
     programTerms: "How the Team share works", termsBody: "Your Team share is retained from a member’s fixed platform commission; it is not added on top. With $100 of eligible spend and a 10% commission, the pool is $10. A 20% retained share gives $8 to the member and $2 to the parent — the total remains $10.",
     referralList: "Referred accounts", referralListSub: "Accounts are identified by their current apiToken.sale login email. Paid usage excludes free platform credit.", searchReferrals: "Search by email", searchPlaceholder: "name@company.com", shown: "shown", email: "Account email", type: "Type", discount: "Discount", attributed: "Joined", topups: "Top-ups", businessTerms: "B2B terms", makeB2b: "Make B2B", requestB2b: "Request B2B", editRates: "Edit rates", requestRates: "Request rates", noReferrals: "No referred accounts yet.", noSearchResults: "No accounts match this search.", unknownEmail: "Email unavailable",
-    teamTitle: "Your Team", teamSub: "Invite an existing account by email. Choose your retained share and the permissions this member receives.", invite: "Invite a partner", inviting: "Sending…", retainedShare: "Your retained share", retainedHelp: "The part of this member’s platform commission that goes to you. Your maximum is {max}%.", memberRate: "Member commission", platformControlled: "10% by default · set by apiToken.sale", delegatedTeamLimit: "Their Team limit", delegatedTeamHelp: "Maximum share they may retain from their own members.", allowInvites: "Can build a Team", allowInvitesHelp: "May invite existing apiToken.sale accounts by email.", allowB2b: "Can set B2B terms", allowB2bHelp: "May convert their referrals and set a discount within the limit.", maxB2b: "Their B2B limit", allowB2bDelegate: "Can pass on B2B access", allowB2bDelegateHelp: "May give a smaller B2B limit to their own Team.", sendInvitation: "Send invitation", inviteSent: "Invitation sent.", existingOnly: "The email must belong to an active apiToken.sale account.", teamLimit: "Your Team limit", hardLimit: "Platform hard maximum 20%", directMembers: "Direct members", valid30: "Valid for 30 days",
+    teamTitle: "Your Team", teamSub: "Invite an existing apiToken.sale account by email and set the share you keep from its commission.", invite: "Invite a partner", inviting: "Sending…", retainedShare: "Your retained share", retainedHelp: "The part of this member’s platform commission that goes to you. Your maximum is {max}%.", memberRate: "Member commission", platformControlled: "10% by default · set by apiToken.sale", delegatedTeamLimit: "Their Team limit", delegatedTeamHelp: "Maximum share they may retain from their own members.", allowInvites: "Can build a Team", allowInvitesHelp: "May invite existing apiToken.sale accounts by email.", allowB2b: "Can set B2B terms", allowB2bHelp: "May convert their referrals and set a discount within the limit.", maxB2b: "Their B2B limit", allowB2bDelegate: "Can pass on B2B access", allowB2bDelegateHelp: "May give a smaller B2B limit to their own Team.", sendInvitation: "Send invitation", inviteSent: "Invitation sent.", existingOnly: "The email must belong to an active apiToken.sale account.", teamLimit: "Your Team limit", hardLimit: "Platform hard maximum 20%", directMembers: "Direct members", valid30: "Valid for 30 days",
     activeMembers: "Active members", pendingInvites: "Pending invitations", referralsCount: "Referrals", memberNet: "Member net", myShare: "Retained earnings", authority: "Permissions", edit: "Edit", save: "Save", saving: "Saving…", cancel: "Cancel", revoke: "Revoke", revokeInviteTitle: "Revoke invitation?", revokeInviteBody: "This permanently closes the pending invitation for {email}. The account can be invited again later.", confirmRevoke: "Revoke invitation", noTeam: "No Team members yet.", noInvites: "No pending invitations.", inviteExpires: "Expires", updateSaved: "Team settings saved.",
     requestsTitle: "Partner requests", requestsSub: "Ask apiToken.sale to review your platform commission. B2B requests are created from the Referrals table.", commissionRequest: "Request a higher commission", currentCommission: "Current commission", requestedCommission: "Requested commission", reason: "Why should it change?", reasonPlaceholder: "Describe your volume, active pipeline and expected growth…", sendRequest: "Send request", requestSent: "Request sent for review.",
     b2bTitle: "B2B referral pricing", b2bBody: "Use direct pricing only when the platform granted that permission. Otherwise submit the same customer and terms for review.", customerEmail: "Referral account email", requestType: "Request type", conversion: "Convert to B2B", pricing: "Change B2B pricing", requestedDiscount: "Requested discount", requestReview: "Request review", applyDirectly: "Apply directly", pricingApplied: "B2B pricing applied.", ceiling: "Your ceiling", noDirectB2b: "Direct B2B pricing is not enabled for this account.",
@@ -43,11 +43,15 @@ const copy = {
     docsTitle: "Partner documentation", docsSub: "The complete program rules, from account attribution to a completed payout.", docsEarn: "1. What you earn", docsEarnBody: "You earn your platform commission from eligible API usage paid with a referral’s real funds. Free platform credit never counts.", docsIdentity: "2. Referral identity", docsIdentityBody: "Referrals and Team members are existing apiToken.sale accounts. They are assigned and shown by the same login email used in the customer Dashboard.", docsFormula: "3. Commission calculation", docsFormulaBody: "Commission equals your rate multiplied by the referral’s eligible paid API usage after their own discount. Refunds reverse the commission funded by the refunded payment.", docsTeam: "4. Team retained share", docsTeamBody: "A Team member receives the platform commission set by apiToken.sale (10% by default). You may retain a percentage of that commission, up to your personal limit and never above the platform hard maximum of 20%. This is not an additional commission.", docsB2b: "5. B2B referrals", docsB2bBody: "Open a referral’s B2B action to request conversion or new pricing. If self-service is enabled for your account, you may apply terms directly, never above your personal discount limit.", docsWallet: "6. Wallet and currency", docsWalletBody: "Payouts use USDT (BEP-20) on BNB Smart Chain. Without a bound wallet, earnings remain in the account and roll into a later payout.", docsSchedule: "7. Payout schedule", docsScheduleBody: "Earnings are grouped into the 1st–15th and 16th–last-day periods. Each completed period is locked for 7 days and paid during the following 3-day window.", docsPrivacy: "8. Access and privacy", docsPrivacyBody: "Only approved partners can open this workspace. Referral and Team identities are limited to account email; internal Commerce identifiers are never exposed.",
     invalidEmail: "Enter a valid account email.", invalidShare: "The retained share must be within your allowed maximum.", invalidReason: "Add a clear business justification.", invalidCommission: "Enter a commission from 0% to 100%.", invalidDiscount: "Enter a whole discount within your allowed ceiling.", invalidWallet: "Enter a valid 0x BSC wallet address.", mutationError: "The change could not be saved.",
     overviewLead: "You earn {rate} of what your referred accounts actually spend on API usage — the amount charged after their own discount, and only the part paid with real money. Free platform credit is spent first and never counts.",
-    reflinkTitle: "Your referral link", reflinkSub: "Anyone who registers on apitoken.sale through this link is attributed to you permanently.", copyLink: "Copy link", copiedLink: "Copied", referralCodeLabel: "Referral code",
+    reflinkTitle: "Your referral link", reflinkSub: "Anyone who registers on apitoken.sale through this link is attributed to you permanently.", copyLink: "Copy link", copyAddress: "Copy address", copiedLink: "Copied", referralCodeLabel: "Referral code",
     howTitle: "How your commission works", how1: "You earn {rate} of what your referrals actually spend on API usage — the amount charged after their own discount.", how2: "Free platform credit never counts: it is spent first, and only usage covered by their own money earns commission.", how3: "Example: a referral spends $100 of real money on the API and you earn {example}.", how4: "Commission accrues as they spend and is paid out in USDT (BEP-20) on BNB Smart Chain.", howSplit: "So far: {direct} direct and {team} retained from your Team.",
     formulaTitle: "Your reward per $1 of real-money, list-price usage", formulaDiscount: "discount", formulaBody: "The client pays (100 − their discount)% of the price. You get {rate} of that — only the part paid with real money; free platform credit never counts.", formulaExample: "Example: $100 of usage with a 50% discount → they pay $50, you earn {example}.",
     recentTitle: "Recent activity", recentSub: "The latest accounts attributed to you.", joinedWord: "joined", earnedForYou: "earned for you", noActivity: "No referrals yet", noActivityBody: "Share your link to start building your list.",
     referredAccounts: "Referred accounts", netEarnings: "Net earnings", grossWord: "gross", returnsWord: "returns", realSpend30: "paid usage · 30 days", pendingPayout: "pending payout",
+    teamIncomeFoot: "Retained from your Team, net of returns", teamProduced: "Team earnings", teamProducedFoot: "What your members earned themselves", teamReferrals: "Team referrals", teamReferralsFoot: "Accounts brought in by your members",
+    membersSub: "Each member keeps their platform commission; you keep the share you set.", invitesSub: "An invitation is valid for 30 days and can be revoked until it is accepted.", b2bAccess: "B2B access",
+    teamFormulaTitle: "What you keep from one Team member", teamFormulaBody: "A member earns {member} of their referrals' paid usage. You keep {share} of that commission — never on top of it. On $100 of paid usage the pool is {pool}: {theirs} to the member and {mine} to you. Your maximum is {max}.",
+    teamEditorNote: "This member earns {member} of their referrals' paid usage. You keep {share} of that commission — {mine} per $100 of paid usage.",
     periodHistorySub: "What you earned in each half-month period and when it is paid out.",
     payoutHowList: "Earnings are counted in two periods each month: the 1st–15th and the 16th–last day. After a period closes there is a 7-day lock, then everything earned is sent to your wallet within the next 3 days.", payoutHowWallet: "No wallet bound yet? Nothing is lost — the balance rolls into the next payout.",
     walletUnbound: "Bind your BSC wallet to receive payouts. Without it, your balance rolls over to the next period.",
@@ -64,7 +68,7 @@ const copy = {
     chartTitle: "Заработок по дням", chartWindow: "Последние 30 дней", noEarnings: "В этом периоде партнёрского заработка пока нет.", providerSummary: "Итоги периода", providerCards: "Заработок по провайдерам", providerCardsSub: "То же представление, что в Usage, но только по оплаченному использованию рефералов.", ready: "Активен", events: "событий", earned: "Заработано", spend: "Оплачено клиентами", adjustments: "Корректировки", net: "Чистыми", dailyAverage: "В среднем за день", peakDay: "Лучший день",
     programTerms: "Как работает удержание с команды", termsBody: "Вы удерживаете Team-долю из фиксированной комиссии участника, а не получаете надбавку сверху. При $100 оплаченного расхода и комиссии 10% общий пул равен $10. Удержание 20% оставит участнику $8 и даст родителю $2 — общая выплата останется $10.",
     referralList: "Привлечённые аккаунты", referralListSub: "Аккаунты определяются по актуальной почте входа в apiToken.sale. Бесплатные средства платформы не входят в оплаченные траты.", searchReferrals: "Поиск по почте", searchPlaceholder: "name@company.com", shown: "показано", email: "Почта аккаунта", type: "Тип", discount: "Скидка", attributed: "С нами с", topups: "Пополнения", businessTerms: "B2B-условия", makeB2b: "Сделать B2B", requestB2b: "Запросить B2B", editRates: "Изменить ставки", requestRates: "Запросить ставки", noReferrals: "Привлечённых аккаунтов пока нет.", noSearchResults: "По этому запросу ничего не найдено.", unknownEmail: "Почта недоступна",
-    teamTitle: "Ваша команда", teamSub: "Пригласите существующий аккаунт по почте. Выберите свою удерживаемую долю и доступные участнику права.", invite: "Пригласить партнёра", inviting: "Отправляем…", retainedShare: "Ваша доля", retainedHelp: "Часть комиссии участника, которая остаётся вам. Ваш максимум — {max}%.", memberRate: "Комиссия участника", platformControlled: "По умолчанию 10% · задаёт apiToken.sale", delegatedTeamLimit: "Его лимит команды", delegatedTeamHelp: "Максимальная доля, которую он сможет удерживать со своей команды.", allowInvites: "Может собирать команду", allowInvitesHelp: "Сможет приглашать существующие аккаунты apiToken.sale по почте.", allowB2b: "Может назначать B2B", allowB2bHelp: "Сможет переводить своих рефералов в B2B и назначать скидку в пределах лимита.", maxB2b: "Его B2B-лимит", allowB2bDelegate: "Может передавать право B2B", allowB2bDelegateHelp: "Сможет дать своей команде меньший B2B-лимит.", sendInvitation: "Отправить приглашение", inviteSent: "Приглашение отправлено.", existingOnly: "Почта должна принадлежать активному аккаунту apiToken.sale.", teamLimit: "Ваш лимит команды", hardLimit: "Глобальный максимум 20%", directMembers: "Прямые участники", valid30: "Действуют 30 дней",
+    teamTitle: "Ваша команда", teamSub: "Пригласите существующий аккаунт apiToken.sale по почте и задайте долю, которую вы удерживаете из его комиссии.", invite: "Пригласить партнёра", inviting: "Отправляем…", retainedShare: "Ваша доля", retainedHelp: "Часть комиссии участника, которая остаётся вам. Ваш максимум — {max}%.", memberRate: "Комиссия участника", platformControlled: "По умолчанию 10% · задаёт apiToken.sale", delegatedTeamLimit: "Его лимит команды", delegatedTeamHelp: "Максимальная доля, которую он сможет удерживать со своей команды.", allowInvites: "Может собирать команду", allowInvitesHelp: "Сможет приглашать существующие аккаунты apiToken.sale по почте.", allowB2b: "Может назначать B2B", allowB2bHelp: "Сможет переводить своих рефералов в B2B и назначать скидку в пределах лимита.", maxB2b: "Его B2B-лимит", allowB2bDelegate: "Может передавать право B2B", allowB2bDelegateHelp: "Сможет дать своей команде меньший B2B-лимит.", sendInvitation: "Отправить приглашение", inviteSent: "Приглашение отправлено.", existingOnly: "Почта должна принадлежать активному аккаунту apiToken.sale.", teamLimit: "Ваш лимит команды", hardLimit: "Глобальный максимум 20%", directMembers: "Прямые участники", valid30: "Действуют 30 дней",
     activeMembers: "Участники", pendingInvites: "Ожидающие приглашения", referralsCount: "Рефералы", memberNet: "Доход участника", myShare: "Удержано вами", authority: "Полномочия", edit: "Изменить", save: "Сохранить", saving: "Сохраняем…", cancel: "Отмена", revoke: "Отозвать", revokeInviteTitle: "Отозвать приглашение?", revokeInviteBody: "Ожидающее приглашение для {email} будет закрыто. Позже аккаунт можно будет пригласить снова.", confirmRevoke: "Отозвать приглашение", noTeam: "В команде пока никого нет.", noInvites: "Ожидающих приглашений нет.", inviteExpires: "Истекает", updateSaved: "Настройки участника сохранены.",
     requestsTitle: "Партнёрские заявки", requestsSub: "Запросите пересмотр своей комиссии. Заявки на B2B создаются из таблицы «Рефералы».", commissionRequest: "Запросить повышение комиссии", currentCommission: "Текущая комиссия", requestedCommission: "Желаемая комиссия", reason: "Почему её нужно изменить?", reasonPlaceholder: "Опишите объём, активную воронку и ожидаемый рост…", sendRequest: "Отправить заявку", requestSent: "Заявка отправлена на рассмотрение.",
     b2bTitle: "B2B-условия реферала", b2bBody: "Назначайте условия напрямую только при выданном платформой разрешении. Иначе отправьте те же данные на рассмотрение.", customerEmail: "Почта аккаунта реферала", requestType: "Тип заявки", conversion: "Перевести в B2B", pricing: "Изменить B2B-условия", requestedDiscount: "Запрашиваемая скидка", requestReview: "Запросить согласование", applyDirectly: "Применить напрямую", pricingApplied: "B2B-условия применены.", ceiling: "Ваш максимум", noDirectB2b: "Самостоятельное назначение B2B-условий для этого аккаунта не включено.",
@@ -73,11 +77,15 @@ const copy = {
     docsTitle: "Документация партнёра", docsSub: "Полные правила программы: от привязки аккаунта до завершённой выплаты.", docsEarn: "1. За что вы зарабатываете", docsEarnBody: "Вы получаете свою комиссию от использования API, оплаченного реальными средствами реферала. Бесплатные средства платформы не учитываются.", docsIdentity: "2. Как определяются рефералы", docsIdentityBody: "Рефералы и участники команды — существующие аккаунты apiToken.sale. Они назначаются и отображаются по той же почте, с которой входят в клиентский Dashboard.", docsFormula: "3. Как считается комиссия", docsFormulaBody: "Комиссия равна вашей ставке, умноженной на оплаченные траты реферала после его скидки. Возврат платежа отменяет начисленную с него комиссию.", docsTeam: "4. Удержание с команды", docsTeamBody: "Участник получает комиссию от apiToken.sale — по умолчанию 10%. Вы можете удерживать часть этой комиссии в пределах личного лимита, но не больше глобальных 20%. Это не дополнительная комиссия.", docsB2b: "5. B2B-рефералы", docsB2bBody: "Откройте B2B-действие у конкретного реферала, чтобы запросить перевод или новые условия. Если вам доступно самостоятельное управление, условия можно применить сразу, но не выше личного лимита скидки.", docsWallet: "6. Кошелёк и валюта", docsWalletBody: "Выплаты отправляются в USDT (BEP-20) по сети BNB Smart Chain. Если кошелёк не привязан, заработок сохраняется и переносится на следующую выплату.", docsSchedule: "7. График выплат", docsScheduleBody: "Доход группируется по периодам 1–15 и 16–последний день месяца. Завершённый период блокируется на 7 дней и выплачивается в следующие 3 дня.", docsPrivacy: "8. Доступ и приватность", docsPrivacyBody: "Раздел доступен только одобренным партнёрам. Рефералы и команда показываются по почте аккаунта; внутренние идентификаторы Commerce не раскрываются.",
     invalidEmail: "Введите корректную почту аккаунта.", invalidShare: "Удерживаемая доля должна быть в пределах доступного максимума.", invalidReason: "Добавьте понятное обоснование.", invalidCommission: "Введите комиссию от 0% до 100%.", invalidDiscount: "Введите целую скидку в пределах доступного максимума.", invalidWallet: "Введите корректный адрес BSC-кошелька, начинающийся с 0x.", mutationError: "Не удалось сохранить изменение.",
     overviewLead: "Вы получаете {rate} от того, что привлечённые аккаунты реально тратят на использование API — от суммы после их собственной скидки и только с части, оплаченной настоящими деньгами. Бесплатные средства платформы тратятся первыми и не считаются.",
-    reflinkTitle: "Ваша реферальная ссылка", reflinkSub: "Каждый, кто зарегистрируется на apitoken.sale по этой ссылке, навсегда закрепляется за вами.", copyLink: "Копировать ссылку", copiedLink: "Скопировано", referralCodeLabel: "Реферальный код",
+    reflinkTitle: "Ваша реферальная ссылка", reflinkSub: "Каждый, кто зарегистрируется на apitoken.sale по этой ссылке, навсегда закрепляется за вами.", copyLink: "Копировать ссылку", copyAddress: "Копировать адрес", copiedLink: "Скопировано", referralCodeLabel: "Реферальный код",
     howTitle: "Как работает ваша комиссия", how1: "Вы получаете {rate} от того, что рефералы реально тратят на использование API — от суммы после их собственной скидки.", how2: "Бесплатные средства платформы не считаются: они тратятся первыми, и комиссию приносит только использование, оплаченное деньгами клиента.", how3: "Пример: реферал тратит $100 реальных денег на API, и вы получаете {example}.", how4: "Комиссия начисляется по мере трат и выплачивается в USDT (BEP-20) в сети BNB Smart Chain.", howSplit: "Сейчас: {direct} напрямую и {team} удержано с команды.",
     formulaTitle: "Ваша награда с $1 реального использования по прайсу", formulaDiscount: "скидка", formulaBody: "Клиент платит (100 − его скидка)% от цены. Вы получаете {rate} от этой суммы — только с части, оплаченной реальными деньгами; бесплатные средства не считаются.", formulaExample: "Пример: $100 использования со скидкой 50% → клиент платит $50, вы получаете {example}.",
     recentTitle: "Недавняя активность", recentSub: "Последние аккаунты, закреплённые за вами.", joinedWord: "присоединился", earnedForYou: "заработано для вас", noActivity: "Пока нет рефералов", noActivityBody: "Поделитесь ссылкой, чтобы начать собирать базу.",
     referredAccounts: "Привлечённые аккаунты", netEarnings: "Чистый заработок", grossWord: "начислено", returnsWord: "возвраты", realSpend30: "оплаченного расхода · 30 дней", pendingPayout: "ожидает выплаты",
+    teamIncomeFoot: "Удержано с команды, за вычетом возвратов", teamProduced: "Заработок участников", teamProducedFoot: "Сколько заработали сами участники", teamReferrals: "Рефералы команды", teamReferralsFoot: "Аккаунты, приведённые участниками",
+    membersSub: "Каждый участник получает свою комиссию платформы; вам остаётся заданная вами доля.", invitesSub: "Приглашение действует 30 дней; его можно отозвать, пока оно не принято.", b2bAccess: "B2B-доступ",
+    teamFormulaTitle: "Сколько вы удерживаете с одного участника", teamFormulaBody: "Участник получает {member} от оплаченного использования своих рефералов. Вы удерживаете {share} из этой комиссии — не сверх неё. При $100 оплаченного расхода пул {pool}: {theirs} участнику и {mine} вам. Ваш максимум — {max}.",
+    teamEditorNote: "Участник получает {member} от оплаченного использования своих рефералов. Вы удерживаете {share} из этой комиссии — {mine} на каждые $100 оплаченного расхода.",
     periodHistorySub: "Сколько вы заработали в каждом полумесячном периоде и когда это выплачивается.",
     payoutHowList: "Заработок считается по двум периодам каждый месяц: с 1-го по 15-е и с 16-го по последний день. После закрытия периода действует лок 7 дней, затем весь заработок уходит на ваш кошелёк в течение следующих 3 дней.", payoutHowWallet: "Кошелёк ещё не привязан? Ничего не теряется — баланс переносится на следующую выплату.",
     walletUnbound: "Привяжите кошелёк BSC, чтобы получать выплаты. Без него баланс переносится на следующий период.",
@@ -238,9 +246,7 @@ function PartnerOverview({ snapshot, language }: { snapshot: ReferralActiveSnaps
   const text = copy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
   const rate = pct(snapshot.membership.commissionBps, locale);
-  const example = formatNanoUsd(commissionOnHundred(snapshot.membership.commissionBps), locale);
   const referralUrl = `${PARTNER_SITE_ORIGIN}/?ref=${snapshot.membership.referralCode}`;
-  const recent = [...snapshot.referrals].sort((left, right) => left.attributedAt < right.attributedAt ? 1 : -1).slice(0, 6);
   const debt = BigInt(snapshot.totals.debtNano);
 
   return <div className="referral-tab-panel">
@@ -265,32 +271,14 @@ function PartnerOverview({ snapshot, language }: { snapshot: ReferralActiveSnaps
         <p className="rp-code">{text.referralCodeLabel}: <b translate="no">{snapshot.membership.referralCode}</b></p>
       </Card>
 
-      <Card title={text.howTitle}>
-        <ul className="rp-how">
-          <li>{interpolate(text.how1, { rate })}</li>
-          <li>{text.how2}</li>
-          <li>{interpolate(text.how3, { example })}</li>
-          <li>{text.how4}</li>
-          <li>{interpolate(text.howSplit, { direct: formatNanoUsd(snapshot.totals.directNetNano, locale), team: formatNanoUsd(snapshot.totals.overrideNetNano, locale) })}</li>
-        </ul>
+      <Card title={text.chartTitle} sub={text.chartWindow}>
+        <EarningsChart snapshot={snapshot} language={language} />
       </Card>
 
       <Card title={text.providerCards} sub={text.providerCardsSub}>
         <ProviderCards snapshot={snapshot} language={language} />
       </Card>
 
-      <Card title={text.chartTitle} sub={text.chartWindow}>
-        <EarningsChart snapshot={snapshot} language={language} />
-      </Card>
-
-      <Card title={text.recentTitle} sub={text.recentSub}>
-        {recent.length === 0 ? <div className="rp-empty"><b>{text.noActivity}</b>{text.noActivityBody}</div> : <div className="rp-activity">
-          {recent.map((item, index) => <div className="rp-activity-row" key={`${item.email ?? "unknown"}-${index}`}>
-            <span><span className="referral-email" translate="no">{item.email ?? text.unknownEmail}</span> {text.joinedWord} · <b>{formatNanoUsd(item.netNano, locale)}</b> {text.earnedForYou}</span>
-            <span className="rp-activity-date">{date(item.attributedAt, locale)}</span>
-          </div>)}
-        </div>}
-      </Card>
     </div>
   </div>;
 }
@@ -333,7 +321,6 @@ function ProviderCards({ snapshot, language }: { snapshot: ReferralActiveSnapsho
         <div className="uprovider-head">
           {provider.logo ? <span className="uprovider-logo" aria-hidden="true" /> : <span className="uprovider-logo uprovider-letter" aria-hidden="true">{provider.name.slice(0, 1)}</span>}
           <div className="uprovider-name"><strong>{provider.name}</strong><span>{provider.api}</span></div>
-          <span className="uprovider-status is-active">{text.ready}</span>
           <span className="uprovider-discount">{(shareTenths / 10).toLocaleString(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%</span>
         </div>
         <div className="uprovider-stats"><strong>{formatNanoUsd(earned, locale)}</strong><span>{formatNanoUsd(row?.spendNano ?? "0", locale)} {text.spend.toLocaleLowerCase()} · {(row?.events ?? 0).toLocaleString(locale)} {text.events}</span></div>
@@ -463,7 +450,12 @@ function BusinessPricingDialog({ row, snapshot, language, onClose }: { row: Refe
     const terms: Record<string, number | null> = {};
     for (const provider of DASHBOARD_PROVIDERS) {
       const raw = providers[provider.id]?.trim() ?? "";
-      if (!raw) continue;
+      if (!raw) {
+        // An override that existed before and was cleared must be removed explicitly,
+        // otherwise the stored per-provider discount would silently survive.
+        if ((initialProviders[provider.id] ?? "") !== "") terms[provider.id] = null;
+        continue;
+      }
       const value = parsed(raw);
       if (value === null) return setNotice(`${provider.name}: ${text.invalidDiscount}`);
       terms[provider.id] = value;
@@ -494,23 +486,34 @@ function BusinessPricingDialog({ row, snapshot, language, onClose }: { row: Refe
 function Team({ snapshot, language, refresh }: { snapshot: ReferralActiveSnapshot; language: Language; refresh(): Promise<void> }) {
   const text = copy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
+  // The platform hard maximum is 20% of a member's own commission; a partner can never exceed it.
   const maxShare = Math.min(2_000, snapshot.membership.teamOverrideMaxBps);
-  const maxB2b = snapshot.membership.b2bMaxDiscountBps;
-  const initialAuthority = useMemo<ReferralAuthorityInput>(() => ({ teamOverrideMaxBps: 0, teamInvitesEnabled: false, b2bEnabled: false, b2bMaxDiscountBps: 0, b2bCanDelegate: false }), []);
   const [email, setEmail] = useState("");
-  const [share, setShare] = useState(0);
-  const [authority, setAuthority] = useState(initialAuthority);
+  const [share, setShare] = useState(maxShare);
   const [editing, setEditing] = useState<ReferralTeamMember | null>(null);
   const [revoking, setRevoking] = useState<{ id: string; email: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "bad"; message: string } | null>(null);
 
+  // Every partner may build a Team, so an invitation only carries the retained share.
+  // B2B is granted per member afterwards and can never exceed the inviter's own ceiling.
+  function inheritedAuthority(overrides: Partial<ReferralAuthorityInput> = {}): ReferralAuthorityInput {
+    return {
+      teamOverrideMaxBps: maxShare,
+      teamInvitesEnabled: true,
+      b2bEnabled: false,
+      b2bMaxDiscountBps: 0,
+      b2bCanDelegate: false,
+      ...overrides,
+    };
+  }
+
   async function invite(event: FormEvent) {
     event.preventDefault(); setNotice(null);
     if (!validEmail(email)) return setNotice({ kind: "bad", message: text.invalidEmail });
-    if (share < 0 || share > maxShare || authority.teamOverrideMaxBps > maxShare) return setNotice({ kind: "bad", message: text.invalidShare });
+    if (share < 0 || share > maxShare) return setNotice({ kind: "bad", message: text.invalidShare });
     setBusy(true);
-    try { await api.referralInviteTeam({ email: email.trim(), overrideBps: share, authority }); setEmail(""); setShare(0); setAuthority(initialAuthority); await refresh(); setNotice({ kind: "ok", message: text.inviteSent }); }
+    try { await api.referralInviteTeam({ email: email.trim(), overrideBps: share, authority: inheritedAuthority() }); setEmail(""); setShare(maxShare); await refresh(); setNotice({ kind: "ok", message: text.inviteSent }); }
     catch (cause) { setNotice({ kind: "bad", message: errorMessage(cause, text.mutationError) }); }
     finally { setBusy(false); }
   }
@@ -523,61 +526,107 @@ function Team({ snapshot, language, refresh }: { snapshot: ReferralActiveSnapsho
   }
 
   const pending = snapshot.invitations.filter((item) => !item.consumedAt && !item.revokedAt);
+  const teamReferrals = snapshot.team.reduce((sum, member) => sum + member.referredUsers, 0);
+  const teamProduced = snapshot.team.reduce((sum, member) => sum + BigInt(member.theirNetNano), 0n);
   return <div className="referral-tab-panel">
     <PageTitle title={text.teamTitle} sub={text.teamSub} />
     <StatStrip items={[
-      { label: text.teamLimit, value: pct(maxShare, locale), foot: text.hardLimit, accent: true },
-      { label: text.memberRate, value: pct(1_000, locale), foot: text.fixedRateHint },
-      { label: text.activeMembers, value: snapshot.team.length.toLocaleString(locale), foot: text.directMembers },
-      { label: text.pendingInvites, value: pending.length.toLocaleString(locale), foot: text.valid30 },
+      { label: text.teamIncome, value: formatNanoUsd(snapshot.totals.overrideNetNano, locale), foot: text.teamIncomeFoot, accent: true },
+      { label: text.teamProduced, value: formatNanoUsd(teamProduced, locale), foot: text.teamProducedFoot },
+      { label: text.teamReferrals, value: teamReferrals.toLocaleString(locale), foot: text.teamReferralsFoot },
+      { label: text.activeMembers, value: snapshot.team.length.toLocaleString(locale), foot: pending.length > 0 ? `${text.pendingInvites}: ${pending.length.toLocaleString(locale)}` : text.directMembers },
     ]} />
-    <div className="rp-stack" style={{ marginTop: 24 }}>
-      <Card title={text.programTerms}><p className="rp-card-sub">{text.termsBody}</p></Card>
 
-      {snapshot.membership.teamInvitesEnabled ? <form className="rp-card referral-team-form" onSubmit={invite}>
+    <div className="rp-stack" style={{ marginTop: 24 }}>
+      <TeamFormula snapshot={snapshot} language={language} share={share} />
+
+      <form className="rp-card" onSubmit={invite}>
         <h3 className="rp-card-title">{text.invite}</h3>
         <p className="rp-card-sub">{text.existingOnly}</p>
-        <div className="referral-team-core"><Field label={text.email}><input name="teamEmail" type="email" autoComplete="email" spellCheck={false} maxLength={320} value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@company.com" translate="no" /></Field><PercentField label={text.retainedShare} value={share} max={maxShare} onChange={setShare} help={text.retainedHelp.replace("{max}", String(maxShare / 100))} /><PercentField label={text.delegatedTeamLimit} value={authority.teamOverrideMaxBps} max={maxShare} onChange={(teamOverrideMaxBps) => setAuthority({ ...authority, teamOverrideMaxBps })} help={text.delegatedTeamHelp} /></div>
-        <div className="referral-member-rate"><span>{text.memberRate}</span><strong>{pct(1_000, locale)}</strong><small>{text.platformControlled}</small></div>
-        <AuthorityFields value={authority} maxB2b={maxB2b} canDelegateB2b={snapshot.membership.b2bCanDelegate} onChange={setAuthority} language={language} />
-        <div className="rp-actions"><button className="btn btn-primary" disabled={busy}>{busy ? text.inviting : text.sendInvitation}</button></div>
-      </form> : <div className="rp-note">{language === "ru" ? "Приглашения в команду отключены администратором для вашего аккаунта." : "Team invitations are disabled for your account by an administrator."}</div>}
-      <LiveNotice notice={notice} />
+        <div className="rp-invite">
+          <Field label={text.email}><input name="teamEmail" type="email" autoComplete="email" spellCheck={false} maxLength={320} value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@company.com" translate="no" /></Field>
+          <PercentField label={text.retainedShare} value={share} max={maxShare} onChange={setShare} help={text.retainedHelp.replace("{max}", String(maxShare / 100))} />
+          <div className="rp-invite-action"><button className="btn btn-primary" disabled={busy}>{busy ? text.inviting : text.sendInvitation}</button></div>
+        </div>
+        <LiveNotice notice={notice} />
+      </form>
 
-      <Card title={text.activeMembers} sub={`${snapshot.team.length.toLocaleString(locale)} · ${text.email}`}>
-        <Table label={text.activeMembers} className="team-table" head={<><th>{text.email}</th><th className="rp-num">{text.retainedShare}</th><th className="rp-num">{text.referralsCount}</th><th className="rp-num">{text.memberNet}</th><th className="rp-num">{text.myShare}</th><th>{text.authority}</th></>}>
-          {snapshot.team.length === 0 ? <EmptyRow span={6} title={text.noTeam} /> : snapshot.team.map((member, index) => <tr key={`${member.email ?? "unknown"}-${index}`}>
+      <Card title={text.activeMembers} sub={text.membersSub}>
+        <Table label={text.activeMembers} className="team-table" head={<><th>{text.email}</th><th className="rp-num">{text.retainedShare}</th><th className="rp-num">{text.referralsCount}</th><th className="rp-num">{text.memberNet}</th><th className="rp-num">{text.myShare}</th><th>{text.b2bAccess}</th><th /></>}>
+          {snapshot.team.length === 0 ? <EmptyRow span={7} title={text.noTeam} /> : snapshot.team.map((member, index) => <tr key={`${member.email ?? "unknown"}-${index}`}>
             <td><span className="referral-email" translate="no">{member.email ?? text.unknownEmail}</span><small>{pct(member.commissionBps, locale)} {text.fixedRate.toLocaleLowerCase()}</small></td>
             <td className="rp-num">{pct(member.overrideBps, locale)}</td>
             <td className="rp-num">{member.referredUsers.toLocaleString(locale)}</td>
             <td className="rp-num">{formatNanoUsd(member.theirNetNano, locale)}</td>
             <td className="rp-num rp-earned">{formatNanoUsd(member.myOverrideNetNano, locale)}</td>
+            <td>{member.b2bEnabled && member.b2bMaxDiscountBps > 0 ? <Status value={`${language === "ru" ? "до" : "up to"} ${pct(member.b2bMaxDiscountBps, locale)}`} kind="ok" /> : <Status value={language === "ru" ? "нет" : "off"} />}</td>
             <td><button type="button" className="btn btn-ghost btn-sm" disabled={!member.email || busy} onClick={() => setEditing(member)}>{text.edit}</button></td>
           </tr>)}
         </Table>
       </Card>
 
-      <Card title={text.pendingInvites} sub={text.existingOnly}>
-        {pending.length === 0 ? <div className="rp-empty"><b>{text.noInvites}</b></div> : <div className="referral-invites">{pending.map((item) => <article className="referral-invite" key={item.id}><div><strong translate="no">{item.email ?? text.unknownEmail}</strong><span>{text.retainedShare}: {pct(item.overrideBps, locale)} · {text.inviteExpires}: {date(item.expiresAt, locale)}</span></div><button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setRevoking({ id: item.id, email: item.email ?? text.unknownEmail })}>{text.revoke}</button></article>)}</div>}
-      </Card>
+      {pending.length > 0 && <Card title={text.pendingInvites} sub={text.invitesSub}>
+        <div className="referral-invites">{pending.map((item) => <article className="referral-invite" key={item.id}><div><strong translate="no">{item.email ?? text.unknownEmail}</strong><span>{text.retainedShare}: {pct(item.overrideBps, locale)} · {text.inviteExpires}: {date(item.expiresAt, locale)}</span></div><button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setRevoking({ id: item.id, email: item.email ?? text.unknownEmail })}>{text.revoke}</button></article>)}</div>
+      </Card>}
     </div>
     {editing && <TeamEditor member={editing} parent={snapshot} language={language} busy={busy} onClose={() => setEditing(null)} onSave={async (patch) => { if (!editing.email) return; setBusy(true); setNotice(null); try { await api.referralUpdateTeam({ email: editing.email, ...patch }); await refresh(); setEditing(null); setNotice({ kind: "ok", message: text.updateSaved }); } catch (cause) { setNotice({ kind: "bad", message: errorMessage(cause, text.mutationError) }); } finally { setBusy(false); } }} />}
     {revoking && <ConfirmDialog title={text.revokeInviteTitle} body={text.revokeInviteBody.replace("{email}", revoking.email)} confirm={text.confirmRevoke} cancel={text.cancel} busyLabel={text.saving} busy={busy} onClose={() => setRevoking(null)} onConfirm={async () => { if (await revoke(revoking.id)) setRevoking(null); }} />}
   </div>;
 }
 
-function AuthorityFields({ value, maxB2b, canDelegateB2b, onChange, language }: { value: ReferralAuthorityInput; maxB2b: number; canDelegateB2b: boolean; onChange(value: ReferralAuthorityInput): void; language: Language }) {
+/** The Team split, shown the way the commission formula is shown on Overview. */
+function TeamFormula({ snapshot, language, share }: { snapshot: ReferralActiveSnapshot; language: Language; share: number }) {
   const text = copy[language];
-  return <fieldset className="referral-authority-grid"><legend>{language === "ru" ? "Права участника" : "Member permissions"}</legend><CheckboxCard name="teamInvitesEnabled" label={text.allowInvites} help={text.allowInvitesHelp} checked={value.teamInvitesEnabled} onChange={(teamInvitesEnabled) => onChange({ ...value, teamInvitesEnabled })} />{canDelegateB2b && <CheckboxCard name="b2bEnabled" label={text.allowB2b} help={text.allowB2bHelp} checked={value.b2bEnabled} onChange={(b2bEnabled) => onChange({ ...value, b2bEnabled, b2bMaxDiscountBps: b2bEnabled ? value.b2bMaxDiscountBps : 0, b2bCanDelegate: b2bEnabled ? value.b2bCanDelegate : false })} />}{canDelegateB2b && value.b2bEnabled && <div className="referral-authority-nested"><PercentField label={text.maxB2b} value={value.b2bMaxDiscountBps} max={maxB2b} onChange={(b2bMaxDiscountBps) => onChange({ ...value, b2bMaxDiscountBps })} help={`${text.ceiling}: ${pct(maxB2b, language === "ru" ? "ru-RU" : "en-US")}`} /><CheckboxCard name="b2bCanDelegate" label={text.allowB2bDelegate} help={text.allowB2bDelegateHelp} checked={value.b2bCanDelegate} onChange={(b2bCanDelegate) => onChange({ ...value, b2bCanDelegate })} /></div>}</fieldset>;
+  const locale = language === "ru" ? "ru-RU" : "en-US";
+  const memberRate = 1_000;
+  const yours = Math.round(memberRate * share / 10_000);
+  const pool = commissionOnHundred(memberRate);
+  const mine = pool * BigInt(share) / 10_000n;
+  return <div className="rp-formula">
+    <div className="rp-formula-l">{text.teamFormulaTitle}</div>
+    <div className="rp-formula-v"><em>{pct(memberRate, locale)}</em><i>×</i><em>{pct(share, locale)}</em><i>=</i><em>{pct(yours, locale)}</em></div>
+    <p className="rp-formula-b">{interpolate(text.teamFormulaBody, { member: pct(memberRate, locale), share: pct(share, locale), pool: formatNanoUsd(pool, locale), mine: formatNanoUsd(mine, locale), theirs: formatNanoUsd(pool - mine, locale), max: pct(Math.min(2_000, snapshot.membership.teamOverrideMaxBps), locale) })}</p>
+  </div>;
 }
 
 function TeamEditor({ member, parent, language, busy, onClose, onSave }: { member: ReferralTeamMember; parent: ReferralActiveSnapshot; language: Language; busy: boolean; onClose(): void; onSave(patch: { overrideBps: number } & ReferralAuthorityInput): Promise<void> }) {
   const text = copy[language];
+  const locale = language === "ru" ? "ru-RU" : "en-US";
   const maxShare = Math.min(2_000, parent.membership.teamOverrideMaxBps);
+  // A member may never receive a B2B ceiling above the one the owner holds.
+  const maxB2b = parent.membership.b2bMaxDiscountBps;
   const [share, setShare] = useState(member.overrideBps);
-  const [authority, setAuthority] = useState<ReferralAuthorityInput>({ teamOverrideMaxBps: member.teamOverrideMaxBps, teamInvitesEnabled: member.teamInvitesEnabled, b2bEnabled: member.b2bEnabled, b2bMaxDiscountBps: member.b2bMaxDiscountBps, b2bCanDelegate: member.b2bCanDelegate });
+  const [b2bEnabled, setB2bEnabled] = useState(member.b2bEnabled && maxB2b > 0);
+  const [b2bMax, setB2bMax] = useState(Math.min(member.b2bMaxDiscountBps || maxB2b, maxB2b));
   const closeRef = useModalFocus(onClose);
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="key-modal referral-modal" role="dialog" aria-modal="true" aria-labelledby="team-editor-title"><div className="key-modal-head"><div><span className="eyebrow">{text.team}</span><h2 id="team-editor-title" translate="no">{member.email}</h2></div><button ref={closeRef} type="button" className="key-modal-close" aria-label={text.cancel} onClick={onClose}>×</button></div><div className="referral-team-core"><PercentField label={text.retainedShare} value={share} max={maxShare} onChange={setShare} help={text.retainedHelp.replace("{max}", String(maxShare / 100))} /><ReadOnly label={text.memberRate} value={`${pct(member.commissionBps, language === "ru" ? "ru-RU" : "en-US")} · ${text.fixedRateHint}`} /><PercentField label={text.delegatedTeamLimit} value={authority.teamOverrideMaxBps} max={maxShare} onChange={(teamOverrideMaxBps) => setAuthority({ ...authority, teamOverrideMaxBps })} help={text.delegatedTeamHelp} /></div><AuthorityFields value={authority} maxB2b={parent.membership.b2bMaxDiscountBps} canDelegateB2b={parent.membership.b2bCanDelegate} onChange={setAuthority} language={language} /><div className="key-modal-actions"><button type="button" className="btn btn-ghost" onClick={onClose}>{text.cancel}</button><button type="button" className="btn btn-primary" disabled={busy || share > maxShare || authority.teamOverrideMaxBps > maxShare} onClick={() => void onSave({ overrideBps: share, ...authority })}>{busy ? text.saving : text.save}</button></div></section></div>;
+  const invalid = share > maxShare || b2bMax > maxB2b;
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="key-modal referral-modal" role="dialog" aria-modal="true" aria-labelledby="team-editor-title">
+      <div className="key-modal-head">
+        <div><span className="eyebrow">{text.team}</span><h2 id="team-editor-title" translate="no">{member.email}</h2><p className="referral-modal-email">{pct(member.commissionBps, locale)} {text.fixedRate.toLocaleLowerCase()} · {text.fixedRateHint.toLocaleLowerCase()}</p></div>
+        <button ref={closeRef} type="button" className="key-modal-close" aria-label={text.cancel} onClick={onClose}>×</button>
+      </div>
+      <div className="rp-modal-form">
+        <PercentField label={text.retainedShare} value={share} max={maxShare} onChange={setShare} help={text.retainedHelp.replace("{max}", String(maxShare / 100))} />
+        <div className="rp-modal-note">{interpolate(text.teamEditorNote, { member: pct(member.commissionBps, locale), share: pct(share, locale), mine: formatNanoUsd(commissionOnHundred(member.commissionBps) * BigInt(share) / 10_000n, locale) })}</div>
+        {maxB2b > 0 ? <>
+          <CheckboxCard name="b2bEnabled" label={text.allowB2b} help={text.allowB2bHelp} checked={b2bEnabled} onChange={(value) => { setB2bEnabled(value); if (value && b2bMax === 0) setB2bMax(maxB2b); }} />
+          {b2bEnabled && <PercentField label={text.maxB2b} value={b2bMax} max={maxB2b} onChange={setB2bMax} help={`${text.ceiling}: ${pct(maxB2b, locale)}`} />}
+        </> : <div className="rp-modal-note">{text.noDirectB2b}</div>}
+      </div>
+      <div className="key-modal-actions">
+        <button type="button" className="btn btn-ghost" onClick={onClose}>{text.cancel}</button>
+        <button type="button" className="btn btn-primary" disabled={busy || invalid} onClick={() => void onSave({
+          overrideBps: share,
+          teamOverrideMaxBps: maxShare,
+          teamInvitesEnabled: true,
+          b2bEnabled,
+          b2bMaxDiscountBps: b2bEnabled ? b2bMax : 0,
+          b2bCanDelegate: b2bEnabled && parent.membership.b2bCanDelegate,
+        })}>{busy ? text.saving : text.save}</button>
+      </div>
+    </section>
+  </div>;
 }
 
 function useModalFocus(onClose: () => void) {
@@ -652,9 +701,15 @@ function Payouts({ snapshot, language, refresh }: { snapshot: ReferralActiveSnap
         <h3 className="rp-card-title">{text.wallet}</h3>
         <p className="rp-card-sub">{text.walletHelp}</p>
         {!bound && <div className="rp-note" style={{ marginBottom: 16 }}>{text.walletUnbound}</div>}
-        {bound && !editingWallet ? <div className="rp-wallet-row">
-          <span className="rp-wallet-chip"><span className="rp-wallet-net">BSC · USDT BEP-20</span><span className="rp-wallet-addr" translate="no" title={bound}>{bound}</span></span>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditingWallet(true)}>{text.changeWallet}</button>
+        {bound && !editingWallet ? <div className="rp-wallet">
+          <div className="rp-wallet-id">
+            <span className="rp-wallet-net">BSC · USDT BEP-20</span>
+            <span className="rp-wallet-addr" translate="no" title={bound}><b>{bound.slice(0, 6)}</b>{bound.slice(6, -4)}<b>{bound.slice(-4)}</b></span>
+          </div>
+          <div className="rp-wallet-actions">
+            <CopyButton value={bound} label={text.copyAddress} copiedLabel={text.copiedLink} />
+            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditingWallet(true)}>{text.changeWallet}</button>
+          </div>
         </div> : <>
           <Field label={text.wallet}><input name="payoutWallet" type="text" autoComplete="off" spellCheck={false} inputMode="text" value={wallet} onChange={(event) => setWallet(event.target.value.trim())} placeholder="0x0000000000000000000000000000000000000000" translate="no" /></Field>
           <div className="rp-actions">{bound && <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => { setWallet(bound); setEditingWallet(false); }}>{text.cancel}</button>}<button className="btn btn-primary" disabled={busy}>{busy ? text.saving : text.saveWallet}</button></div>
@@ -746,7 +801,8 @@ function PartnerDocs({ snapshot, language }: { snapshot: ReferralActiveSnapshot;
     ] },
     { title: text.docsTeam, body: [
       text.docsTeamBody,
-      <>{ru ? "Ваш лимит удержания: " : "Your retained-share limit: "}<strong>{pct(Math.min(2_000, snapshot.membership.teamOverrideMaxBps), locale)}</strong>.</>,
+      text.termsBody,
+      <>{ru ? "Ваш лимит удержания: " : "Your retained-share limit: "}<strong>{pct(Math.min(2_000, snapshot.membership.teamOverrideMaxBps), locale)}</strong>. {ru ? "Приглашение отправляется по почте аккаунта; создавать свою команду может каждый партнёр." : "An invitation is sent to an account email; every partner may build their own Team."}</>,
     ] },
     { title: text.docsB2b, body: [
       text.docsB2bBody,
@@ -777,7 +833,6 @@ function PartnerDocs({ snapshot, language }: { snapshot: ReferralActiveSnapshot;
 // ---------------------------------------------------------------------------
 
 function Field({ label, children }: { label: string; children: ReactNode }) { return <label className="referral-field"><span>{label}</span>{children}</label>; }
-function ReadOnly({ label, value }: { label: string; value: string }) { return <div className="referral-field referral-readonly"><span>{label}</span><strong>{value}</strong></div>; }
 function PercentField({ label, value, max, help, onChange }: { label: string; value: number; max: number; help?: string; onChange(value: number): void }) { return <label className="referral-field"><span>{label}</span><div className="referral-percent-input"><input name={label.replaceAll(" ", "-")} type="number" min={0} max={max / 100} step={0.01} inputMode="decimal" autoComplete="off" value={value / 100} onChange={(event) => onChange(Math.round(Number(event.target.value || 0) * 100))} /><i>%</i></div>{help && <small>{help}</small>}</label>; }
 function CheckboxCard({ name, label, help, checked, onChange }: { name: string; label: string; help: string; checked: boolean; onChange(value: boolean): void }) { return <label className={`referral-checkbox-card${checked ? " checked" : ""}`}><input name={name} type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><span><b>{label}</b><small>{help}</small></span></label>; }
 function Status({ value, kind }: { value: string; kind?: "ok" | "bad" | "warn" }) { return <span className={`referral-status${kind ? ` ${kind}` : ""}`}>{value}</span>; }

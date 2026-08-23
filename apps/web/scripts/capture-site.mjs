@@ -155,6 +155,7 @@ const dashboardCaptures = [
   ["dashboard-referral-referrals-light", "/dashboard?view=referral&tab=referrals", 1440, 1000, "light"],
   ["dashboard-referral-b2b-dialog-light", "/dashboard?view=referral&tab=referrals", 1440, 1000, "light", "en", "referral-b2b-open"],
   ["dashboard-referral-team-dark", "/dashboard?view=referral&tab=team", 1440, 1000, "dark"],
+  ["dashboard-referral-team-edit-dark", "/dashboard?view=referral&tab=team", 1440, 1000, "dark", "en", "referral-team-edit-open"],
   ["dashboard-referral-payouts-russian-dark", "/dashboard?view=referral&tab=payouts", 1440, 1000, "dark", "ru"],
   ["dashboard-referral-docs-light", "/dashboard?view=referral&tab=docs", 1440, 1000, "light"],
   ["dashboard-referral-ordinary-light", "/dashboard?view=referral&partner-preview=no-access", 1440, 1000, "light"],
@@ -648,6 +649,10 @@ async function capturePage(client, [name, route, width, height, theme, language 
     await clickSelector(client, ".referral-invites .btn");
     await waitForCondition(client, `Boolean(document.querySelector('[role="alertdialog"]'))`, `${name} revoke-invitation dialog`);
   }
+  if (state === "referral-team-edit-open") {
+    await clickSelector(client, ".team-table .btn");
+    await waitForCondition(client, `Boolean(document.querySelector('.referral-modal[role="dialog"]'))`, `${name} Team member dialog`);
+  }
   if (state === "referral-b2b-open") {
     await clickSelector(client, ".referral-directory-table .btn");
     await waitForCondition(client, `Boolean(document.querySelector('.referral-pricing-modal[role="dialog"]'))`, `${name} B2B dialog`);
@@ -732,7 +737,7 @@ async function capturePage(client, [name, route, width, height, theme, language 
   const measuredSize = cssContentSize ?? contentSize;
   const pageHeight = Math.ceil(measuredSize.height);
   const pageWidth = Math.ceil(measuredSize.width);
-  const modalState = state === "key-create-open" || state === "key-edit-open" || state === "key-revoke-open" || state === "referral-revoke-open" || state === "referral-b2b-open";
+  const modalState = state === "key-create-open" || state === "key-edit-open" || state === "key-revoke-open" || state === "referral-revoke-open" || state === "referral-b2b-open" || state === "referral-team-edit-open";
   const screenshot = await client.send("Page.captureScreenshot", modalState ? {
     format: "png",
     fromSurface: true,
@@ -1255,8 +1260,10 @@ async function verifyReferralLayout(client) {
     returnByValue: true,
   });
   const team = JSON.parse(teamResult.result.value);
+  // Invitation is e-mail plus the retained share only; permissions live on the member dialog.
   if (team.emailType !== "email" || team.emailAutocomplete !== "email" || team.maxes.some((value) => Number(value) > 20) ||
-      team.memberEmails.length !== 1 || team.memberEmails.some((item) => item.translate !== "no" || !item.text.includes("@")) || team.tabCurrent !== "Team" || team.checkboxes < 2) {
+      team.maxes.length !== 1 || team.memberEmails.length !== 1 || team.memberEmails.some((item) => item.translate !== "no" || !item.text.includes("@")) ||
+      team.tabCurrent !== "Team" || team.checkboxes !== 0) {
     throw new Error(`Referral Team identity/ceiling failed: ${JSON.stringify(team)}`);
   }
 
