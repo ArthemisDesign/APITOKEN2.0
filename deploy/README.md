@@ -26,9 +26,11 @@ the redacted host cycle excerpt from check run `deploy/watchdog-log`. The full c
 ### Observe-only stage client and watchdog
 
 `agent-merge-stage.sh` uses a separate serial lock. It requires the `stage` ref to equal `master` or
-not exist. It runs the ordinary production-baseline and exact trusted-validation gates through
-`agent-merge.sh --validate-only`, then moves only `stage` and waits for informational `deploy/stage`.
-It never changes `master` and does not create promotion admission.
+not exist, unless `--fix-red` is recovering a red `master`. It runs the ordinary production-baseline
+and exact trusted-validation gates through `agent-merge.sh --validate-only`, then moves only `stage`
+and waits for informational `deploy/stage`. It never changes `master` and does not create promotion
+admission. `agent-merge.sh` then refuses the `master` push unless `deploy/stage` is GREEN for that
+exact SHA, or `--hotfix` is given.
 
 `apitoken-stage-watchdog.timer` polls `stage` as `deploy-stage` inside `staging.slice` and the stage
 netns. Phase 3 validates the exact SHA, rejects host-global candidate paths on the production host,

@@ -2836,7 +2836,12 @@ main() {
   validation_plan_sha256=$VALIDATION_PLAN_SHA256
 
   if [[ $PROCESSED_SHA != "$CANDIDATE_SHA" ]]; then
-    sudo -n /usr/local/lib/apitoken-watchdog/promotion-admission.sh "$CANDIDATE_SHA"
+    CURRENT_PHASE=admitting
+    status "checking host-owned promotion or hotfix admission"
+    if ! admission_out=$(sudo -n /usr/local/lib/apitoken-watchdog/promotion-admission.sh "$CANDIDATE_SHA" 2>&1); then
+      wd_die "${admission_out:-promotion-admission rejected unattested master SHA $CANDIDATE_SHA}"
+    fi
+    [[ -z $admission_out ]] || wd_log "$admission_out"
   fi
 
   if [[ $PROCESSED_SHA == "$CANDIDATE_SHA" && $infra_changed == 0 \

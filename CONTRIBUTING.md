@@ -57,7 +57,10 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
 4. Deliver the exact SHA to the serial stage ref with `./deploy/agent-merge-stage.sh`. Wait for
    `deploy/stage`, `stage/deployed`, and `stage/degradation` to be GREEN. Promotion requires an
    explicit operator attestation for that SHA. Then run `./deploy/agent-merge.sh` without rebasing or
-   adding a commit. A valid host-owned hotfix attestation is the only stage-independent path.
+   adding a commit. `agent-merge.sh` refuses to push `master` unless `deploy/stage` is GREEN for that
+   exact SHA. A valid host-owned hotfix attestation is the only stage-independent path (`--hotfix`).
+   When `master` is already red, `./deploy/agent-merge-stage.sh --fix-red` may replace a frozen
+   unpromoted `stage` SHA; it does not skip attestation.
 5. Run the relevant local tests. Before merging a cross-component change, run the complete gate:
 
    ```bash

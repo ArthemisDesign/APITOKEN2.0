@@ -38,7 +38,9 @@ Check out the branch → its purpose is immediately visible.
 3. **`stage` = mandatory staging trigger.** `deploy/agent-merge-stage.sh` first runs the exact
    production baseline and trusted-validation gates without changing `master`, then uses a separate
    stage lock to move `stage`. A stage SHA remains frozen through degradation and explicit operator
-   attestation. Production accepts only the same exact attested SHA or a valid hotfix attestation.
+   attestation, unless `--fix-red` is recovering a red `master`. Production accepts only the same
+   exact attested SHA or a valid hotfix attestation. `agent-merge.sh` refuses a `master` push
+   without GREEN `deploy/stage` unless `--hotfix`.
 4. **`master` = production trigger.** Merge only via `deploy/agent-merge.sh` and only when the
    change is fully production-ready. Before the gate, the script rejects a red target and rebases
    the branch onto the latest committed `master`, then runs in parallel a fail-closed local

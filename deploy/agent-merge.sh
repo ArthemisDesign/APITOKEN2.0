@@ -12,9 +12,11 @@
 #   * it runs a fail-closed path-aware local gate and trusted production-host validation on the
 #     exact tree it pushes, overlapping them when possible and repeating both only when the SHA
 #     changes;
-#   * it refuses to stack work on a red or still-deploying master.
+#   * it refuses to stack work on a red or still-deploying master;
+#   * it refuses a master push unless deploy/stage is GREEN for that exact SHA, or --hotfix
+#     names the documented host-owned hotfix path.
 #
-# Usage:  deploy/agent-merge.sh [--allow-primary-tree] [--dry-run] [--fix-red]
+# Usage:  deploy/agent-merge.sh [--allow-primary-tree] [--dry-run] [--fix-red] [--hotfix]
 #
 # Agents must run it from their own worktree with no arguments. Human contributors working in a
 # plain clone pass --allow-primary-tree.
@@ -39,13 +41,15 @@ ALLOW_PRIMARY_TREE=0
 DRY_RUN=0
 VALIDATE_ONLY=0
 FIX_RED=0
+HOTFIX=0
 for argument in "$@"; do
   case "$argument" in
     --allow-primary-tree) ALLOW_PRIMARY_TREE=1 ;;
     --dry-run) DRY_RUN=1 ;;
     --validate-only) VALIDATE_ONLY=1 ;;
     --fix-red) FIX_RED=1 ;;
-    -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --hotfix) HOTFIX=1 ;;
+    -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) printf 'agent-merge: unknown argument: %s\n' "$argument" >&2; exit 1 ;;
   esac
 done
@@ -465,6 +469,48 @@ am_read_status() {
   return 0
 }
 
+# Prints the deploy/stage verdict for a SHA. Stubbed separately from deploy/watchdog so a green
+# production parent cannot hide a missing stage admission.
+am_stage_status() {
+  if [[ -n ${AGENT_MERGE_STAGE_STATUS_CMD:-} ]]; then
+    eval "$AGENT_MERGE_STAGE_STATUS_CMD $1" || printf 'unknown'
+    return
+  fi
+  local token
+  token=$(am_token)
+  [[ -n $token ]] || { printf 'unknown'; return; }
+  curl -fsSL --max-time 30 -K - \
+    "https://api.github.com/repos/$AGENT_MERGE_REPO/commits/$1/status" 2>/dev/null <<EOF \
+    | node -e '
+let raw = "";
+process.stdin.on("data", (chunk) => { raw += chunk; });
+process.stdin.on("end", () => {
+  try {
+    const payload = JSON.parse(raw);
+    const verdict = (payload.statuses || []).find((s) => s.context === "deploy/stage");
+    const state = verdict ? String(verdict.state) : "pending";
+    const description = String(verdict?.description || "").replace(/[\t\r\n]/g, " ");
+    process.stdout.write(`${state}\t${description}`);
+  } catch { process.stdout.write("unknown"); }
+});
+' 2>/dev/null || printf 'unknown'
+header = "Authorization: Bearer $token"
+header = "Accept: application/vnd.github+json"
+EOF
+}
+
+am_require_stage_promotable() {
+  local sha=$1 result verdict
+  if (( HOTFIX )); then
+    am_log "WARNING: skipping deploy/stage because --hotfix was given"
+    return
+  fi
+  result=$(am_stage_status "$sha")
+  verdict=${result%%$'\t'*}
+  [[ $verdict == success ]] || am_die "refusing to push $sha to $AGENT_MERGE_TARGET without GREEN deploy/stage (got ${verdict:-unknown}). Run deploy/agent-merge-stage.sh for this exact SHA, wait for GREEN, attest, then merge. Use --hotfix only with a host-owned hotfix attestation."
+  am_log "deploy/stage is GREEN for $sha"
+}
+
 # Redacted host cycle excerpt published as GitHub check run `deploy/watchdog-log`. Agents diagnose
 # a red deploy from this text; they do not need production SSH. Missing Checks permission yields
 # an empty body and the 140-character commit-status description remains the headline.
@@ -851,12 +897,15 @@ for attempt in $(seq 1 "$AGENT_MERGE_PUSH_ATTEMPTS"); do
   fi
   [[ $candidate == "$GATED_SHA" && $candidate == "$VALIDATED_SHA" ]] \
     || am_die "refusing to push a candidate that did not pass both exact-SHA gates"
-  if (( DRY_RUN )); then
-    am_log "dry run: would push $candidate to $AGENT_MERGE_TARGET"
-    exit 0
-  fi
   if (( VALIDATE_ONLY )); then
     am_log "validate-only: exact SHA $candidate passed both gates; no target ref was changed"
+    exit 0
+  fi
+  if [[ $AGENT_MERGE_TARGET == master ]]; then
+    am_require_stage_promotable "$candidate"
+  fi
+  if (( DRY_RUN )); then
+    am_log "dry run: would push $candidate to $AGENT_MERGE_TARGET"
     exit 0
   fi
   if git -C "$ROOT" push "$AGENT_MERGE_REMOTE" "HEAD:$AGENT_MERGE_TARGET"; then

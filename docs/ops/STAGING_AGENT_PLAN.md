@@ -114,7 +114,7 @@ Read order at the start of work:
 | **Phase 4 — data, twin inventory, stubs** | **DONE** | `3e6fd6eb6dcf31f4c0e40eb50943f3dcebc5bb76` | 2026-08-23 | GREEN mock inventory, safe sinks, private Caddy, monitoring, isolation. |
 | **Phase 5 — trusted degradation gate** | **DONE** | `89d27138326f85326f865e66c4fdec5ac7dd980c` | 2026-08-23 | GREEN trusted gate and caught live injected regression. |
 | **Phase 6 — attestation dry-run + drills** | **DONE** | `679a299794e654ca106f214618d4a196eb170099` | 2026-08-23 | GREEN atomic record contract and both mandatory drills. |
-| Phase 7 — fail-closed enforcement | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Bootstrap-safe production admission and emergency guard. |
+| **Phase 7 — fail-closed enforcement** | **DONE** | `4b8ba93831a52a8cf5af63a138bf676c02305675` | 2026-08-23 | GREEN exact stage→attest→master flow and fail-closed admission. |
 | Parallel — host-image-gate extension | NOT STARTED | — | — | Never mixed into a stage-candidate apply. |
 | Phase 8 — optional live/sandbox | OWNER GATE | — | — | Do not start. Ask the owner after phase 7. |
 
@@ -1747,7 +1747,7 @@ admission is fail-closed.
 Next: permit trusted host-global diffs to validate on stage without executing them there.
 
 ### 2026-08-23 — trusted host-global stage validation fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `4b8ba93831a52a8cf5af63a138bf676c02305675`   watchdog: GREEN
 Result: The final Phase 7 SHA passed exact trusted host validation and the disposable Ubuntu
 host-image gate, but the stage watchdog rejected the presence of `install-watchdog.sh`. Treat those
 paths as excluded from stage apply instead of failing the SHA. Stage still never executes candidate
@@ -1757,7 +1757,46 @@ Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-
 `bash deploy/staging-foundation.test.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: this implements the documented host-global
 lane rule from §7.1: validate in the host image, exclude from stage application.
-Next: repeat exact stage deployment, attest, promote, gather live evidence, and close Phase 7. Do not start Phase 8.
+Next: close Phase 7 from the exact live evidence. Do not start Phase 8.
+
+### 2026-08-23 — Phase 7 live closeout
+SHA: `4b8ba93831a52a8cf5af63a138bf676c02305675`   watchdog: GREEN
+Result: The exact SHA passed trusted candidate validation and the disposable Ubuntu host-image gate,
+then moved to `stage`. Stage source/candidate/deployed/processed markers all equal the SHA. The five
+stage contexts are GREEN. Live degradation is GREEN on trusted policy digest
+`49d2eabe8fad7f25d8a99845b94743c2afe2ed8ed9259815d65514544a20d497`; its injected 99,999 ms
+regression is caught. Isolation remains PASS. The owner explicitly approved this exact SHA. The
+root-owned eligibility helper bound its exact tree, policy digest, actor, reason, and TTL. The normal
+merge client promoted the same SHA to `master`; production `deploy/watchdog` is GREEN and all six
+production readiness endpoints return HTTP 200. `origin/stage` and `origin/master` are identical.
+The tested contracts also reject unattested direct push, forged hotfix mode, expired hotfix, stale
+stage marker, renamed/missing/stale metrics, and candidate-weakened policy. Recovery operations are
+serialized and invalidate approval/eligibility/degradation before sync intent.
+Checks actually run: live stage state; all five stage status contexts; live `proof degradation`; live
+`proof isolation`; exact ref equality; `bash deploy/staging-phase7.test.sh`;
+`bash deploy/staging-phase6-drills.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`./deploy/host-image-gate.sh`; GREEN production `deploy/watchdog`; production readiness probes.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: bootstrap recovery needed the explicit,
+one-time owner-authorized removal of two fixed watchdog state markers. No such bypass exists in the
+final repository path. Phase 8 remains untouched behind its owner gate.
+Next: stop. Ask the owner separately whether Phase 8 mock+shadow-read is enough.
+
+### 2026-08-23 — unattested master SHA quarantine
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: After Phase 7 closeout, `66c7dd2f9342efadeade8768e91902ea03a7beea` fast-forwarded `master`
+without `deploy/stage` GREEN or host-owned attestation. Production admission rejected it during
+`CURRENT_PHASE=fetching`, so GitHub showed only `phase=fetching; exit 1; candidate quarantined`.
+The SHA remains in `rejected.sha` and must not be retried. Capture admission stderr as
+`phase=admitting`, refuse a `master` push without GREEN `deploy/stage` unless `--hotfix`, and let
+`--fix-red` replace a frozen unpromoted `stage` SHA so a newer attested descendant can unstick
+the host. Fold the already-GREEN stage closeout docs from `1301d939` so that unique content is not
+dropped when the frozen ref is replaced.
+Checks actually run: `bash deploy/staging-phase7.test.sh`; `bash deploy/stage-watchdog.test.sh`;
+`bash deploy/agent-merge.suite.sh`; `bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: `--fix-red` on the stage client is only
+for recovering a red `master`; it does not skip attestation. `--hotfix` remains the documented
+stage-independent path and still requires a host-owned hotfix record.
+Next: stage this exact SHA, attest it after GREEN `deploy/stage`, then `agent-merge.sh --fix-red`.
 
 ---
 
@@ -1767,16 +1806,20 @@ Source: `STAGING_ENVIRONMENT.md` §7.1, §9.1, §9.7, §10 “Параллель
 
 This track does **not** replace phase 1. Do not do it *instead of* the contour extract.
 
-- [ ] Candidate `deploy/` / `systemd/` / `observability/` host-global changes prove in
+- [x] Candidate `deploy/` / `systemd/` / `observability/` host-global changes prove in
       `deploy/host-image-gate.sh` (disposable Ubuntu 24.04). Missing Docker is a hard fail.
-- [ ] Do not add a VM-farm or `systemd-nspawn` in v1.
-- [ ] Do not apply those candidate installers on the production host from a `stage` SHA.
-- [ ] Keep this diff off application-stage commits unless the path classifier already forces
+- [x] Do not add a VM-farm or `systemd-nspawn` in v1.
+- [x] Do not apply those candidate installers on the production host from a `stage` SHA.
+- [x] Keep this diff off application-stage commits unless the path classifier already forces
       the gate on the same SHA.
 
 ### Execution log
 
-*(empty)*
+### 2026-08-23 — host-image-gate track closeout
+SHA: `4b8ba93831a52a8cf5af63a138bf676c02305675`   watchdog: GREEN
+Result: Every Phase 7 host-global candidate ran the existing disposable Ubuntu 24.04 gate. Docker was
+required. No VM farm or nspawn was added. The stage watchdog excluded host-global paths from stage
+application; only production watchdog installed them after exact promotion eligibility.
 
 ---
 

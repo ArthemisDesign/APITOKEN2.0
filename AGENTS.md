@@ -152,9 +152,11 @@ stage, but a branch name cannot.
 The only staging SSH login an agent may use is `observe-stage`, after the staging
 foundation has provisioned it. `observe-stage` is a forced read-only command with forwarding limited
 to the documented staging veth HTTP ports. It is not a shell and it cannot read production journals.
-The `stage-ctl` identity is forced-command-only and is used only after an explicit operator order;
-Phase 2 enables only `emergency-stop`, while `attest`, `sync`, and `reseed` fail closed. Delivery and
-service cutovers go through `./deploy/agent-merge.sh` and the host watchdog only.
+The `stage-ctl` identity is forced-command-only and is used only after an explicit operator order.
+Phase 7 enables `attest` and `sync` on that identity; `emergency-stop` remains available and
+`reseed` stays fail-closed. `deploy/agent-merge.sh` refuses a `master` push without GREEN
+`deploy/stage` unless `--hotfix` names a host-owned hotfix path. Delivery and service cutovers go
+through `./deploy/agent-merge.sh` and the host watchdog only.
 
 ## What counts as your work
 

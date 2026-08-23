@@ -11,8 +11,20 @@ trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
 git -C "$ROOT" fetch origin master stage 2>/dev/null || git -C "$ROOT" fetch origin master
 master=$(git -C "$ROOT" rev-parse origin/master)
 stage=$(git -C "$ROOT" rev-parse --verify refs/remotes/origin/stage 2>/dev/null || true)
-[[ -z $stage || $stage == "$master" ]] \
-  || { echo "agent-merge-stage: stage is frozen at unpromoted SHA $stage" >&2; exit 1; }
+FIX_RED=0
+for argument in "$@"; do
+  case "$argument" in
+    --fix-red) FIX_RED=1 ;;
+  esac
+done
+if [[ -n $stage && $stage != "$master" ]]; then
+  if (( FIX_RED )); then
+    echo "agent-merge-stage: WARNING: replacing frozen unpromoted SHA $stage because --fix-red was given" >&2
+  else
+    echo "agent-merge-stage: stage is frozen at unpromoted SHA $stage" >&2
+    exit 1
+  fi
+fi
 export AGENT_MERGE_TARGET=master
 export AGENT_MERGE_LOCK=${LOCK}.validation
 export AGENT_MERGE_REQUIRED_CONTEXT=deploy/watchdog

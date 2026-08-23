@@ -8,10 +8,15 @@ This is the operator runbook for `84.32.48.2`. Controller internals live in
 Production delivery is fail-closed. First move the exact SHA to `stage` with
 `deploy/agent-merge-stage.sh`. After GREEN stage deployment/degradation and explicit operator
 attestation (`deploy/promotion-attest.sh <sha> <actor> <reason>`), fast-forward that same SHA to
-`master` with `deploy/agent-merge.sh`. After a hotfix, run `deploy/stage-sync.sh --after-hotfix <sha>`;
+`master` with `deploy/agent-merge.sh`. `agent-merge.sh` refuses that push unless GitHub
+`deploy/stage` is GREEN for the exact SHA, or `--hotfix` names the documented host-owned hotfix
+path. After a hotfix, run `deploy/stage-sync.sh --after-hotfix <sha>`;
 it invalidates stale approval before requesting exact stage convergence. The watchdog rejects
-an unattested master SHA and records `admission-rejected.sha`. A valid host-owned hotfix attestation
-remains usable when staging is down; a `hotfix/*` name is not authorization.
+an unattested master SHA in phase `admitting` and records `admission-rejected.sha`. Do not retry
+that SHA; land a new descendant through stage→attest or hotfix. A valid host-owned hotfix
+attestation remains usable when staging is down; a `hotfix/*` name is not authorization. When
+`master` is already red, `deploy/agent-merge-stage.sh --fix-red` may replace a frozen unpromoted
+`stage` SHA so the newer descendant can be attested.
 
 Pushing or merging to `master` triggers the production-host watchdog. It tests an isolated exact
 commit, takes fresh validated database backups, applies commerce migrations, then health-gated

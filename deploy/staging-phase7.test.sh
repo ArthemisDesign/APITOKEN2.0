@@ -3,7 +3,9 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd); T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 bash -n "$ROOT/deploy/promotion-admission.sh" "$ROOT/deploy/stage-emergency-guard.sh" "$ROOT/deploy/stage-eligible-publish.sh" "$ROOT/deploy/stage-promotion-helper.sh"
 grep -Fq 'if [[ $PROCESSED_SHA != "$CANDIDATE_SHA" ]]' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'CURRENT_PHASE=admitting' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'promotion-admission.sh "$CANDIDATE_SHA"' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'wd_die "${admission_out:-promotion-admission rejected unattested master SHA $CANDIDATE_SHA}"' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'MemAvailable' "$ROOT/deploy/stage-emergency-guard.sh"
 grep -Fq '12582912' "$ROOT/deploy/stage-emergency-guard.sh"
 grep -Fq 'systemctl stop staging.slice' "$ROOT/deploy/stage-emergency-guard.sh"

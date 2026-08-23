@@ -125,6 +125,7 @@ run_merge() {  # $1 = tree, rest = extra env assignments / flags
       AGENT_MERGE_DEPLOYMENT_GATE_CMD="${DEPLOYMENT_GATE_STUB-}" \
       AGENT_MERGE_STATIC_GATE_CMD="${STATIC_GATE_STUB-}" \
       AGENT_MERGE_STATUS_CMD="${STATUS_STUB-printf success}" \
+      AGENT_MERGE_STAGE_STATUS_CMD="${STAGE_STATUS_STUB-printf success}" \
       AGENT_MERGE_FAILURE_LOG_CMD="${FAILURE_LOG_STUB-true}" \
       AGENT_MERGE_VALIDATION_REQUEST_CMD="${VALIDATION_REQUEST_STUB-printf 1}" \
       AGENT_MERGE_VALIDATION_STATUS_CMD="${VALIDATION_STATUS_STUB-printf success}" \
@@ -722,6 +723,33 @@ grep -Fq 'proceeding because --fix-red' "$TEMP/fixred.log" \
 [[ $(git --git-dir="$ORIGIN" rev-parse master) != "$pushed" ]] \
   || wd_die 'the repair did not land'
 pushed=$(git --git-dir="$ORIGIN" rev-parse master)
+
+# An unattested master push is the Phase 7 admission failure class: deploy/tests can be green
+# while production quarantines the SHA. The merge client must refuse before GitHub master moves.
+tree_stage=$(new_agent_worktree agent-stage feat/agent-stage)
+STAGE_STATUS_STUB='printf pending' expect_failure 'an unstaged candidate' \
+  'without GREEN deploy/stage' \
+  run_merge "$tree_stage"
+[[ $(git --git-dir="$ORIGIN" rev-parse master) == "$pushed" ]] \
+  || wd_die 'an unstaged candidate still pushed to master'
+STAGE_STATUS_STUB='printf failure' MERGE_FLAGS=--fix-red \
+  expect_failure 'a red-master repair that skipped stage' \
+  'without GREEN deploy/stage' \
+  run_merge "$tree_stage"
+[[ $(git --git-dir="$ORIGIN" rev-parse master) == "$pushed" ]] \
+  || wd_die 'a skipped-stage repair still pushed to master'
+STAGE_STATUS_STUB='printf failure' MERGE_FLAGS=--hotfix \
+  run_merge "$tree_stage" >"$TEMP/hotfix.log" \
+  || wd_die "a hotfix path was blocked by deploy/stage: $(cat "$TEMP/hotfix.log")"
+grep -Fq 'skipping deploy/stage because --hotfix was given' "$TEMP/hotfix.log" \
+  || wd_die 'the hotfix override was not reported'
+[[ $(git --git-dir="$ORIGIN" rev-parse master) != "$pushed" ]] \
+  || wd_die 'the hotfix path did not land'
+pushed=$(git --git-dir="$ORIGIN" rev-parse master)
+grep -Fq 'without GREEN deploy/stage' "$MERGE" \
+  || wd_die 'the merge client must name the unattested-master refusal'
+grep -Fq -- '--hotfix' "$MERGE" \
+  || wd_die 'the merge client must expose the documented hotfix override'
 
 # No helper and no GITHUB_TOKEN fails closed before the gate or merge. The agent repairs its own
 # credential path and reruns; the workflow must never delegate token supply or green proof to a human.
