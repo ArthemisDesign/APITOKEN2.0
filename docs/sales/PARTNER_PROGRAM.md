@@ -305,7 +305,9 @@ discount.
 - There is no Requests subview. A partner without a self-service B2B grant still submits a reviewed
   B2B request from the owned referral row; the request is decided by an administrator and its effect
   is delivered by the same durable pipeline. Commission-change requests are handled outside the
-  Dashboard.
+  Dashboard. The Sales→Commerce internal request view still carries nullable `customerCommerceUserId`
+  only so Commerce can resolve the latest account email; the browser contract strips that UUID and
+  every Sales partner identity.
 - Promo-code creation and redemption are absent from the active partner/customer/admin interfaces.
   Historical credit/accounting records remain readable by backend reconciliation only; they are
   not a product capability.
