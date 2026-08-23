@@ -10,6 +10,8 @@ import {
   ReferralApplicationController,
 } from "./referral-applications.controller.js";
 import { ReferralApplicationService } from "./referral-applications.service.js";
+import { ReferralInvitationController } from "./referral-invitations.controller.js";
+import { ReferralInvitationService } from "./referral-invitations.service.js";
 import { ReferralSalesClient } from "./referral-sales.client.js";
 import { ReferralService } from "./referral.service.js";
 
@@ -17,10 +19,11 @@ import { ReferralService } from "./referral.service.js";
   controllers: [
     ReferralController,
     ReferralApplicationController,
+    ReferralInvitationController,
     AdminReferralController,
     AdminReferralApplicationController,
     AdminUserReferralController,
   ],
-  providers: [AdminGuard, ReferralSalesClient, ReferralService, ReferralApplicationService],
+  providers: [AdminGuard, ReferralSalesClient, ReferralService, ReferralApplicationService, ReferralInvitationService],
 })
 export class ReferralModule {}

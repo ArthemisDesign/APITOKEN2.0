@@ -59,6 +59,14 @@ immutable funding-lot, allocation, reversal and negative-adjustment tables. No S
 backfill, earnings reader or payout behavior may depend on them until the exact migration SHA has
 green `deploy/migration` and `deploy/watchdog` statuses.
 
+Migration `packages/db/migrations/0050_referral_applications.sql` adds `referral_applications`: the
+partner-access review queue where an ordinary Commerce account applies and an administrator approves
+or rejects. It is a pure expansion — a new table, a partial unique index that keeps one open
+application per account, a queue index and the shared admin-invalidation trigger — and it records
+the review only; partner terms stay authoritative in Sales. The number 0049 is deliberately skipped:
+`0049_retire_pricing_schema.sql` is the reserved name of the pricing-retirement contraction
+described above.
+
 Migrations `packages/db/migrations/0048_admin_change_notify.sql`,
 `packages/sales-db/migrations/0020_admin_change_notify.sql`, and
 `packages/openkeys-db/migrations/0008_admin_change_notify.sql` add transaction-bound, statement-level

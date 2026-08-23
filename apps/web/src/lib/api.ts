@@ -358,6 +358,17 @@ export interface ReferralApplication {
   createdAt: string;
 }
 
+export interface PendingTeamInvitation {
+  id: string;
+  commissionBps: number;
+  retainedShareBps: number;
+  teamOverrideMaxBps: number;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
 export interface ReferralAuthorityInput {
   teamOverrideMaxBps: number;
   teamInvitesEnabled: boolean;
@@ -461,6 +472,12 @@ export const api = {
   }),
   checkout: (id: string) => request<CheckoutView>(`/checkouts/${encodeURIComponent(id)}`),
   referral: () => request<ReferralSnapshot>("/referral"),
+  referralInvitation: () => request<{ invitation: PendingTeamInvitation | null }>("/referral/invitation"),
+  acceptReferralInvitation: () => request<{ accepted: true }>("/referral/invitation/accept", { method: "POST" }),
+  declineReferralInvitation: (inviteId: string) =>
+    request<{ declined: boolean }>("/referral/invitation/decline", {
+      method: "POST", body: JSON.stringify({ inviteId }),
+    }),
   referralApplication: () => request<{ application: ReferralApplication | null }>("/referral/applications/me"),
   submitReferralApplication: (message: string) =>
     request<{ application: ReferralApplication }>("/referral/applications", {

@@ -280,6 +280,13 @@ discount.
   with a required reason. If Commerce cannot resolve one account for a response, the row says that
   email data is unavailable; the Commerce Dashboard never substitutes a UUID, Telegram handle or
   display name. Sales never persists or guesses the email.
+- **Accepting an invitation.** An invitation no longer activates itself when the invited account
+  opens the partner surface: reads resolve membership with `activate: false`. The invitee sees the
+  invitation on their Referral page — their commission, the share the inviter retains (and what that
+  leaves them per $100 of paid usage), their own Team ceiling, the B2B grant and the expiry — and
+  decides. `POST /v1/referral/invitation/accept` is the only path that creates the membership;
+  `POST /v1/referral/invitation/decline` revokes the invitation and leaves the account untouched.
+  Both are session-owned; the browser never sends a partner id.
 - **Team** — an invitation is an account email plus the share you retain from that member's own
   platform commission; every partner may build a Team, so that is no longer a permission and the
   invitation form carries no permission controls. The retained share is capped by the platform hard

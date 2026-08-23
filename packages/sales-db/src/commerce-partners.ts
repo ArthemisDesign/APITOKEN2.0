@@ -486,11 +486,16 @@ export async function revokeCommerceTeamInvite(database: SalesDatabase, input: {
   }
 }
 
-/** Resolve current access and atomically activate a valid account-bound invitation. */
+/**
+ * Resolve current access and, when asked to, atomically activate a valid account-bound
+ * invitation. Reads pass `activate: false` so simply opening the partner surface never joins a
+ * Team behind the invitee's back; joining happens only through an explicit acceptance.
+ */
 export async function resolveCommercePartnerMembership(
   database: SalesDatabase,
-  input: { commerceUserId: string },
+  input: { commerceUserId: string; activate?: boolean },
 ): Promise<CommercePartnerMembershipResolution> {
+  const activateInvitation = input.activate ?? true;
   const client = await database.pool.connect();
   let partnerId: string | null = null;
   let state: "active" | "disabled" | "unavailable" = "unavailable";
@@ -534,7 +539,7 @@ export async function resolveCommercePartnerMembership(
         FOR UPDATE
       `, [input.commerceUserId]);
       const invite = invitation.rows[0];
-      if (!invite) {
+      if (!invite || !activateInvitation) {
         await client.query("COMMIT");
       } else {
         if (invite.partner_id) {
@@ -612,6 +617,106 @@ export async function resolveCommercePartnerMembership(
   return state === "active"
     ? { state, activated, partner }
     : { state, activated: false, partner };
+}
+
+
+/** The pending account-bound invitation an invitee may accept or decline, without consuming it. */
+export interface PendingCommercePartnerInvitation {
+  id: string;
+  inviterCommerceUserId: string | null;
+  commissionBps: number;
+  parentOverrideBps: number;
+  teamOverrideMaxBps: number;
+  teamInvitesEnabled: boolean;
+  b2bEnabled: boolean;
+  b2bMaxDiscountBps: number;
+  b2bCanDelegate: boolean;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+export async function findPendingCommercePartnerInvitation(
+  database: SalesDatabase,
+  commerceUserId: string,
+): Promise<PendingCommercePartnerInvitation | null> {
+  const result = await database.pool.query<{
+    id: string;
+    inviter_commerce_user_id: string | null;
+    commission_bps: number | null;
+    parent_override_bps: number | null;
+    team_override_max_bps: number | null;
+    team_invites_enabled: boolean;
+    b2b_enabled: boolean;
+    b2b_max_discount_bps: number;
+    b2b_can_delegate: boolean;
+    expires_at: Date | null;
+    created_at: Date;
+  }>(`
+    SELECT invite.id,
+           inviter.commerce_user_id AS inviter_commerce_user_id,
+           invite.commission_bps,
+           invite.parent_override_bps,
+           invite.team_override_max_bps,
+           invite.team_invites_enabled,
+           invite.b2b_enabled,
+           invite.b2b_max_discount_bps,
+           invite.b2b_can_delegate,
+           invite.expires_at,
+           invite.created_at
+    FROM partner_invites invite
+    LEFT JOIN partners inviter ON inviter.id = invite.partner_id
+    WHERE invite.commerce_user_id = $1
+      AND invite.consumed_at IS NULL AND invite.revoked_at IS NULL
+      AND (invite.expires_at IS NULL OR invite.expires_at > now())
+    ORDER BY invite.created_at DESC
+    LIMIT 1
+  `, [commerceUserId]);
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    inviterCommerceUserId: row.inviter_commerce_user_id,
+    commissionBps: row.commission_bps ?? 1_000,
+    parentOverrideBps: row.parent_override_bps ?? 0,
+    teamOverrideMaxBps: row.team_override_max_bps ?? COMMERCE_TEAM_SHARE_MAX_BPS,
+    teamInvitesEnabled: row.team_invites_enabled,
+    b2bEnabled: row.b2b_enabled,
+    b2bMaxDiscountBps: row.b2b_enabled ? row.b2b_max_discount_bps : 0,
+    b2bCanDelegate: row.b2b_enabled && row.b2b_can_delegate,
+    expiresAt: row.expires_at ? row.expires_at.toISOString() : null,
+    createdAt: row.created_at.toISOString(),
+  };
+}
+
+/** Decline an account-bound invitation. Only the invitee's own pending invitation is affected. */
+export async function declineCommercePartnerInvitation(
+  database: SalesDatabase,
+  input: { commerceUserId: string; inviteId: string },
+): Promise<{ declined: boolean }> {
+  const client = await database.pool.connect();
+  try {
+    await client.query("BEGIN");
+    await lockCommerceAccount(client, input.commerceUserId);
+    const result = await client.query<{ id: string }>(`
+      UPDATE partner_invites
+      SET revoked_at = now()
+      WHERE id = $1 AND commerce_user_id = $2 AND consumed_at IS NULL AND revoked_at IS NULL
+      RETURNING id
+    `, [input.inviteId, input.commerceUserId]);
+    if (result.rows[0]) {
+      await client.query(`
+        INSERT INTO sales_audit_log (actor_type, actor_id, action, target_type, target_id, metadata)
+        VALUES ('commerce_user', $1, 'commerce_team.invite_declined', 'partner_invite', $2, $3::jsonb)
+      `, [input.commerceUserId, result.rows[0].id, JSON.stringify({ commerceUserId: input.commerceUserId })]);
+    }
+    await client.query("COMMIT");
+    return { declined: Boolean(result.rows[0]) };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /** Atomically bind the only supported payout wallet and its audit evidence. */

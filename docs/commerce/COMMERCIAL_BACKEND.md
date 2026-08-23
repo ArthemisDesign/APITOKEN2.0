@@ -155,6 +155,8 @@ POST      /admin/referral/partners
 PATCH     /admin/referral/partners
 GET       /admin/referral/requests
 POST      /admin/referral/requests/{id}/decision
+GET       /admin/referral/applications?status=pending|approved|rejected
+POST      /admin/referral/applications/{id}/decision
 GET       /admin/referral/payouts
 POST      /admin/referral/payouts/{id}/decision
 GET       /admin/pipeline-health
@@ -162,6 +164,19 @@ GET       /admin/finance/paying-users?days=1|7|30&limit=...&offset=...&funding=p
 GET       /admin/finance/engine-spend?days=1|7|30
 GET       /admin/events  (SSE invalidation feed)
 ```
+
+Partner access is asked for, not assumed. A signed-in account without partner access submits one
+application (`POST /referral/applications`, `GET /referral/applications/me`) stored in commerce
+`referral_applications` (migration `0050_referral_applications`); one open application per account,
+so a repeat submit refreshes the pending row. An administrator decides it in
+`POST /admin/referral/applications/{id}/decision`: approving runs the same partner onboarding as
+`POST /admin/referral/partners` and the decision is written only after that succeeds, so a failed
+Sales call leaves the application pending rather than marking an account approved without access.
+
+A Team invitation is likewise explicit: `GET /referral/invitation` returns the pending terms without
+consuming them, `POST /referral/invitation/accept` is the only path that creates the membership, and
+`POST /referral/invitation/decline` revokes it. All four routes take the owner from the verified
+session; the browser never sends a Sales partner id.
 
 `GET /admin/users` keeps search, filters, sorting and pagination in commerce PostgreSQL, then
 adds live aggregate balance/spend from the engine. Each row also carries the additive

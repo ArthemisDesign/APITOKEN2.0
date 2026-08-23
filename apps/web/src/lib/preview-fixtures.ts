@@ -13,6 +13,7 @@ import {
   type LedgerEntry,
   type ProviderStatus,
   type ReferralActiveSnapshot,
+  type PendingTeamInvitation,
   type ReferralApplication,
   type ReferralSnapshot,
   type TotpSetup,
@@ -203,6 +204,8 @@ const providers: ProviderStatus = {
 const referralNow = new Date();
 // The no-access preview starts with no application on file so the form itself is reviewable.
 let previewApplication: ReferralApplication | null = null;
+// A Team invitation is reviewable on the no-access screen with ?partner-preview=invited.
+let previewInvitation: PendingTeamInvitation | null = null;
 const referralDay = (daysAgo: number) => new Date(referralNow.getTime() - daysAgo * DAY_MS).toISOString();
 const referral: ReferralActiveSnapshot = {
   state: "active",
@@ -352,6 +355,19 @@ export async function previewRequest<T>(path: string, init: RequestInit = {}): P
       return { invitation: referral.invitations[0] } as T;
     }
     case "PATCH /referral/team": return { authority: body(init) } as T;
+    case "GET /referral/invitation": {
+      if (previewInvitation === null && new URLSearchParams(location.search).get("partner-preview") === "invited") {
+        previewInvitation = {
+          id: "1f3f9a34-6f0c-4a70-9c65-2f0b8c9b1d20",
+          commissionBps: 1_000, retainedShareBps: 1_500, teamOverrideMaxBps: 1_000,
+          b2bEnabled: true, b2bMaxDiscountBps: 1_500,
+          expiresAt: referralDay(-21), createdAt: referralDay(2),
+        };
+      }
+      return { invitation: previewInvitation } as T;
+    }
+    case "POST /referral/invitation/accept": return { accepted: true } as T;
+    case "POST /referral/invitation/decline": { previewInvitation = null; return { declined: true } as T; }
     case "GET /referral/applications/me": return { application: previewApplication } as T;
     case "POST /referral/applications": {
       previewApplication = {

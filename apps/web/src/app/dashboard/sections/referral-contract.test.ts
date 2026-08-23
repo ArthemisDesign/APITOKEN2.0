@@ -73,6 +73,14 @@ describe("Commerce Dashboard partner surface", () => {
     expect(apiSource).toContain('request<{ application: ReferralApplication }>("/referral/applications"');
   });
 
+  it("shows a Team invitation with its terms and accepts it explicitly", () => {
+    expect(source).toContain("api.referralInvitation()");
+    expect(source).toContain("api.acceptReferralInvitation");
+    expect(source).toContain("api.declineReferralInvitation");
+    expect(source).toContain("inviteRetained");
+    expect(apiSource).toContain('request<{ accepted: true }>("/referral/invitation/accept"');
+  });
+
   it("contains no promo-code workflow", () => {
     expect(source).not.toMatch(/promo.?code|промокод/i);
     expect(apiSource).not.toContain("redeemPromo");

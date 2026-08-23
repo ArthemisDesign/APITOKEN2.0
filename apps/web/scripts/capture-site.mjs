@@ -161,6 +161,7 @@ const dashboardCaptures = [
   ["dashboard-referral-b2b-dialog-dark", "/dashboard?view=referral&tab=referrals", 1440, 1000, "dark", "en", "referral-b2b-open"],
   ["dashboard-referral-docs-light", "/dashboard?view=referral&tab=docs", 1440, 1000, "light"],
   ["dashboard-referral-ordinary-light", "/dashboard?view=referral&partner-preview=no-access", 1440, 1000, "light"],
+  ["dashboard-referral-invited-dark", "/dashboard?view=referral&partner-preview=invited", 1440, 1000, "dark"],
   ["dashboard-support-dark", "/dashboard?view=support", 1440, 1000, "dark"],
   ["dashboard-support-light", "/dashboard?view=support", 1440, 1000, "light"],
   ["dashboard-profile-light", "/dashboard?view=profile", 1440, 1000, "light"],
@@ -447,7 +448,20 @@ const dashboardFixtureScript = `(() => {
       invitation.revokedAt = new Date().toISOString();
       return json({ invitation: { id: invitation.id, revokedAt: invitation.revokedAt, revoked: true } });
     }
-    if (path === "/referral") return json(location.search.includes("partner-preview=no-access") ? { state: "unavailable", membership: null } : referral);
+    if (path === "/referral") return json(location.search.includes("partner-preview=") ? { state: "unavailable", membership: null } : referral);
+    if (path === "/referral/applications/me") return json({ application: null });
+    if (path === "/referral/invitation") {
+      return json({
+        invitation: location.search.includes("partner-preview=invited")
+          ? {
+            id: "1f3f9a34-6f0c-4a70-9c65-2f0b8c9b1d20",
+            commissionBps: 1000, retainedShareBps: 1500, teamOverrideMaxBps: 1000,
+            b2bEnabled: true, b2bMaxDiscountBps: 1500,
+            expiresAt: referralDate(-21), createdAt: referralDate(2),
+          }
+          : null,
+      });
+    }
     if (path === "/auth/logout") return Promise.resolve(new Response(null, { status: 204 }));
     return json({ message: "Fixture route not found" }, 404);
   };

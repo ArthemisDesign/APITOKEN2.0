@@ -6,6 +6,7 @@ import {
   api,
   ApiError,
   type ReferralActiveSnapshot,
+  type PendingTeamInvitation,
   type ReferralApplication,
   type ReferralAuthorityInput,
   type ReferralSnapshot,
@@ -55,6 +56,8 @@ const copy = {
     teamEditorNote: "This member earns {member} of their referrals' paid usage. You keep {share} of that commission — {mine} per $100 of paid usage.",
     writeTelegram: "Write on Telegram", applyTitle: "Apply for review", applySub: "Tell us what you sell and where your clients come from. An administrator reviews every application by hand.", applyField: "About you and your traffic", applyPlaceholder: "Agency, integrator, community, content — and the volume you expect…", applySubmit: "Submit for review", applySending: "Sending…", applySent: "Your application is in the review queue.", applyTooShort: "Add a couple of sentences so the review has something to go on.",
     applyPendingTitle: "Application in review", applyPendingBody: "An administrator will decide by hand. You keep full access to the rest of the Dashboard meanwhile.", applyRejectedTitle: "Application was declined", applyRejectedBody: "You can apply again once something changes, or talk it through on Telegram.", applySubmitted: "Submitted", applyAnswer: "Reviewer", statusPending: "Pending review", statusRejected: "Declined",
+    inviteTitle: "You were invited to a Team", inviteSub: "A partner invited this account to their Team. Accepting starts your own partner workspace on the terms below; declining leaves the account exactly as it is.", inviteYourCommission: "Your commission", inviteYourCommissionFoot: "Of your referrals' paid usage", inviteRetained: "Retained by the inviter", inviteRetainedFoot: "You keep {net} of paid usage", inviteTeamLimit: "Your Team ceiling", inviteTeamLimitFoot: "The most you may retain from your own members", inviteB2b: "B2B terms", inviteB2bOff: "Off", inviteB2bFoot: "You may set B2B discounts up to this ceiling", inviteB2bOffFoot: "Can be granted later by the inviter",
+    inviteAccept: "Accept invitation", inviteDecline: "Decline", inviteDeclined: "Invitation declined. Nothing changed on the account.",
     heroTitle: "Bring clients. Earn on what they spend.", heroSecondary: "See the terms", heroFact1: "Standard commission", heroFact2: "Team ceiling", heroFact3: "Payouts", heroFact3Foot: "USDT (BEP-20) on BNB Smart Chain", heroFact4: "Payout schedule", heroFact4Foot: "Twice a month, after a 7-day lock",
     heroIdentity: "Your referrals and Team members are existing apiToken.sale accounts, identified by their account email.",
     periodHistorySub: "What you earned in each half-month period and when it is paid out.",
@@ -93,6 +96,8 @@ const copy = {
     teamEditorNote: "Участник получает {member} от оплаченного использования своих рефералов. Вы удерживаете {share} из этой комиссии — {mine} на каждые $100 оплаченного расхода.",
     writeTelegram: "Написать в Telegram", applyTitle: "Подать заявку на рассмотрение", applySub: "Расскажите, что вы продаёте и откуда приходят клиенты. Каждую заявку администратор рассматривает вручную.", applyField: "О вас и вашем трафике", applyPlaceholder: "Агентство, интегратор, сообщество, контент — и ожидаемые объёмы…", applySubmit: "Отправить на рассмотрение", applySending: "Отправляем…", applySent: "Заявка отправлена и ждёт рассмотрения.", applyTooShort: "Добавьте пару предложений, чтобы заявку было по чему рассматривать.",
     applyPendingTitle: "Заявка на рассмотрении", applyPendingBody: "Решение принимает администратор вручную. Остальной Dashboard всё это время работает как обычно.", applyRejectedTitle: "Заявка отклонена", applyRejectedBody: "Можно подать снова, когда что-то изменится, или обсудить в Telegram.", applySubmitted: "Отправлена", applyAnswer: "Ответ", statusPending: "На рассмотрении", statusRejected: "Отклонена",
+    inviteTitle: "Вас пригласили в команду", inviteSub: "Партнёр пригласил этот аккаунт в свою команду. Приняв приглашение, вы получите свой партнёрский раздел на условиях ниже; отказ ничего не меняет в аккаунте.", inviteYourCommission: "Ваша комиссия", inviteYourCommissionFoot: "От оплаченного использования ваших рефералов", inviteRetained: "Удерживает пригласивший", inviteRetainedFoot: "Вам остаётся {net} оплаченного расхода", inviteTeamLimit: "Ваш потолок команды", inviteTeamLimitFoot: "Максимум, который вы сможете удерживать со своих участников", inviteB2b: "B2B-условия", inviteB2bOff: "Выключено", inviteB2bFoot: "Вы сможете давать B2B-скидки до этого потолка", inviteB2bOffFoot: "Пригласивший может выдать позже",
+    inviteAccept: "Принять приглашение", inviteDecline: "Отказаться", inviteDeclined: "Приглашение отклонено. В аккаунте ничего не изменилось.",
     heroTitle: "Приводите клиентов. Зарабатывайте на их тратах.", heroSecondary: "Посмотреть условия", heroFact1: "Стандартная комиссия", heroFact2: "Потолок команды", heroFact3: "Выплаты", heroFact3Foot: "USDT (BEP-20) в сети BNB Smart Chain", heroFact4: "График выплат", heroFact4Foot: "Дважды в месяц, после лока 7 дней",
     heroIdentity: "Ваши рефералы и участники команды — существующие аккаунты apiToken.sale, определяются по почте аккаунта.",
     periodHistorySub: "Сколько вы заработали в каждом полумесячном периоде и когда это выплачивается.",
@@ -197,6 +202,8 @@ function OrdinaryState({ language }: { language: Language }) {
   const locale = language === "ru" ? "ru-RU" : "en-US";
   const standardCommissionBps = 1_000;
   const [application, setApplication] = useState<ReferralApplication | null>(null);
+  const [invitation, setInvitation] = useState<PendingTeamInvitation | null>(null);
+  const [invitationBusy, setInvitationBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -204,12 +211,28 @@ function OrdinaryState({ language }: { language: Language }) {
 
   useEffect(() => {
     let active = true;
-    void api.referralApplication()
-      .then((result) => { if (active) setApplication(result.application); })
-      .catch(() => { /* the invitation stays usable even if the status cannot be read */ })
+    void Promise.allSettled([api.referralApplication(), api.referralInvitation()])
+      .then(([applicationResult, invitationResult]) => {
+        if (!active) return;
+        if (applicationResult.status === "fulfilled") setApplication(applicationResult.value.application);
+        if (invitationResult.status === "fulfilled") setInvitation(invitationResult.value.invitation);
+      })
       .finally(() => { if (active) setLoaded(true); });
     return () => { active = false; };
   }, []);
+
+  async function acceptInvitation() {
+    setInvitationBusy(true); setNotice(null);
+    try { await api.acceptReferralInvitation(); window.location.reload(); }
+    catch (cause) { setNotice({ kind: "bad", message: errorMessage(cause, text.mutationError) }); setInvitationBusy(false); }
+  }
+
+  async function declineInvitation(inviteId: string) {
+    setInvitationBusy(true); setNotice(null);
+    try { await api.declineReferralInvitation(inviteId); setInvitation(null); setNotice({ kind: "ok", message: text.inviteDeclined }); }
+    catch (cause) { setNotice({ kind: "bad", message: errorMessage(cause, text.mutationError) }); }
+    finally { setInvitationBusy(false); }
+  }
 
   async function apply(event: FormEvent) {
     event.preventDefault();
@@ -246,14 +269,29 @@ function OrdinaryState({ language }: { language: Language }) {
       <div className="rp-stat"><div className="rp-stat-l">{text.heroFact4}</div><div className="rp-stat-v">2×</div><div className="rp-stat-f">{text.heroFact4Foot}</div></div>
     </div>
     <div className="rp-stack" style={{ marginTop: 24 }} id="referral-apply">
-      {loaded && (pending || rejected) ? <Card title={pending ? text.applyPendingTitle : text.applyRejectedTitle} sub={pending ? text.applyPendingBody : text.applyRejectedBody}>
+      {invitation && <Card title={text.inviteTitle} sub={text.inviteSub}>
+        <div className="rp-invite-terms">
+          <div><span>{text.inviteYourCommission}</span><b>{pct(invitation.commissionBps, locale)}</b><small>{text.inviteYourCommissionFoot}</small></div>
+          <div><span>{text.inviteRetained}</span><b>{pct(invitation.retainedShareBps, locale)}</b><small>{interpolate(text.inviteRetainedFoot, { net: pct(invitation.commissionBps - Math.round(invitation.commissionBps * invitation.retainedShareBps / 10_000), locale) })}</small></div>
+          <div><span>{text.inviteTeamLimit}</span><b>{pct(invitation.teamOverrideMaxBps, locale)}</b><small>{text.inviteTeamLimitFoot}</small></div>
+          <div><span>{text.inviteB2b}</span><b>{invitation.b2bEnabled ? pct(invitation.b2bMaxDiscountBps, locale) : text.inviteB2bOff}</b><small>{invitation.b2bEnabled ? text.inviteB2bFoot : text.inviteB2bOffFoot}</small></div>
+        </div>
+        <p className="rp-card-sub" style={{ marginTop: 16 }}>{text.inviteExpires}: <b>{date(invitation.expiresAt, locale)}</b></p>
+        <div className="rp-actions">
+          <button type="button" className="btn btn-ghost" disabled={invitationBusy} onClick={() => void declineInvitation(invitation.id)}>{text.inviteDecline}</button>
+          <button type="button" className="btn btn-primary" disabled={invitationBusy} onClick={() => void acceptInvitation()}>{invitationBusy ? text.saving : text.inviteAccept}</button>
+        </div>
+        <LiveNotice notice={notice} />
+      </Card>}
+
+      {loaded && !invitation && (pending || rejected) ? <Card title={pending ? text.applyPendingTitle : text.applyRejectedTitle} sub={pending ? text.applyPendingBody : text.applyRejectedBody}>
         <div className="rp-application">
           <div className="rp-application-state"><Status value={pending ? text.statusPending : text.statusRejected} kind={pending ? "warn" : "bad"} /><span>{text.applySubmitted}: {date(application?.createdAt ?? null, locale)}</span></div>
           {application?.message && <p className="rp-application-message">{application.message}</p>}
           {application?.reviewerNote && <p className="rp-application-note"><b>{text.applyAnswer}:</b> {application.reviewerNote}</p>}
           <div className="rp-actions"><a className="btn btn-ghost" href="https://t.me/bozinodev" target="_blank" rel="noreferrer">{text.writeTelegram}</a></div>
         </div>
-      </Card> : <form className="rp-card" onSubmit={apply}>
+      </Card> : !invitation ? <form className="rp-card" onSubmit={apply}>
         <h3 className="rp-card-title">{text.applyTitle}</h3>
         <p className="rp-card-sub">{text.applySub}</p>
         <Field label={text.applyField}><textarea name="referralApplication" rows={4} maxLength={2_000} autoComplete="off" value={message} onChange={(event) => setMessage(event.target.value)} placeholder={text.applyPlaceholder} /></Field>
@@ -262,7 +300,7 @@ function OrdinaryState({ language }: { language: Language }) {
           <button className="btn btn-primary" disabled={busy || !loaded}>{busy ? text.applySending : text.applySubmit}</button>
         </div>
         <LiveNotice notice={notice} />
-      </form>}
+      </form> : null}
 
       <CommissionFormula commissionBps={standardCommissionBps} language={language} />
       <Card title={text.howTitle}>

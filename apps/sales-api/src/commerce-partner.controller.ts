@@ -54,6 +54,8 @@ import {
   PartnerRequestNotFoundError,
   PartnerRequestValidationError,
   PartnerTeamAuthorityError,
+  declineCommercePartnerInvitation,
+  findPendingCommercePartnerInvitation,
   resolveCommercePartnerMembership,
   revokeCommerceTeamInvite,
   TeamMemberNotFoundError,
@@ -274,6 +276,40 @@ export class CommercePartnerController {
     };
   }
 
+  @Get("invitations/:commerceUserId")
+  @Header("Cache-Control", "no-store")
+  async pendingInvitation(@Param("commerceUserId") commerceUserId: string): Promise<unknown> {
+    const id = commerceUserIdSchema.safeParse(commerceUserId);
+    if (!id.success) throw new BadRequestException("invalid Commerce user id");
+    return { invitation: await findPendingCommercePartnerInvitation(this.database, id.data) };
+  }
+
+  /** Explicit acceptance: this is the only path that turns an invitation into a membership. */
+  @Post("invitations/:commerceUserId/accept")
+  @HttpCode(200)
+  async acceptInvitation(@Param("commerceUserId") commerceUserId: string): Promise<unknown> {
+    const id = commerceUserIdSchema.safeParse(commerceUserId);
+    if (!id.success) throw new BadRequestException("invalid Commerce user id");
+    const result = await resolveCommercePartnerMembership(this.database, { commerceUserId: id.data, activate: true });
+    if (result.state !== "active") throw new NotFoundException("no invitation to accept");
+    return { state: result.state, activated: result.activated, membership: partnerAccess(result.partner) };
+  }
+
+  @Post("invitations/:commerceUserId/decline")
+  @HttpCode(200)
+  async declineInvitation(
+    @Param("commerceUserId") commerceUserId: string,
+    @Body() body: unknown,
+  ): Promise<unknown> {
+    const id = commerceUserIdSchema.safeParse(commerceUserId);
+    const parsed = z.object({ inviteId: z.string().uuid() }).strict().safeParse(body);
+    if (!id.success || !parsed.success) throw new BadRequestException("invalid invitation decline");
+    return declineCommercePartnerInvitation(this.database, {
+      commerceUserId: id.data,
+      inviteId: parsed.data.inviteId,
+    });
+  }
+
   @Get("partner/:commerceUserId")
   @Header("Cache-Control", "no-store")
   async partnerSnapshot(
@@ -283,7 +319,7 @@ export class CommercePartnerController {
     const id = commerceUserIdSchema.safeParse(commerceUserId);
     const days = z.coerce.number().int().min(1).max(365).default(30).safeParse(daysRaw);
     if (!id.success || !days.success) throw new BadRequestException("invalid partner snapshot query");
-    const resolution = await resolveCommercePartnerMembership(this.database, { commerceUserId: id.data });
+    const resolution = await resolveCommercePartnerMembership(this.database, { commerceUserId: id.data, activate: false });
     if (resolution.state !== "active") {
       return { state: resolution.state, membership: resolution.partner ? partnerAccess(resolution.partner) : null };
     }
