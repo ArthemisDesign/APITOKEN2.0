@@ -19,6 +19,7 @@ RUN apt-get update \
         e2fsprogs \
         iproute2 \
         jq \
+        git \
         nftables \
         slirp4netns \
         fuse-overlayfs \

@@ -53,6 +53,7 @@ grep -Fq 'systemctl start apitoken-stage-source-fetch.timer apitoken-stage-repor
 bash "$ROOT/deploy/stage-watchdog.test.sh"
 bash "$ROOT/deploy/staging-twin.test.sh"
 bash "$ROOT/deploy/stage-degrade-gate.test.sh"
+bash "$ROOT/deploy/staging-phase6-drills.test.sh"
 grep -Fq 'for stage_unit in staging.slice apitoken-rootless-docker-stage.service' "$ROOT/deploy/install-watchdog.sh"
 grep -Fq 'install -d -o root -g deploy-stage -m 0750 /usr/local/lib/apitoken-watchdog/stage' "$ROOT/deploy/install-watchdog.sh"
 ! grep -Fq '/usr/local/lib/apitoken-watchdog/stage /usr/local/bin' "$ROOT/systemd/apitoken-deploy-watchdog.service"

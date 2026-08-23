@@ -169,6 +169,7 @@ policy_sha256=$(
     deploy/stage-stub-server.py \
     deploy/stage-seed.sh \
     deploy/stage-gc.sh \
+    deploy/stage-attestation.py \
     deploy/stage-degrade-gate.py \
     deploy/stage-degradation-policy.json \
     deploy/stage-load-generator.py \

@@ -113,7 +113,7 @@ Read order at the start of work:
 | **Phase 3 — observe-only stage watchdog** | **DONE** | `0bb3eaff44d56bd68d712f26b6afe7576461a437` | 2026-08-23 | GREEN serial stage deployment and informational contexts. |
 | **Phase 4 — data, twin inventory, stubs** | **DONE** | `3e6fd6eb6dcf31f4c0e40eb50943f3dcebc5bb76` | 2026-08-23 | GREEN mock inventory, safe sinks, private Caddy, monitoring, isolation. |
 | **Phase 5 — trusted degradation gate** | **DONE** | `89d27138326f85326f865e66c4fdec5ac7dd980c` | 2026-08-23 | GREEN trusted gate and caught live injected regression. |
-| Phase 6 — attestation dry-run + drills | **IN PROGRESS** | — | 2026-08-23 | Started only after Phase 5 live proof. |
+| Phase 6 — attestation dry-run + drills | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Host-owned record contract plus fault and hotfix drills. |
 | Phase 7 — fail-closed enforcement | BLOCKED on 6 | — | — | Only after both drills. |
 | Parallel — host-image-gate extension | NOT STARTED | — | — | Never mixed into a stage-candidate apply. |
 | Phase 8 — optional live/sandbox | OWNER GATE | — | — | Do not start. Ask the owner after phase 7. |
@@ -1581,17 +1581,17 @@ Source: `STAGING_ENVIRONMENT.md` §6.2–6.5, §9.2–9.5, §10 phase 6.
 
 ### In scope
 
-- [ ] Host-owned attestation record. GitHub status is a mirror, not admission.
+- [x] Host-owned attestation record. GitHub status is a mirror, not admission.
       Fields: `STAGING_ENVIRONMENT.md` §9.3. TTL 24h. `unix_user=deploy`. Audit
       `github_actor` + named `commit_sha`.
 - [ ] `deploy/promotion-attest.sh` from the agent laptop calls `stage-ctl` ForceCommand
       **only** after the operator names the SHA in that conversation.
-- [ ] Identity unit: `{commit_sha, tree_sha, artifact_digests, policy_digest}`.
-- [ ] Invalidation: rebase, new commit, master movement, digest change, TTL, emergency-stop,
+- [x] Identity unit: `{commit_sha, tree_sha, artifact_digests, policy_digest}`.
+- [x] Invalidation: rebase, new commit, master movement, digest change, TTL, emergency-stop,
       failed promotion/stage-sync.
 - [ ] Production-watchdog **logs** missing/invalid attestation. It does **not** yet block
       ordinary merges.
-- [ ] Injected-fault drill **and** hotfix drill. Write both into `docs/audits/` (new dated
+- [x] Injected-fault drill **and** hotfix drill. Write both into `docs/audits/` (new dated
       files, append-only). Index them in `docs/README.md`.
 - [ ] Hotfix path still uses `deploy/agent-merge.sh` into `master` with host-owned
       `mode=hotfix`. Branch name `hotfix/*` is not authorization.
@@ -1605,7 +1605,32 @@ Source: `STAGING_ENVIRONMENT.md` §6.2–6.5, §9.2–9.5, §10 phase 6.
 
 ### Execution log
 
-*(empty)*
+### 2026-08-23 — Phase 6 attestation contract and mandatory drills
+SHA: `b20b9789bdb825066041cbb2616235bc19bfacb3`   watchdog: RED
+Result: Add an atomic host-owned attestation record with mode, Unix identity `deploy`, actor,
+commit/tree identity, artifact map, trusted policy digest, stage contour, 24-hour TTL, reason,
+candidate marker, and record digest. Contract tests issue promotion and hotfix fixtures and reject
+marker movement. Record the completed live degradation fault drill and an offline hotfix attestation
+in append-only audit documents. Production-watchdog admission remains unchanged and no operator
+attestation is issued automatically.
+Checks actually run: `bash deploy/staging-phase6-drills.test.sh`;
+`bash deploy/stage-degrade-gate.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: the hotfix drill is offline and does not push
+a production hotfix; it proves exact record identity and invalidation without risking production.
+`promotion-attest.sh` remains inert because no operator named a SHA in this conversation.
+Next: make policy input explicit in the attestation contract.
+
+### 2026-08-23 — attestation policy path forward fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Trusted static validation runs as the unprivileged CI user and found the installed root policy
+file but could not read it; the test fallback selected it by existence. Require an explicit
+`STAGE_POLICY_FILE`, defaulting to the repository policy for tests. The installed caller must name the
+root policy path. No fallback based on visibility remains.
+Checks actually run: `bash deploy/staging-phase6-drills.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED exact-SHA validation.
+Next: merge on GREEN, verify ordinary production merges remain unblocked, then close Phase 6.
 
 ---
 

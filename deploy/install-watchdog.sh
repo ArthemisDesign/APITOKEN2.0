@@ -298,6 +298,8 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/stage-report-publish
   install -o root -g root -m 0755 "$ROOT/deploy/stage-unit-renderer.py" \
     /usr/local/lib/apitoken-watchdog/stage-unit-renderer.py
+  install -o root -g root -m 0755 "$ROOT/deploy/stage-attestation.py" \
+    /usr/local/lib/apitoken-watchdog/stage-attestation.py
   install -o root -g root -m 0755 "$ROOT/deploy/stage-degrade-gate.py" \
     /usr/local/lib/apitoken-watchdog/stage-degrade-gate.py
   install -o root -g deploy-stage -m 0640 "$ROOT/deploy/stage-degradation-policy.json" \
