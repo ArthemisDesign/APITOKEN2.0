@@ -113,8 +113,8 @@ Read order at the start of work:
 | **Phase 3 — observe-only stage watchdog** | **DONE** | `0bb3eaff44d56bd68d712f26b6afe7576461a437` | 2026-08-23 | GREEN serial stage deployment and informational contexts. |
 | **Phase 4 — data, twin inventory, stubs** | **DONE** | `3e6fd6eb6dcf31f4c0e40eb50943f3dcebc5bb76` | 2026-08-23 | GREEN mock inventory, safe sinks, private Caddy, monitoring, isolation. |
 | **Phase 5 — trusted degradation gate** | **DONE** | `89d27138326f85326f865e66c4fdec5ac7dd980c` | 2026-08-23 | GREEN trusted gate and caught live injected regression. |
-| Phase 6 — attestation dry-run + drills | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Host-owned record contract plus fault and hotfix drills. |
-| Phase 7 — fail-closed enforcement | BLOCKED on 6 | — | — | Only after both drills. |
+| **Phase 6 — attestation dry-run + drills** | **DONE** | `679a299794e654ca106f214618d4a196eb170099` | 2026-08-23 | GREEN atomic record contract and both mandatory drills. |
+| Phase 7 — fail-closed enforcement | **IN PROGRESS** | — | 2026-08-23 | Started only after Phase 6 and both audits. |
 | Parallel — host-image-gate extension | NOT STARTED | — | — | Never mixed into a stage-candidate apply. |
 | Phase 8 — optional live/sandbox | OWNER GATE | — | — | Do not start. Ask the owner after phase 7. |
 
@@ -1622,7 +1622,7 @@ a production hotfix; it proves exact record identity and invalidation without ri
 Next: make policy input explicit in the attestation contract.
 
 ### 2026-08-23 — attestation policy path forward fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `679a299794e654ca106f214618d4a196eb170099`   watchdog: GREEN
 Result: Trusted static validation runs as the unprivileged CI user and found the installed root policy
 file but could not read it; the test fallback selected it by existence. Require an explicit
 `STAGE_POLICY_FILE`, defaulting to the repository policy for tests. The installed caller must name the
@@ -1631,6 +1631,18 @@ Checks actually run: `bash deploy/staging-phase6-drills.test.sh`; `bash deploy/s
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED exact-SHA validation.
 Next: merge on GREEN, verify ordinary production merges remain unblocked, then close Phase 6.
+
+### 2026-08-23 — Phase 6 closeout
+SHA: `679a299794e654ca106f214618d4a196eb170099`   watchdog: GREEN
+Result: Promotion and hotfix attestation fixtures issue complete host-owned records with 24-hour TTL
+and exact marker binding, then reject marker movement. The live injected-fault drill and offline
+hotfix drill are recorded in append-only audits and indexed. Ordinary production merge/deploy stayed
+GREEN because Phase 6 does not enforce admission. No operator attestation or stage sync was invoked.
+Checks actually run: `bash deploy/staging-phase6-drills.test.sh`; live Phase 5 fault proof evidence;
+GREEN exact-SHA production `deploy/watchdog`; docs index validation.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: hotfix drill is offline and production safe;
+it proves record and invalidation semantics without a live production hotfix.
+Next: Phase 7 — fail-closed enforcement in a fresh managed worktree.
 
 ---
 
