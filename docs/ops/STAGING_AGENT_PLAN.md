@@ -110,7 +110,7 @@ Read order at the start of work:
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
 | **Phase 2 — trusted contour foundation** | **DONE** | `76263deea700fe0fb32ebcfe53af24b0def409cd` | 2026-08-23 | GREEN live stores, isolation, pressure, and read-only observation. |
-| Phase 3 — observe-only stage watchdog | **IN PROGRESS** | *(this commit)* | 2026-08-23 | Serial stage ref, poller, caller-bound informational reporting. |
+| Phase 3 — observe-only stage watchdog | **IN PROGRESS** | `b287697c56335bf3b1268e5a6660c25b565f093b` | 2026-08-23 | GREEN code; fixing stage controller root publication. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
 | Phase 6 — attestation dry-run + drills | BLOCKED on 5 | — | — | Injected-fault **and** hotfix drills. |
@@ -1041,7 +1041,7 @@ Next: merge on GREEN production watchdog, create the initial stage ref through t
 verify informational statuses before closing Phase 3.
 
 ### 2026-08-23 — pricing retirement fixture forward fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `b287697c56335bf3b1268e5a6660c25b565f093b`   watchdog: RED
 Result: Trusted validation exposed a pre-existing static-suite defect after migration `0050` landed:
 the pricing retirement fixture appended a synthetic `0049` as journal entry 50, so it no longer
 modeled the canonical contraction. Insert the synthetic contraction before the real entry 49 and
@@ -1050,7 +1050,18 @@ Checks actually run: `bash deploy/pricing-retirement-admission.test.sh`;
 `bash deploy/watchdog-lib.test.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: unrelated merge-gate forward fix required to
 obtain a valid exact-SHA trusted verdict; no staging lock changed.
-Next: renew exact-SHA validation and merge Phase 3.
+Next: fix stage controller root publication on a new SHA; do not retry this SHA.
+
+### 2026-08-23 — stage controller root publication fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Production delivery of `b287697c` failed because GNU `install -d -o -g -m` cannot create and
+attribute a missing final directory in this protected controller transaction. Create the root first,
+then apply the locked owner, group, and mode in separate operations. No stage candidate code or
+production state is broadened.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED delivery; no lock changed.
+Next: verify the stage timer live, then initialize `stage` through the stage client.
 
 ---
 

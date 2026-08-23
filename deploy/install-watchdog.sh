@@ -275,7 +275,9 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/contour-production.json
   install -o root -g root -m 0644 "$ROOT/deploy/contour-stage.json" \
     /usr/local/lib/apitoken-watchdog/contour-stage.json
-  install -d -o root -g deploy-stage -m 0750 /usr/local/lib/apitoken-stage
+  mkdir -p /usr/local/lib/apitoken-stage
+  chown root:deploy-stage /usr/local/lib/apitoken-stage
+  chmod 0750 /usr/local/lib/apitoken-stage
   install -o root -g deploy-stage -m 0640 "$ROOT/deploy/contour-stage.json" \
     /usr/local/lib/apitoken-stage/contour-stage.json
   install -o root -g deploy-stage -m 0640 "$ROOT/deploy/contour-config.schema.json" \
