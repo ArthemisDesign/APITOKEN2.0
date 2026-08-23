@@ -9,14 +9,14 @@ import { refreshMountedResources } from "@/lib/resources";
 import { useRealtimeStatus } from "@/lib/realtime";
 import { LanguageToggle, useI18n } from "@/lib/i18n";
 
-const MOBILE_NAV_QUERY = "(max-width: 920px)";
+const MOBILE_NAV_QUERY = "(max-width: 1023px)";
 
 // Сайдбар портирован из shell() в admin-panel.js: бренд, группы навигации,
 // футер с env, состоянием realtime, точечным обновлением текущего экрана
 // и переключателем темы (◐, сохраняется в localStorage).
-// На viewport ≤920px это липкая шапка и выезжающий список разделов: горизонтальная
-// лента из 18 пунктов оставляла на экране только три ссылки и прятала шапку
-// под Error Center.
+// На viewport ≤1023px (включая iPhone 14 Pro Max portrait и landscape) это
+// липкая шапка и выезжающий список разделов. Горизонтальная лента из 18 пунктов
+// оставляла на экране только три ссылки и прятала шапку под Error Center.
 export function Sidebar() {
   const pathname = usePathname();
   const realtime = useRealtimeStatus();

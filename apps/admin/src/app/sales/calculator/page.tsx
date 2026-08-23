@@ -229,10 +229,10 @@ export default function SalesCalculatorPage() {
                       <small>{PROVIDER_LABEL[metric.product.provider]} · {metric.product.quotaLabel} · {metric.profiles} в пуле</small>
                     </span>
                   </span>
-                  <span><WindowValue metric={metric.fiveHour} /></span>
-                  <span><WindowValue metric={metric.sevenDay} /></span>
-                  <span><WindowValue metric={metric.month} /></span>
-                  <span><EvidenceStatus metric={metric} /></span>
+                  <span data-label="5 часов"><WindowValue metric={metric.fiveHour} /></span>
+                  <span data-label="7 дней"><WindowValue metric={metric.sevenDay} /></span>
+                  <span data-label="30 дней"><WindowValue metric={metric.month} /></span>
+                  <span data-label="Доказательства"><EvidenceStatus metric={metric} /></span>
                 </button>
               );
             })}

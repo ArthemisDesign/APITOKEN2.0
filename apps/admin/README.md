@@ -48,9 +48,11 @@ to the existing fenced payout execution state machine); authentication
 - `src/lib/theme.ts` — `THEME_STORAGE_KEY` (`apitoken-admin-theme:v1`), `toggleTheme`.
 - `src/lib/types.ts` — backend payload types (all fields optional).
 - `src/components/ui.tsx` — `PageHead`, `SectionHeader`, `CardGrid`, `StatCard`,
-  `Banner`, `Dot`, `Pill`, `TableCard`, `EmptyRow`, `LoadingGrid`, `Modal`
+  `Banner`, `Dot`, `Pill`, `TableCard` (stamps column labels for the phone card
+  stack), `EmptyRow`, `LoadingGrid`, `Modal`
   (Esc/overlay close, Tab trap, focus restore; `wide` for wide modals).
-- `src/components/sidebar.tsx` — sidebar with navigation, realtime health, current-screen refresh, and theme. On viewports ≤920px it becomes a sticky 56px chrome plus a full-screen section drawer (`#admin-nav`, Escape / route change / burger close); the previous horizontal 18-item scroller is gone.
+- `src/components/sidebar.tsx` — sidebar with navigation, realtime health, current-screen refresh, and theme. On viewports ≤1023px (iPhone 14 Pro Max portrait and landscape included) it becomes a sticky 56px chrome plus a full-screen section drawer (`#admin-nav`, Escape / route change / burger close).
+- `src/lib/table-labels.ts` — copies `thead` text onto `td[data-label]` so phone CSS can stack every `TableCard` row as a labeled card instead of a 1000px+ sideways scroller.
 - `src/components/error-center.tsx` — `<ErrorCenter/>` (mounted in the layout):
   red cards for failing sources with ↻/×, reads the shared request-cache error registry.
 - `src/components/spend-stats-modal.tsx` — the "Кто тратит" ("Who is spending") modal (`/spend-stats`,

@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, type ReactNode } from "react";
+import { stampTableLabels } from "@/lib/table-labels";
 
 // UI-примитивы админки — визуальные аналоги хелперов admin-panel.js
 // (card/pill/banner/empty/dialog). Классы совпадают с globals.css.
@@ -98,11 +99,21 @@ export function Pill(props: { kind?: Tone | "info"; children: ReactNode }) {
   return <span className={"pill" + (props.kind ? " " + props.kind : "")}>{props.children}</span>;
 }
 
-// Табличная карточка: обёртка с горизонтальным скроллом. Разметку table
-// пишет страница (th/td со sticky-заголовком — глобальные стили).
+// Табличная карточка: на desktop — горизонтальный скролл; на телефоне CSS
+// складывает строки в карточки, а заголовки колонок копируются в data-label.
 export function TableCard(props: { children: ReactNode }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const stamp = () => stampTableLabels(root);
+    stamp();
+    const observer = new MutationObserver(stamp);
+    observer.observe(root, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
   return (
-    <div className="tcard">
+    <div className="tcard" ref={rootRef}>
       <div className="tscroll">{props.children}</div>
     </div>
   );
