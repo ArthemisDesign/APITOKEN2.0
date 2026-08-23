@@ -1147,10 +1147,19 @@ outside the netns; candidate execution and reporting remain inside the isolated 
 Next: replace the unavailable macOS `flock` in the stage client.
 
 ### 2026-08-23 — portable stage client lock
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `2357fdd443d2fcf45f7d09bbf48cc40161741a01`   watchdog: GREEN
 Result: The first stage client invocation failed before validation because macOS has no `flock`.
 Use the same atomic lock-directory pattern as `agent-merge.sh`, with an EXIT trap that removes only
 the owned directory. Serial freeze and ref lease rules are unchanged.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: migrate the old lock-file name, then initialize `stage`.
+
+### 2026-08-23 — stage client lock name migration
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The failed `flock` implementation left a regular file at the original lock path, so the new
+atomic directory lock correctly refused to replace it. Use a new `.d` lock path. The old file remains
+inert. Serial ownership and cleanup semantics stay unchanged.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
 Next: initialize `stage` through the stage client and verify informational statuses.

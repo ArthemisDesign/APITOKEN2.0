@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-LOCK=${AGENT_MERGE_STAGE_LOCK:-$HOME/.claude-api/stage-merge.lock}
+LOCK=${AGENT_MERGE_STAGE_LOCK:-$HOME/.claude-api/stage-merge.lock.d}
 mkdir -p "$(dirname -- "$LOCK")"
 if ! mkdir "$LOCK" 2>/dev/null; then
   echo 'agent-merge-stage: another serial stage batch owns the lock' >&2
