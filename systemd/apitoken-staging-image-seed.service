@@ -1,0 +1,12 @@
+[Unit]
+Description=Seed pinned store images into staging rootless Docker
+Requires=apitoken-rootless-docker-stage.service
+After=apitoken-rootless-docker-stage.service
+ConditionPathIsMountPoint=/var/lib/apitoken-staging
+
+[Service]
+Type=oneshot
+Slice=staging.slice
+ExecStart=/usr/local/lib/apitoken-watchdog/staging-image-seed.sh
+RemainAfterExit=yes
+TimeoutStartSec=180

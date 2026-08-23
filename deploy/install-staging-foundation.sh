@@ -128,5 +128,5 @@ loginctl enable-linger deploy-stage || echo 'staging-foundation: linger deferred
 # Do not synchronously start a unit that Requires this still-activating oneshot. Queue no-block jobs
 # after the foundation has committed, so dependency ordering cannot deadlock the manager transaction.
 systemctl start --no-block apitoken-rootless-docker-stage.service \
-  apitoken-postgres-stage.service apitoken-redis-stage.service
+  apitoken-staging-image-seed.service apitoken-postgres-stage.service apitoken-redis-stage.service
 printf 'staging-foundation: ready\n'

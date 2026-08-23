@@ -1033,7 +1033,8 @@ wd_path_is_systemd_definition() {
     systemd/apitoken-sudoers-install.service|systemd/apitoken-tmpfiles-install.service|\
     systemd/apitoken-sysctl-install.service|systemd/apitoken-observe-install.service|\
     systemd/apitoken-staging-foundation-install.service|\
-    systemd/apitoken-rootless-docker-stage.service|systemd/apitoken-postgres-stage.service|\
+    systemd/apitoken-rootless-docker-stage.service|systemd/apitoken-staging-image-seed.service|\
+    systemd/apitoken-postgres-stage.service|\
     systemd/apitoken-redis-stage.service|systemd/staging.slice|\
     systemd/apitoken-postgres.service|systemd/apitoken-affinity-redis.service|\
     systemd/apitoken-worker.service|systemd/apitoken-content-studio.service|\

@@ -57,9 +57,13 @@ for compose in staging-postgres.compose.yaml staging-redis.compose.yaml; do
   grep -Fq 'cgroup_parent: staging.slice' "$ROOT/deploy/$compose"
   ! grep -Eq '5434|127\.0\.0\.1|/var/run/docker.sock|privileged:' "$ROOT/deploy/$compose"
 done
+grep -Fq 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2' "$ROOT/deploy/staging-postgres.compose.yaml"
+grep -Fq 'docker save -o "$archive" "$image"' "$ROOT/deploy/staging-image-seed.sh"
+grep -Fq 'docker load -i "$archive"' "$ROOT/deploy/staging-image-seed.sh"
 grep -Fq '10.254.32.2:5433:5432' "$ROOT/deploy/staging-postgres.compose.yaml"
 grep -Fq '10.254.32.2:6379:6379' "$ROOT/deploy/staging-redis.compose.yaml"
 grep -Fq '10.254.32.2:6380:6379' "$ROOT/deploy/staging-redis.compose.yaml"
+[[ -f $ROOT/systemd/apitoken-staging-image-seed.service ]]
 for unit in apitoken-postgres-stage.service apitoken-redis-stage.service; do
   grep -Fxq 'Slice=staging.slice' "$ROOT/systemd/$unit"
   grep -Fxq 'ConditionPathIsMountPoint=/var/lib/apitoken-staging' "$ROOT/systemd/$unit"

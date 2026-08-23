@@ -109,7 +109,7 @@ Read order at the start of work:
 | Phase 0 — owner decisions | **DONE** | `6ab9e763c838323f4575f9e056a5b152eb114122` | 2026-08-22 | Interview lock. `STAGING_ENVIRONMENT.md` v8. |
 | This execution plan | **DONE** | *(this commit)* | 2026-08-22 | File created. No runtime code. |
 | **Phase 1 — `contour-config` extract** | **DONE** | `7e5b9840f19ee0130546c73c111816624c2af5b2` | 2026-08-23 | Production-only extract. GREEN `deploy/watchdog`; no staging host object. |
-| Phase 2 — trusted contour foundation | **IN PROGRESS** | `231611a2817064215bdd5d9d563e1ca9d4fda0e5` | 2026-08-23 | GREEN private tmp config; forcing full replay. |
+| Phase 2 — trusted contour foundation | **IN PROGRESS** | `a37191f0b822e8b8a5ad720eccd427318f6a7272` | 2026-08-23 | GREEN rootless daemon; seeding pinned images without stage egress. |
 | Phase 3 — observe-only stage watchdog | BLOCKED on 2 | — | — | Informational statuses only. |
 | Phase 4 — data, twin inventory, stubs | BLOCKED on 3 | — | — | Seed/reseed, mock sinks, stage Caddy. |
 | Phase 5 — trusted degradation gate | BLOCKED on 4 | — | — | 60 min A/B. Full canary. Shadow-read not before this. |
@@ -621,11 +621,22 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock cha
 Next: force a full private-tmp replay, then verify stores, isolation, and pressure.
 
 ### 2026-08-23 — rootless private-tmp full-apply marker
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `a37191f0b822e8b8a5ad720eccd427318f6a7272`   watchdog: GREEN
 Result: Add an immutable marker to the stateful foundation installer so the GREEN private-tmp unit
 change reruns the full trusted transaction. No runtime behavior or lock value changes.
 Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash deploy/watchdog-lib.test.sh`;
 `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
+Next: seed pinned images without stage egress, then verify stores, isolation, and pressure.
+
+### 2026-08-23 — pinned stage image seeding
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The rootless daemon is active and correctly has no public egress, so direct image pulls fail.
+Pin the PostgreSQL digest and add a trusted host-side image bridge: production Docker exports only
+the two reviewed pinned images to private temporary archives, and the rootless daemon imports them.
+Store units require the seed oneshot before Compose starts. No credential or network boundary changes.
+Checks actually run: `bash deploy/staging-foundation.test.sh`; `bash -n deploy/*.sh`;
+`./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: none.
 Next: verify live stores, isolation, and pressure.
 

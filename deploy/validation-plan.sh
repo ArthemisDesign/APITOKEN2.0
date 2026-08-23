@@ -158,10 +158,12 @@ policy_sha256=$(
     deploy/staging-pressure-proof.sh \
     deploy/staging-postgres.compose.yaml \
     deploy/staging-redis.compose.yaml \
+    deploy/staging-image-seed.sh \
     deploy/sudoers.d/96-apitoken-stage \
     systemd/staging.slice \
     systemd/apitoken-staging-foundation-install.service \
     systemd/apitoken-rootless-docker-stage.service \
+    systemd/apitoken-staging-image-seed.service \
     systemd/apitoken-postgres-stage.service \
     systemd/apitoken-redis-stage.service \
     deploy/test-fixtures/contour-config/production-resolved.txt \

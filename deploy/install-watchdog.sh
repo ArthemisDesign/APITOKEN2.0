@@ -279,7 +279,7 @@ install_controller_definitions() {
     /usr/local/lib/apitoken-watchdog/stage-unit-renderer.py
   for stage_helper in install-staging-foundation.sh apitoken-observe-stage.sh \
     stage-observe-helper.sh apitoken-stage-ctl.sh stage-ctl-helper.sh \
-    staging-isolation-live.sh staging-pressure-proof.sh; do
+    staging-isolation-live.sh staging-pressure-proof.sh staging-image-seed.sh; do
     install -o root -g root -m 0755 "$ROOT/deploy/$stage_helper" \
       "/usr/local/lib/apitoken-watchdog/$stage_helper"
   done
@@ -297,7 +297,7 @@ install_controller_definitions() {
   # every controller transaction so unit-only fixes do not require a full installer replay.
   if [[ -d /etc/systemd/system ]]; then
     for stage_unit in staging.slice apitoken-rootless-docker-stage.service \
-      apitoken-postgres-stage.service apitoken-redis-stage.service; do
+      apitoken-staging-image-seed.service apitoken-postgres-stage.service apitoken-redis-stage.service; do
       install -o root -g root -m 0644 "$ROOT/systemd/$stage_unit" "/etc/systemd/system/$stage_unit"
     done
     systemctl daemon-reload
@@ -458,7 +458,8 @@ install_systemd_definitions() {
     apitoken-sudoers-install.service apitoken-tmpfiles-install.service \
     apitoken-sysctl-install.service apitoken-observe-install.service \
     apitoken-staging-foundation-install.service apitoken-rootless-docker-stage.service \
-    apitoken-postgres-stage.service apitoken-redis-stage.service staging.slice \
+    apitoken-staging-image-seed.service apitoken-postgres-stage.service \
+    apitoken-redis-stage.service staging.slice \
     apitoken-postgres.service apitoken-affinity-redis.service apitoken-worker.service apitoken-content-studio.service claude-api.service claude-api@.service claude-api-anthropic@.service claude-api-openai.service claude-api-openai@.service claude-api-gemini.service claude-api-gemini@.service claude-api-kimi.service claude-api-kimi@.service claude-api-backup.service claude-api-backup.timer \
     claude-api-fingerprint.service claude-api-fingerprint.timer \
     apitoken-sales-api.service apitoken-sales-web.service claude-authbot.service \

@@ -1,7 +1,7 @@
 [Unit]
 Description=Empty Redis placeholders in staging contour
-Requires=apitoken-rootless-docker-stage.service
-After=apitoken-rootless-docker-stage.service
+Requires=apitoken-staging-image-seed.service
+After=apitoken-staging-image-seed.service
 ConditionPathIsMountPoint=/var/lib/apitoken-staging
 
 [Service]
