@@ -1494,3 +1494,7 @@ body.app-body .bg-decor{display:none!important}
 }
 /* The multiplier never orphans from the rate when the formula wraps on a narrow screen. */
 .rp-formula-pair{display:inline-flex;align-items:baseline;gap:10px;white-space:nowrap}
+/* A waiting Team invitation: one quiet accent dot on the Referral nav item. */
+.side-link .side-dot{width:7px;height:7px;margin-left:auto;flex:none;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
+.side-link.on .side-dot{background:var(--accent)}

@@ -111,6 +111,16 @@ export function Dashboard() {
   const [logoutError, setLogoutError] = useState<string | null>(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
+  // A pending Team invitation is the one thing outside the Referral page worth a nudge.
+  const [referralInvitation, setReferralInvitation] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void api.referralInvitation()
+      .then((result) => { if (active) setReferralInvitation(Boolean(result.invitation)); })
+      .catch(() => { /* the dot is a hint, never a blocker */ });
+    return () => { active = false; };
+  }, []);
+
   const analyticsLoaded = useRef(false);
   const initialSection = useRef(section);
   const lastFocusRefreshAt = useRef(0);
@@ -330,6 +340,7 @@ export function Dashboard() {
       onLanguageChange={setLanguage}
       onNavigate={open}
       onLogout={logout}
+      referralInvitation={referralInvitation}
     />
     <DashboardScrim open={sideOpen} label={copy.closeMenu} onClose={closeSide} />
     <main className="app-main">

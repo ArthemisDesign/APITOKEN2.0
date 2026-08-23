@@ -55,6 +55,8 @@ type DashboardSidebarProps = {
   onLanguageChange(language: DashboardLanguage): void;
   onNavigate(section: DashboardSection): void;
   onLogout(): void;
+  /** A pending Team invitation waiting on the Referral page, marked with a quiet dot. */
+  referralInvitation?: boolean;
 };
 
 export const DashboardSidebar = memo(function DashboardSidebar({
@@ -68,6 +70,7 @@ export const DashboardSidebar = memo(function DashboardSidebar({
   onLanguageChange,
   onNavigate,
   onLogout,
+  referralInvitation = false,
 }: DashboardSidebarProps) {
   const handleSectionNav = useCallback((event: ReactMouseEvent<HTMLAnchorElement>, next: DashboardSection) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -81,7 +84,7 @@ export const DashboardSidebar = memo(function DashboardSidebar({
       {navigation.map((item, index) => <div key={`${item.label}-${index}`} className="side-nav-item">
         {item.group && <span className="side-group">{copy[item.group]}</span>}
         {item.href ? <Link className="side-link" href={item.href} target="_blank" rel="noreferrer"><span className="si"><NavIcon id={item.icon} /></span><span>{copy[item.label]}</span></Link> :
-          <Link data-dashboard-section={item.section} className={`side-link${activeSection === item.section ? " on" : ""}`} aria-current={activeSection === item.section ? "page" : undefined} href={dashboardHref(item.section!, language)} onClick={(event) => handleSectionNav(event, item.section!)}><span className="si"><NavIcon id={item.icon} /></span><span>{copy[item.label]}</span></Link>}
+          <Link data-dashboard-section={item.section} className={`side-link${activeSection === item.section ? " on" : ""}`} aria-current={activeSection === item.section ? "page" : undefined} href={dashboardHref(item.section!, language)} onClick={(event) => handleSectionNav(event, item.section!)}><span className="si"><NavIcon id={item.icon} /></span><span>{copy[item.label]}</span>{referralInvitation && item.section === "referral" ? <i className="side-dot" aria-label={copy.navReferralInvitation} title={copy.navReferralInvitation} /> : null}</Link>}
       </div>)}
     </nav>
     <div className="side-foot">

@@ -287,6 +287,8 @@ discount.
   decides. `POST /v1/referral/invitation/accept` is the only path that creates the membership;
   `POST /v1/referral/invitation/decline` revokes the invitation and leaves the account untouched.
   Both are session-owned; the browser never sends a partner id.
+  A waiting invitation is also marked outside the page: the Dashboard sidebar shows one accent dot on
+  the Referral item, and nothing else changes for that account.
 - **Team** — an invitation is an account email plus the share you retain from that member's own
   platform commission; every partner may build a Team, so that is no longer a permission and the
   invitation form carries no permission controls. The retained share is capped by the platform hard
