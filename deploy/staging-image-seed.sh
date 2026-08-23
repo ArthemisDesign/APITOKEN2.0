@@ -10,7 +10,12 @@ for image in \
   docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image" >/dev/null
   docker save -o "$archive" "$image"
   chown "$STAGE_USER:$STAGE_USER" "$archive"
-  runuser -u "$STAGE_USER" -- env DOCKER_HOST="unix://$SOCKET" docker load -i "$archive" >/dev/null
+  loaded=$(runuser -u "$STAGE_USER" -- env DOCKER_HOST="unix://$SOCKET" docker load -i "$archive")
+  loaded_ref=$(sed -n 's/^Loaded image: //p' <<<"$loaded" | tail -n 1)
+  if ! runuser -u "$STAGE_USER" -- env DOCKER_HOST="unix://$SOCKET" docker image inspect "$image" >/dev/null 2>&1; then
+    [[ -n $loaded_ref ]] || { echo "staging-image-seed: imported image has no reference" >&2; exit 1; }
+    runuser -u "$STAGE_USER" -- env DOCKER_HOST="unix://$SOCKET" docker tag "$loaded_ref" "$image"
+  fi
   rm -f "$archive"
 done
 printf 'staging-image-seed: pinned images loaded into rootless daemon\n'
