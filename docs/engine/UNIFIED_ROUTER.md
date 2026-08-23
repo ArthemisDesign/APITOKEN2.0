@@ -233,7 +233,12 @@ OpenCode does not project arbitrary fields of the OpenAI `/v1/models` response
 directly into its internal model schema: the canonical config-plugin
 `packages/opencode-router-plugin/apitoken-router.js` converts
 `data[].apitoken.pricing.standard` into the stock `model.cost` by dividing the exact
-nanoUSD/M by `1e9` to the USD/M number OpenCode requires. The synthetic GPT Fast model
+nanoUSD/M by `1e9` to the USD/M number OpenCode requires. On every start it also pins
+`provider.apitoken.npm` to `@ai-sdk/openai-compatible` and `options.baseURL` to
+`https://router.apitoken.sale/v1` (never `api.apitoken.sale`), and disables the models.dev
+`kimi-for-coding` provider (`@ai-sdk/anthropic` → `https://api.kimi.com/coding/v1`). Kimi
+catalog IDs stay `apitoken/kimi/*` on the unified Chat/Responses/Messages router; they must
+not use an Anthropic SDK or the public Anthropic hostname. The synthetic GPT Fast model
 with the original API ID uses `pricing.priority`; Standard uses `pricing.standard`.
 Such discovery must run synchronously with the credential of the current launch: a
 shared file cache is acceptable only for pricing-free capability metadata, not for

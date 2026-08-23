@@ -26,7 +26,11 @@ GitHub Actions secret, while the public key is pinned in the loader. Publishing 
 release first, retrievability check second, signed channel last. The `apitoken` provider in
 `opencode.jsonc` must use `@ai-sdk/openai-compatible`,
 `https://router.apitoken.sale/v1`, and a literal `sk-pool-…` key or the standard OpenCode
-placeholder `{env:NAME}`.
+placeholder `{env:NAME}`. The plugin pins that npm package and base URL on every start, so a
+stale `@ai-sdk/anthropic` block or `https://api.apitoken.sale` cannot send `kimi/*` (or any
+other catalog model) to an Anthropic SDK or the public Anthropic hostname. It also disables the
+models.dev `kimi-for-coding` provider, which ships `@ai-sdk/anthropic` against
+`https://api.kimi.com/coding/v1`. Kimi is `apitoken/kimi/<alias>` on the unified router only.
 
 The plugin advertises only text output for all models. This is a deliberate OpenCode 1.18.11 limitation:
 its `@ai-sdk/openai-compatible` 2.0.41 does not decode native Gemini `inlineData` and does not accept

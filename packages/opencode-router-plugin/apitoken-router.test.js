@@ -12,6 +12,10 @@ const {
   discoverModels,
   readCapabilityCache,
   readConnection,
+  applyProviderConfig,
+  pinRouterBase,
+  OPENCODE_COMPATIBLE_NPM,
+  ANTHROPIC_KIMI_PROVIDER,
 } = ApitokenRouter.testing
 
 const KEY_A = "sk-pool-test-key-a"
@@ -278,6 +282,36 @@ test("connection discovery is scoped to the apitoken provider and resolves its e
     readConnection({ env: { ROUTER_TEST_KEY: KEY_A }, configPath }),
     { key: KEY_A, base: BASE_A },
   )
+})
+
+test("OpenCode config pins Kimi onto openai-compatible router and off Anthropic services", async (t) => {
+  const cachePath = fixture(t)
+  const live = await discoverModels({ key: KEY_A, base: BASE_A, cachePath, fetchImpl: successfulFetch, now: NOW })
+  assert.ok(live.models["kimi/kimi-for-coding"])
+  const cfg = {
+    disabled_providers: ["openai"],
+    provider: {
+      apitoken: {
+        npm: "@ai-sdk/anthropic",
+        options: { baseURL: "https://api.apitoken.sale/v1", apiKey: KEY_A },
+      },
+      [ANTHROPIC_KIMI_PROVIDER]: {
+        npm: "@ai-sdk/anthropic",
+        options: { baseURL: "https://api.kimi.com/coding/v1", apiKey: "kimi-direct" },
+      },
+    },
+  }
+  applyProviderConfig(cfg, { models: live.models, base: BASE_A, key: KEY_A })
+  assert.equal(cfg.provider.apitoken.npm, OPENCODE_COMPATIBLE_NPM)
+  assert.equal(cfg.provider.apitoken.options.baseURL, BASE_A)
+  assert.ok(cfg.provider.apitoken.models["kimi/kimi-for-coding"])
+  assert.ok(cfg.disabled_providers.includes("openai"))
+  assert.ok(cfg.disabled_providers.includes(ANTHROPIC_KIMI_PROVIDER))
+  assert.equal(cfg.provider[ANTHROPIC_KIMI_PROVIDER].npm, OPENCODE_COMPATIBLE_NPM)
+  assert.equal(cfg.provider[ANTHROPIC_KIMI_PROVIDER].options.baseURL, BASE_A)
+  assert.equal(cfg.provider[ANTHROPIC_KIMI_PROVIDER].options.apiKey, KEY_A)
+  assert.equal(pinRouterBase("https://api.apitoken.sale"), BASE_A)
+  assert.equal(pinRouterBase("https://api.apitoken.sale/v1"), BASE_A)
 })
 
 test("malformed live catalog does not replace a valid last-good cache", async (t) => {

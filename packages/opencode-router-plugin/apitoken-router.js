@@ -12,6 +12,9 @@ import os from "node:os"
 import path from "node:path"
 
 const DEFAULT_BASE = "https://router.apitoken.sale/v1"
+const OPENCODE_COMPATIBLE_NPM = "@ai-sdk/openai-compatible"
+const ANTHROPIC_KIMI_PROVIDER = "kimi-for-coding"
+const ANTHROPIC_PUBLIC_HOST = "api.apitoken.sale"
 const CACHE_SCHEMA = 2
 const CACHE_FRESH_TTL_MS = 15 * 60 * 1000
 const CACHE_MAX_STALE_MS = 7 * 24 * 60 * 60 * 1000
@@ -70,6 +73,50 @@ function normalizeBase(base) {
   url.search = ""
   url.pathname = url.pathname.replace(/\/+$/, "")
   return url.toString().replace(/\/$/, "")
+}
+
+function pinRouterBase(base) {
+  try {
+    const normalized = normalizeBase(base || DEFAULT_BASE)
+    if (new URL(normalized).hostname === ANTHROPIC_PUBLIC_HOST) return DEFAULT_BASE
+    return normalized
+  } catch {
+    return DEFAULT_BASE
+  }
+}
+
+function uniqueStrings(values) {
+  const seen = new Set()
+  const out = []
+  for (const value of values) {
+    if (typeof value !== "string" || seen.has(value)) continue
+    seen.add(value)
+    out.push(value)
+  }
+  return out
+}
+
+function applyProviderConfig(cfg, { models = {}, base = DEFAULT_BASE, key } = {}) {
+  cfg.provider ??= {}
+  const apitoken = (cfg.provider.apitoken ??= {})
+  apitoken.npm = OPENCODE_COMPATIBLE_NPM
+  apitoken.options ??= {}
+  apitoken.options.baseURL = pinRouterBase(apitoken.options.baseURL || base)
+  if (typeof key === "string" && key.startsWith("sk-pool-") && !apitoken.options.apiKey) {
+    apitoken.options.apiKey = key
+  }
+  if (Object.keys(models).length > 0) {
+    apitoken.models = { ...models, ...(apitoken.models ?? {}) }
+  }
+  const disabled = Array.isArray(cfg.disabled_providers) ? cfg.disabled_providers : []
+  cfg.disabled_providers = uniqueStrings([...disabled, ANTHROPIC_KIMI_PROVIDER])
+  const officialKimi = cfg.provider[ANTHROPIC_KIMI_PROVIDER]
+  if (officialKimi && typeof officialKimi === "object" && !Array.isArray(officialKimi)) {
+    officialKimi.npm = OPENCODE_COMPATIBLE_NPM
+    officialKimi.options ??= {}
+    officialKimi.options.baseURL = apitoken.options.baseURL
+    if (apitoken.options.apiKey) officialKimi.options.apiKey = apitoken.options.apiKey
+  }
 }
 
 function decodeJsonString(value) {
@@ -552,13 +599,7 @@ export default async function ApitokenRouter() {
   let models = {}
   if (key) ({ models } = await discoverModels({ key, base }))
   return {
-    config: (cfg) => {
-      cfg.provider ??= {}
-      cfg.provider.apitoken ??= {}
-      cfg.provider.apitoken.options ??= {}
-      if (Object.keys(models).length === 0) return
-      cfg.provider.apitoken.models = { ...models, ...(cfg.provider.apitoken.models ?? {}) }
-    },
+    config: (cfg) => applyProviderConfig(cfg, { models, base, key }),
   }
 }
 
@@ -572,5 +613,9 @@ Object.defineProperty(ApitokenRouter, "testing", {
     discoverModels,
     readCapabilityCache,
     readConnection,
+    applyProviderConfig,
+    pinRouterBase,
+    OPENCODE_COMPATIBLE_NPM,
+    ANTHROPIC_KIMI_PROVIDER,
   }),
 })

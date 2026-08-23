@@ -445,7 +445,10 @@ is only what is needed to walk the relationships when making changes:
   the authenticated key-scoped `/v1/models`: authoritative runtime metadata is
   complemented by a personal pricing projection without changing the original model IDs.
   The consumer is the canonical `packages/opencode-router-plugin`: the live response is
-  translated into the OpenCode model/variant/Fast schema; because OpenCode 1.18 requires
+  translated into the OpenCode model/variant/Fast schema. The plugin pins the `apitoken`
+  provider to `@ai-sdk/openai-compatible` at `https://router.apitoken.sale/v1`, rewrites
+  `api.apitoken.sale`, and disables the models.dev `kimi-for-coding` Anthropic SDK provider,
+  so `kimi/*` cannot land on an Anthropic service. Because OpenCode 1.18 requires
   both `context` and `output` inside any native `model.limit`, a validated partial router limit is
   retained in the encrypted capability record but omitted from both live and stale OpenCode cards
   instead of aborting client startup or inventing a ceiling. The local schema-v2 last-good cache
