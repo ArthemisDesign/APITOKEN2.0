@@ -13,7 +13,7 @@ services:
     ports:
       - "10.254.32.2:5433:5432"
     volumes:
-      - /var/lib/apitoken-staging/postgres:/var/lib/postgresql
+      - /var/lib/apitoken-staging/postgres:/var/lib/postgresql/data
     mem_limit: 2g
     cpus: 1.0
     pids_limit: 256
