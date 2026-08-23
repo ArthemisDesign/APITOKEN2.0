@@ -29,6 +29,7 @@ fi
 # phase2-postgres-volume-apply-v1: replay after stage PostgreSQL data mount changed.
 # phase2-pgdata-apply-v1: replay after PostgreSQL 18 PGDATA changed.
 # phase2-pgdata-subdir-apply-v1: replay after clean PGDATA child changed.
+# phase2-postgres-named-apply-v1: replay after rootless named volume changed.
 for command in rootlesskit slirp4netns fuse-overlayfs newuidmap newgidmap dockerd-rootless.sh; do
   command -v "$command" >/dev/null || { echo "staging-foundation: missing rootless Docker prerequisite: $command" >&2; exit 1; }
 done
