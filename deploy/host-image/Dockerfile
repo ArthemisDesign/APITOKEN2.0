@@ -19,6 +19,9 @@ RUN apt-get update \
         e2fsprogs \
         iproute2 \
         nftables \
+        slirp4netns \
+        fuse-overlayfs \
+        uidmap \
         sudo \
         systemd \
         systemd-sysv \

@@ -7,6 +7,15 @@ PROD=$ROOT/contour-production.json
 STAGE=$ROOT/contour-stage.json
 python3 "$ROOT/contour-config.py" --schema "$ROOT/contour-config.schema.json" \
   --config "$STAGE" --against "$PROD" >/dev/null
+if ! command -v slirp4netns >/dev/null || ! command -v fuse-overlayfs >/dev/null \
+    || ! command -v newuidmap >/dev/null; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    slirp4netns fuse-overlayfs uidmap
+fi
+for command in rootlesskit slirp4netns fuse-overlayfs newuidmap newgidmap dockerd-rootless.sh; do
+  command -v "$command" >/dev/null || { echo "staging-foundation: missing rootless Docker prerequisite: $command" >&2; exit 1; }
+done
 
 make_user() {
   local user=$1 home=$2 shell=$3
