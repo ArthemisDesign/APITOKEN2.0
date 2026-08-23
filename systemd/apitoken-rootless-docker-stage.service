@@ -22,7 +22,7 @@ ExecStart=/usr/bin/dockerd-rootless.sh --data-root=/var/lib/apitoken-staging/doc
 Restart=on-failure
 NoNewPrivileges=no
 PrivateUsers=no
-RestrictNamespaces=~cgroup ipc net pid time uts
+RestrictNamespaces=no
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/home/deploy-stage /run/apitoken-staging /var/lib/apitoken-staging

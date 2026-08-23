@@ -26,7 +26,7 @@ grep -Fxq 'NetworkNamespacePath=/run/netns/apitoken-stage' "$ROOT/systemd/apitok
 grep -Fxq 'Delegate=yes' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fxq 'NoNewPrivileges=no' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fxq 'PrivateUsers=no' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
-grep -Fxq 'RestrictNamespaces=~cgroup ipc net pid time uts' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
+grep -Fxq 'RestrictNamespaces=no' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fxq 'Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fxq 'Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fxq 'Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=false' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
