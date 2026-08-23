@@ -10,7 +10,7 @@ services:
     mem_limit: 2g
     cpus: 0.5
     pids_limit: 128
-    cgroup_parent: staging.slice
+    cgroup_parent: /
   affinity-stage:
     image: apitoken-stage/redis:7.4.2-alpine
     container_name: apitoken-redis-affinity-stage
@@ -21,4 +21,4 @@ services:
     mem_limit: 512m
     cpus: 0.25
     pids_limit: 128
-    cgroup_parent: staging.slice
+    cgroup_parent: /

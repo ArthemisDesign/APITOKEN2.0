@@ -24,6 +24,7 @@ grep -Fxq 'IOWeight=10' "$ROOT/systemd/staging.slice"
 grep -Fxq 'Slice=staging.slice' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fxq 'NetworkNamespacePath=/run/netns/apitoken-stage' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fxq 'Delegate=yes' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
+grep -Fq -- '--exec-opt native.cgroupdriver=cgroupfs' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fxq 'NoNewPrivileges=no' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fxq 'PrivateUsers=no' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
 grep -Fxq 'PrivateTmp=yes' "$ROOT/systemd/apitoken-rootless-docker-stage.service"
@@ -61,7 +62,7 @@ for prerequisite in slirp4netns fuse-overlayfs newuidmap newgidmap; do
 done
 ! grep -Eq 'systemctl (enable )?--now apitoken-rootless-docker-stage|systemctl start apitoken-rootless-docker-stage' "$I"
 for compose in staging-postgres.compose.yaml staging-redis.compose.yaml; do
-  grep -Fq 'cgroup_parent: staging.slice' "$ROOT/deploy/$compose"
+  grep -Fq 'cgroup_parent: /' "$ROOT/deploy/$compose"
   ! grep -Eq '5434|127\.0\.0\.1|/var/run/docker.sock|privileged:' "$ROOT/deploy/$compose"
 done
 grep -Fq 'subject.user == "deploy-stage"' "$ROOT/deploy/49-apitoken-stage-cgroup.rules"
