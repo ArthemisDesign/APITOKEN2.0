@@ -68,3 +68,50 @@ workspace was green on the merged tree: commerce API 245, admin 456, web 202, sa
 1. Watch the first real application through Admin → Partners → Access applications, and the first
    real invitation acceptance, before announcing the program.
 2. Give an agent-usable `observe` key for this machine, or accept GitHub-only diagnosis.
+
+## Second pass — 2026-08-23, after the first production release
+
+### The referral link itself
+
+`apps/sales-api/src/sync-attributions.integration.test.ts` now proves the link on real SQL, which is
+the layer where "did the referral actually attach" is decided: a user who arrives with `?ref=CODE`
+becomes a `referred_users` row owned by exactly that partner, a replayed feed page does not
+duplicate it, a later link from another partner does not steal an existing referral, an unknown code
+advances the cursor instead of stalling the feed, and a suspended partner attracts nothing.
+
+The code space was checked end to end for the silent-loss failure mode: the browser stores
+`^[A-Za-z0-9_-]{3,32}$`, Commerce lower-cases and re-validates the same shape, Sales matches
+`partners.referral_code` exactly, and every generator is lowercase — `p_` + 24 hex for Commerce
+partners, 8-character lowercase base32 for legacy ones, with a database CHECK forcing lowercase on
+external aliases. A code that survives the browser therefore resolves in Sales.
+
+### Front-end states
+
+`verifyReferralConditionalStates` in `apps/web/scripts/capture-site.mjs` drives the real browser
+through every truth the one route can hold: partner (tabs, no gate, no sidebar dot), no access
+(gate, two actions), applied (pending state, the request action replaced, Telegram still there),
+declined (declined state with the reviewer's note and an apply-again action), invited (invitation
+card with its four terms plus the sidebar dot), invited → declined (the card disappears, the gate
+stays), and suspended (the disabled card, no tabs, no gate).
+
+### Team
+
+The same run asserts the Team surface: the split is stated as `10% × 20% = 2%`, the tab leads with
+four Team-income KPIs, the invitation is e-mail plus one retained-share field with no permission
+checkboxes and no native steppers, and the member dialog carries exactly one permission — B2B —
+bounded by the owner's own ceiling.
+
+### Admin
+
+The reviewer note is no longer mandatory: a decision is attributable through the admin actor header,
+so approving or rejecting an application needs one click and nothing else.
+
+### Old partner portal — prepared, not landed here
+
+The retirement is a `deploy/Caddyfile` change: every browser route on `partners.apitoken.sale`
+redirects to `apitoken.sale/dashboard?view=referral` (302, reversible), `/v1/*` keeps serving the
+partner API, `/v1/internal/*` stays 404 publicly, and sales-web keeps serving
+`admin.partners.apitoken.sale` and its own loopback health gate, so no deployment or verification
+path changes. `deploy/Caddyfile` is classified as Ubuntu-host-dependent, so the merge gate runs the
+host-installer proofs under Docker; this machine has no Docker, so the change must be landed from
+one that does. Nothing else in this audit depends on it.

@@ -1,5 +1,11 @@
 # SALES_PORTAL.md — Sales financial authority for the partner program
 
+> **Superseded for browsers.** The partner cabinet lives in the customer Dashboard
+> (`apitoken.sale/dashboard?view=referral`). Retiring the `partners.apitoken.sale` browser routes is
+> a Caddy change that must be landed from a machine that can run the Ubuntu host-installer proofs;
+> until then this portal still serves, and the Sales API described here remains the authority for
+> partners, commissions and payouts.
+
 The repository's third bounded context (after the engine and commerce): a **multi-level affiliate
 program for salespeople**. It remains a separate database and server-side financial authority, but
 Commerce accounts are the new membership identity and the canonical UI moves into the main

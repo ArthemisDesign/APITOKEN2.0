@@ -36,8 +36,9 @@ describe("unified Partner Admin UI contract", () => {
     // The queue and the decision both live on the Commerce boundary, never on Sales directly.
     expect(applications).toContain("/admin/referral/applications?");
     expect(applications).toContain('send(`/admin/referral/applications/${selected.id}/decision`, "POST", body)');
-    // A decision is always attributable: the reviewer note is required for approve and reject.
-    expect(applications).toContain("A reviewer note is required.");
+    // The note is optional here: the decision is attributable through the admin actor header.
+    expect(applications).not.toContain("A reviewer note is required.");
+    expect(applications).toContain("Reviewer note — optional");
     // Approval carries the terms the partner starts on, bounded by the platform maximums.
     for (const field of ["commissionBps", "teamOverrideMaxBps", "teamInvitesEnabled", "b2bEnabled", "b2bMaxDiscountBps"]) {
       expect(applications).toContain(field);

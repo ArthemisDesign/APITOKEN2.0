@@ -34,7 +34,7 @@ const listSchema = z.object({
 }).strict();
 const decisionSchema = z.object({
   action: z.enum(["approve", "reject"]),
-  note: z.string().trim().min(1).max(2_000),
+  note: z.string().trim().max(2_000).default(""),
   commissionBps: bps(10_000).optional(),
   authority: authoritySchema.optional(),
 }).strict();

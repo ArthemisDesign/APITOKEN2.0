@@ -365,6 +365,7 @@ const dashboardFixtureScript = `(() => {
       { keyMasked: "sk-pool-f367••••••••94ea", requests: 26, officialNano: "8679893050", chargedNano: "3471957220" },
     ],
   };
+  let declinedInvitation = false;
   const referralDate = (daysAgo) => new Date(Date.now() - daysAgo * 86400000).toISOString();
   const referral = {
     state: "active", activated: true,
@@ -448,11 +449,31 @@ const dashboardFixtureScript = `(() => {
       invitation.revokedAt = new Date().toISOString();
       return json({ invitation: { id: invitation.id, revokedAt: invitation.revokedAt, revoked: true } });
     }
-    if (path === "/referral") return json(location.search.includes("partner-preview=") ? { state: "unavailable", membership: null } : referral);
-    if (path === "/referral/applications/me") return json({ application: null });
+    if (path === "/referral") {
+      const state = new URLSearchParams(location.search).get("partner-preview");
+      if (state === "suspended") return json({ state: "disabled", membership: referral.membership });
+      return json(state ? { state: "unavailable", membership: null } : referral);
+    }
+    if (path === "/referral/applications/me") {
+      const state = new URLSearchParams(location.search).get("partner-preview");
+      if (state === "applied") {
+        return json({ application: { id: "5f0f3f61-6a1e-4f0a-9d9c-3a0f0b1c2d3e", email: user.email, status: "pending", message: "Agency with three AI products.", reviewerNote: null, decidedAt: null, createdAt: referralDate(1) } });
+      }
+      if (state === "declined") {
+        return json({ application: { id: "6f0f3f61-6a1e-4f0a-9d9c-3a0f0b1c2d3f", email: user.email, status: "rejected", message: "Agency with three AI products.", reviewerNote: "No traffic yet — come back after launch.", decidedAt: referralDate(0), createdAt: referralDate(4) } });
+      }
+      return json({ application: null });
+    }
+    if (path === "/referral/invitation/decline" && (init.method || "GET").toUpperCase() === "POST") {
+      declinedInvitation = true;
+      return json({ declined: true });
+    }
+    if (path === "/referral/invitation/accept" && (init.method || "GET").toUpperCase() === "POST") {
+      return json({ accepted: true });
+    }
     if (path === "/referral/invitation") {
       return json({
-        invitation: location.search.includes("partner-preview=invited")
+        invitation: !declinedInvitation && location.search.includes("partner-preview=invited")
           ? {
             id: "1f3f9a34-6f0c-4a70-9c65-2f0b8c9b1d20",
             commissionBps: 1000, retainedShareBps: 1500, teamOverrideMaxBps: 1000,
@@ -662,7 +683,42 @@ async function capturePage(client, [name, route, width, height, theme, language 
     await waitForCondition(client, `Boolean(document.querySelector('.key-edit-modal[role="dialog"]'))`, `${name} edit-key dialog`);
   }
   if (state === "referral-revoke-open") {
-    await clickSelector(client, ".referral-invites .btn");
+    // The Team split must be stated as the formula the owner reasons with, and the only per-member
+  // setting is B2B, bounded by the owner's own ceiling.
+  const teamFormula = await client.send("Runtime.evaluate", {
+    returnByValue: true,
+    expression: `JSON.stringify({
+      formula: [...document.querySelectorAll('.rp-formula-v em')].map((value) => value.textContent.trim()),
+      kpis: [...document.querySelectorAll('.rp-stat-l')].map((label) => label.textContent.trim()),
+    })`,
+  });
+  const team2 = JSON.parse(teamFormula.result.value);
+  if (team2.formula.join("|") !== "10%|20%|2%" || team2.kpis.length !== 4) {
+    throw new Error(`Referral Team formula failed: ${JSON.stringify(team2)}`);
+  }
+
+  await clickSelector(client, ".team-table .btn");
+  await waitForCondition(client, `Boolean(document.querySelector('.referral-modal[role="dialog"]'))`, "Team member dialog");
+  const memberDialog = await client.send("Runtime.evaluate", {
+    returnByValue: true,
+    expression: `(() => {
+      const modal = document.querySelector('.referral-modal[role="dialog"]');
+      return JSON.stringify({
+        percents: [...modal.querySelectorAll('.referral-percent-input input')].map((input) => input.dataset.maxPercent),
+        checkboxes: [...modal.querySelectorAll('.referral-checkbox-card b')].map((label) => label.textContent.trim()),
+        steppers: modal.querySelectorAll('input[type="number"]').length,
+      });
+    })()`,
+  });
+  const member = JSON.parse(memberDialog.result.value);
+  if (member.checkboxes.length !== 1 || !member.checkboxes[0].includes("B2B") || member.steppers !== 0
+    || member.percents.some((max) => Number(max) > 25)) {
+    throw new Error(`Referral Team member dialog failed: ${JSON.stringify(member)}`);
+  }
+  await clickSelector(client, ".referral-modal .key-modal-close");
+  await waitForCondition(client, `!document.querySelector('.referral-modal[role="dialog"]')`, "Team member dialog closed");
+
+  await clickSelector(client, ".referral-invites .btn");
     await waitForCondition(client, `Boolean(document.querySelector('[role="alertdialog"]'))`, `${name} revoke-invitation dialog`);
   }
   if (state === "referral-team-edit-open") {
@@ -1327,7 +1383,83 @@ async function verifyReferralLayout(client) {
       ordinary.facts.join("|") !== "10%|20%|USDT|2×") {
     throw new Error(`Referral ordinary-account state failed: ${JSON.stringify(ordinary)}`);
   }
+  await verifyReferralConditionalStates(client);
   process.stdout.write("Verified Referral URL tabs, Usage-parity providers, email search, per-row B2B ceiling, Team controls, destructive-action confirmation, and no-access CTA\n");
+}
+
+/**
+ * The Referral surface is one route with several truths behind it: partner or not, invited or not,
+ * applied, declined, suspended. Each is asserted in the real browser, including the two actions
+ * that change state (decline an invitation, request access).
+ */
+async function verifyReferralConditionalStates(client) {
+  async function open(query) {
+    const loaded = client.once("Page.loadEventFired");
+    await client.send("Page.navigate", { url: new URL(`/dashboard?view=referral${query}`, baseUrl).href });
+    await loaded;
+    await waitForCondition(client, `Boolean(document.querySelector('.referral-panel'))`, `referral panel ${query}`);
+    await client.send("Runtime.evaluate", { awaitPromise: true, expression: `new Promise((resolve) => setTimeout(resolve, 600))` });
+  }
+
+  async function snapshot() {
+    const result = await client.send("Runtime.evaluate", {
+      returnByValue: true,
+      expression: `(() => {
+        const panel = document.querySelector('.referral-panel');
+        const text = panel?.innerText ?? '';
+        return JSON.stringify({
+          gate: Boolean(document.querySelector('.rp-gate-title')),
+          tabs: document.querySelectorAll('.referral-subnav button').length,
+          invitation: Boolean(document.querySelector('.rp-gate-invite')),
+          inviteTerms: [...document.querySelectorAll('.rp-invite-terms b')].map((value) => value.textContent.trim()),
+          state: document.querySelector('.rp-gate-state b')?.textContent.trim() ?? null,
+          reviewerNote: /No traffic yet/.test(text),
+          actions: [...document.querySelectorAll('.rp-gate-hero .rp-gate-btn, .rp-gate-invite .rp-gate-btn')].map((button) => button.textContent.trim()),
+          disabledCard: Boolean(document.querySelector('.referral-disabled-card')),
+          sidebarDot: Boolean(document.querySelector('.side-link[data-dashboard-section="referral"] .side-dot')),
+        });
+      })()`,
+    });
+    return JSON.parse(result.result.value);
+  }
+
+  function fail(state, detail) {
+    throw new Error(`Referral state "${state}" failed: ${JSON.stringify(detail)}`);
+  }
+
+  await open("");
+  const partner = await snapshot();
+  if (!partner.tabs || partner.gate || partner.sidebarDot) fail("partner", partner);
+
+  await open("&partner-preview=no-access");
+  const plain = await snapshot();
+  if (!plain.gate || plain.tabs !== 0 || plain.invitation || plain.state !== null
+    || plain.actions.length !== 2 || plain.sidebarDot) fail("no-access", plain);
+
+  await open("&partner-preview=applied");
+  const applied = await snapshot();
+  // A pending application replaces the request action; Telegram stays reachable.
+  if (!applied.gate || applied.state === null || applied.actions.length !== 1) fail("applied", applied);
+
+  await open("&partner-preview=declined");
+  const declined = await snapshot();
+  if (!declined.gate || declined.state === null || !declined.reviewerNote || declined.actions.length !== 2) {
+    fail("declined", declined);
+  }
+
+  await open("&partner-preview=invited");
+  const invited = await snapshot();
+  if (!invited.gate || !invited.invitation || invited.inviteTerms.length !== 4 || !invited.sidebarDot) fail("invited", invited);
+  await clickSelector(client, ".rp-gate-invite .btn-ghost");
+  await waitForCondition(client, `!document.querySelector('.rp-gate-invite')`, "invitation declined");
+  const afterDecline = await snapshot();
+  if (afterDecline.invitation || !afterDecline.gate) fail("invited→declined", afterDecline);
+
+  await open("&partner-preview=suspended");
+  const suspended = await snapshot();
+  if (!suspended.disabledCard || suspended.tabs !== 0 || suspended.gate) fail("suspended", suspended);
+
+  process.stdout.write("Verified Referral conditional states: partner, no-access, applied, declined, invited, invitation declined, suspended\n");
 }
 
 async function verifyApiKeysLayout(client) {

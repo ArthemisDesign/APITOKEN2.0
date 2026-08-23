@@ -338,9 +338,11 @@ export async function previewRequest<T>(path: string, init: RequestInit = {}): P
       // without changing production identity or API semantics.
       const previewState = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("partner-preview");
       // Both reviewable non-partner states render the gate: plain, and invited to a Team.
-      const snapshot: ReferralSnapshot = previewState === "no-access" || previewState === "invited"
-        ? { state: "unavailable", membership: null }
-        : referral;
+      const snapshot: ReferralSnapshot = previewState === "suspended"
+        ? { state: "disabled", membership: referral.membership }
+        : previewState
+          ? { state: "unavailable", membership: null }
+          : referral;
       return snapshot as T;
     }
     case "POST /referral/team-invitations": {
@@ -371,7 +373,15 @@ export async function previewRequest<T>(path: string, init: RequestInit = {}): P
     }
     case "POST /referral/invitation/accept": return { accepted: true } as T;
     case "POST /referral/invitation/decline": { previewInvitation = null; return { declined: true } as T; }
-    case "GET /referral/applications/me": return { application: previewApplication } as T;
+    case "GET /referral/applications/me": {
+      const state = new URLSearchParams(location.search).get("partner-preview");
+      if (previewApplication === null && (state === "applied" || state === "declined")) {
+        previewApplication = state === "applied"
+          ? { id: randomHex(32), email: "preview@apitoken.sale", status: "pending", message: "Agency with three AI products.", reviewerNote: null, decidedAt: null, createdAt: referralDay(1) }
+          : { id: randomHex(32), email: "preview@apitoken.sale", status: "rejected", message: "Agency with three AI products.", reviewerNote: "No traffic yet — come back after launch.", decidedAt: referralDay(0), createdAt: referralDay(4) };
+      }
+      return { application: previewApplication } as T;
+    }
     case "POST /referral/applications": {
       previewApplication = {
         id: randomHex(32), email: "preview@apitoken.sale", status: "pending",

@@ -59,9 +59,8 @@ export default function PartnerApplicationsPage() {
     event.preventDefault();
     if (!selected || !draft) return;
     setError(null);
-    const note = draft.note.trim();
-    if (!note) return fail(t("A reviewer note is required.", "Комментарий проверяющего обязателен."), "application-note");
-    const body: Record<string, unknown> = { action: draft.action, note };
+    // The note is optional: a decision is attributable by the actor header on its own.
+    const body: Record<string, unknown> = { action: draft.action, note: draft.note.trim() };
     if (draft.action === "approve") {
       const commissionBps = parsePercentBps(draft.commission, 10_000);
       const teamOverrideMaxBps = parsePercentBps(draft.teamShare, 2_000);
@@ -143,7 +142,7 @@ export default function PartnerApplicationsPage() {
           <label className="field"><span>{t("Team ceiling", "Потолок команды")}</span><div className="percent-input"><input id="application-team-share" name="applicationTeamShare" type="text" inputMode="decimal" autoComplete="off" value={draft.teamShare} onChange={(event) => setDraft({ ...draft, teamShare: event.target.value })} disabled={busy} /><i>%</i></div><small>{t("Platform hard maximum 20%", "Жёсткий максимум платформы 20%")}</small></label>
           <label className="field"><span>{t("B2B ceiling", "B2B-потолок")}</span><div className="percent-input"><input id="application-b2b-max" name="applicationB2bMax" type="text" inputMode="numeric" autoComplete="off" value={draft.b2bMax} onChange={(event) => setDraft({ ...draft, b2bMax: event.target.value.replace(/\D/g, "") })} disabled={busy} /><i>%</i></div><small>{t("0% keeps B2B self-service off", "0% оставляет B2B-самообслуживание выключенным")}</small></label>
         </div> : null}
-        <label className="field"><span>{t("Reviewer note", "Комментарий проверяющего")}</span><textarea id="application-note" name="applicationNote" autoComplete="off" rows={4} maxLength={2000} value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} disabled={busy} placeholder={t("Why this account is a good partner…", "Почему этот аккаунт подходит…")} /></label>
+        <label className="field"><span>{t("Reviewer note — optional", "Комментарий проверяющего — необязательно")}</span><textarea id="application-note" name="applicationNote" autoComplete="off" rows={4} maxLength={2000} value={draft.note} onChange={(event) => setDraft({ ...draft, note: event.target.value })} disabled={busy} placeholder={t("Why this account is a good partner…", "Почему этот аккаунт подходит…")} /></label>
         <div className="dlg-actions">
           <button type="button" className="btn ghost" onClick={() => { setSelected(null); setDraft(null); }} disabled={busy}>{t("Cancel", "Отмена")}</button>
           <button type="submit" className={`btn${draft.action === "reject" ? " bad" : ""}`} disabled={busy}>{busy ? t("Saving…", "Сохраняем…") : draft.action === "approve" ? t("Approve and enable", "Одобрить и включить") : t("Reject application", "Отклонить заявку")}</button>

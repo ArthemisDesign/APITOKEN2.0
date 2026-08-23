@@ -51,7 +51,8 @@ describe("Commerce Dashboard partner surface", () => {
 
   it("offers reviewable active and no-access states only through preview fixtures", () => {
     expect(fixtureSource).toContain('get("partner-preview")');
-    expect(fixtureSource).toContain('previewState === "no-access"');
+    expect(fixtureSource).toContain('previewState === "suspended"');
+    expect(fixtureSource).toContain('state === "applied" || state === "declined"');
     expect(fixtureSource).toContain('{ state: "unavailable", membership: null }');
     expect(apiSource).toContain('process.env.NEXT_PUBLIC_PREVIEW_FIXTURES === "1"');
   });
