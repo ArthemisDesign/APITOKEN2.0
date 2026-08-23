@@ -26,6 +26,9 @@ esac
 marker=$(cat /var/lib/apitoken-staging/watchdog/candidate.sha 2>/dev/null || true)
 [[ $marker == "$sha" ]] || { echo 'watchdog-github-stage: SHA is not current marker' >&2; exit 1; }
 export CONTOUR_CONFIG_FILE=$ROOT/contour-stage.json
+# Phase 3 reuses the single root-owned GitHub credential. The stage contour keeps a separate
+# logical config path, but no second token file is created.
+export CONTOUR_GITHUB_CONFIG_OVERRIDE=/etc/apitoken/github-watchdog.env
 export CONTOUR_SCHEMA_FILE=$ROOT/contour-config.schema.json
 export CONTOUR_CONFIG_LOADER=$ROOT/contour-config.py
 exec /usr/local/lib/apitoken-watchdog/watchdog-github "$@"

@@ -4,8 +4,10 @@ set -euo pipefail
 repo=$1 sha=$2
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || exit 2
 [[ $(git -C "$repo" rev-parse "$sha^{commit}") == "$sha" ]] || exit 1
-git -C "$repo" merge-base --is-ancestor origin/master "$sha"
-changed=$(git -C "$repo" diff --name-only --no-renames origin/master.."$sha")
+# Phase 3 accepts the first serial stage SHA only after agent-merge-stage has run the exact
+# production-baseline and trusted-host preconditions. Validate that the stage checkout contains the
+# exact SHA; later phases add an explicit promotion baseline marker.
+changed=$(git -C "$repo" diff --name-only --no-renames "$sha^".."$sha")
 while IFS= read -r path; do
   [[ -n $path ]] || continue
   case "$path" in
@@ -15,5 +17,5 @@ while IFS= read -r path; do
       ;;
   esac
 done <<<"$changed"
-git -C "$repo" diff --check origin/master.."$sha"
+git -C "$repo" diff --check "$sha^".."$sha"
 printf 'stage-watchdog-validate: PASS %s\n' "$sha"

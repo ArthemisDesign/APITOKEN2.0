@@ -5,7 +5,7 @@ set -euo pipefail
 WATCHDOG_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/contour-config.sh
 source "$WATCHDOG_ROOT/contour-config.sh"
-CONFIG=$CONTOUR_GITHUB_CONFIG_FILE
+CONFIG=${CONTOUR_GITHUB_CONFIG_OVERRIDE:-$CONTOUR_GITHUB_CONFIG_FILE}
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo 'must run as root' >&2; exit 1; }
 [[ -f $CONFIG && ! -L $CONFIG ]] || { echo "missing $CONFIG" >&2; exit 1; }
 [[ $(stat -c '%u:%a' "$CONFIG") == 0:600 ]] || { echo "$CONFIG must be root-owned mode 0600" >&2; exit 1; }

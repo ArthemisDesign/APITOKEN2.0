@@ -1269,13 +1269,27 @@ exact SHA resolution; no candidate installer or command runs.
 Next: grant the stage poller read access to its source marker.
 
 ### 2026-08-23 — stage source marker ownership fix
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `fd03efdc8467394dea31c004eb7a35f33a4c97a4`   watchdog: GREEN
 Result: The root source manager writes `source.sha` as root mode 0640, so the `deploy-stage` poller
 sees an empty marker and exits cleanly. Assign only this public SHA marker to
 `deploy-stage:deploy-stage`; keep all source fetch control and production checkout access separate.
 Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; no lock changed.
+Next: correct first-stage validation and reporting credential reuse.
+
+### 2026-08-23 — Phase 3 baseline and reporter fixes
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The first stage SHA equals an older `master`, so validating against current `origin/master`
+incorrectly fails ancestry. Phase 3 already requires exact trusted prevalidation in the stage client;
+validate the candidate commit itself and its single commit range for host-global paths. Also reuse the
+single root-owned production GitHub credential through an explicit root-only config override while
+retaining the stage contour's closed context list and current marker binding.
+Checks actually run: `bash deploy/stage-watchdog.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: the initial observe-only stage validation has
+no independent baseline marker; the stage client exact precondition is authoritative until Phase 6
+attestation. One root GitHub credential is reused as the contract permits.
 Next: verify informational stage statuses and close Phase 3.
 
 ---
