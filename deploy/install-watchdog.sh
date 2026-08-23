@@ -303,7 +303,7 @@ install_controller_definitions() {
   install -o root -g root -m 0644 "$ROOT/deploy/staging-twin-inventory.json" \
     /usr/local/lib/apitoken-watchdog/staging-twin-inventory.json
   install -o root -g deploy-stage -m 0640 "$ROOT/deploy/staging-Caddyfile" \
-    /etc/apitoken-staging/caddy/Caddyfile
+    /usr/local/lib/apitoken-watchdog/staging-Caddyfile
   for stage_helper in install-staging-foundation.sh apitoken-observe-stage.sh \
     stage-observe-helper.sh apitoken-stage-ctl.sh stage-ctl-helper.sh \
     staging-isolation-live.sh staging-pressure-proof.sh staging-image-seed.sh \

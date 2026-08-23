@@ -94,6 +94,7 @@ install -d -o root -g deploy-stage -m 0750 /etc/apitoken-staging
 install -d -o deploy-stage -g deploy-stage -m 0750 /etc/apitoken-staging/caddy \
   /var/lib/apitoken-staging/{backups,caddy,logs} /srv/claude-api-staging/releases \
   /opt/apitoken-staging/releases
+install -o root -g deploy-stage -m 0640 "$ROOT/staging-Caddyfile" /etc/apitoken-staging/caddy/Caddyfile
 for env in anthropic openai gemini kimi router api worker sales-api sales-web openkeys admin authbot devbot sinks; do
   path=/etc/apitoken-staging/$env.env
   if [[ ! -e $path ]]; then install -o root -g deploy-stage -m 0600 /dev/null "$path"; fi

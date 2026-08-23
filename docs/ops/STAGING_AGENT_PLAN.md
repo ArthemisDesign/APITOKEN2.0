@@ -1372,7 +1372,7 @@ Out (do not add):
 ### Execution log
 
 ### 2026-08-23 — Phase 4 twin inventory and safe sinks
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `e571e66772858489d679e1f395b5a2bbeceb3782`   watchdog: RED
 Result: Add a closed twin inventory for every required Phase 4 component and excluded component,
 mode-0600 operator env placeholders, an empty reseed request path, KEEP=3 GC inside loopback roots,
 a local-only payments/mail/webhook/log sink, and unprivileged stage Caddy on the veth only. Add a
@@ -1386,7 +1386,18 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: Phase 4 represents all a
 a closed inventory and local sink surface, but it does not start real binaries until the operator
 fills the documented stage-only env files and trusted releases exist. This preserves zero external
 side effects and no customer path.
-Next: merge on GREEN, verify Caddy/sinks and isolation live, then close Phase 4.
+Next: publish the Caddy template through the trusted foundation root.
+
+### 2026-08-23 — stage Caddy root publication fix
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: `e571e667` failed because the protected production controller cannot create a missing
+`/etc/apitoken-staging/caddy` path. Cache the template under the existing watchdog root, then let the
+manager-spawned foundation oneshot create the config directory and publish the file. Candidate stage
+code does not gain root or global Caddy access.
+Checks actually run: `bash deploy/staging-twin.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED delivery; no lock changed.
+Next: verify Caddy/sinks and isolation live, then close Phase 4.
 
 ---
 
