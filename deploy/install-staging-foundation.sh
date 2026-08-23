@@ -14,6 +14,7 @@ if ! command -v slirp4netns >/dev/null || ! command -v fuse-overlayfs >/dev/null
     slirp4netns fuse-overlayfs uidmap
 fi
 # phase2-prerequisite-apply-v2: keep stateful foundation changes on the full trusted lane.
+# phase2-userns-apply-v1: replay after the rootless user-namespace sandbox change.
 for command in rootlesskit slirp4netns fuse-overlayfs newuidmap newgidmap dockerd-rootless.sh; do
   command -v "$command" >/dev/null || { echo "staging-foundation: missing rootless Docker prerequisite: $command" >&2; exit 1; }
 done
