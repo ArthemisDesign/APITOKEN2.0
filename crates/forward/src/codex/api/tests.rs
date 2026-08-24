@@ -847,10 +847,7 @@ async fn input_tokens_parser_gate_discards_models_and_classifier_on_rejection() 
     );
     oversized.headers_mut().insert(
         axum::http::header::CONTENT_LENGTH,
-        (OPENAI_BODY_LIMIT as u64 + 1)
-            .to_string()
-            .parse()
-            .unwrap(),
+        (OPENAI_BODY_LIMIT as u64 + 1).to_string().parse().unwrap(),
     );
     let response = call_input_tokens(test.app.clone(), oversized).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -2470,6 +2467,112 @@ fn executable_hosted_tools_are_forwarded() {
     }
 }
 
+const PNG_MASK_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+#[test]
+fn image_generation_input_image_mask_data_url_is_forwarded() {
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "hi",
+            "tools": [{
+                "type": "image_generation",
+                "input_image_mask": {
+                    "image_url": PNG_MASK_DATA_URL,
+                    "ignored": true
+                }
+            }]
+        }),
+    )
+    .unwrap();
+    assert_eq!(
+        parsed.dynamic_tools[0]["input_image_mask"],
+        json!({ "image_url": PNG_MASK_DATA_URL })
+    );
+    let body = upstream_body_from_parsed(&parsed);
+    assert_eq!(
+        body["tools"][0]["input_image_mask"]["image_url"],
+        PNG_MASK_DATA_URL
+    );
+    assert!(body["tools"][0]["input_image_mask"]
+        .get("file_id")
+        .is_none());
+    assert!(body["tools"][0]["input_image_mask"]
+        .get("ignored")
+        .is_none());
+}
+
+#[test]
+fn image_generation_input_image_mask_file_id_is_documented_limitation() {
+    let error = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "hi",
+            "tools": [{
+                "type": "image_generation",
+                "input_image_mask": {
+                    "file_id": "file-aaaaaaaaaaaaaaaaaaaaaaaa",
+                    "image_url": PNG_MASK_DATA_URL
+                }
+            }]
+        }),
+    )
+    .unwrap_err();
+    assert_documented_limitation(&error, "tools.0.input_image_mask.file_id");
+    assert!(error.message.contains("image_url"));
+}
+
+#[test]
+fn image_generation_input_image_mask_rejects_non_png_data_url() {
+    let error = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "hi",
+            "tools": [{
+                "type": "image_generation",
+                "input_image_mask": { "image_url": "https://example.com/mask.png" }
+            }]
+        }),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.param.as_deref(),
+        Some("tools.0.input_image_mask.image_url")
+    );
+    assert!(error.message.contains("data:image/png;base64"));
+}
+
+#[test]
+fn additional_tools_image_generation_mask_matches_top_level() {
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": [{
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [{
+                    "type": "image_generation",
+                    "input_image_mask": { "image_url": PNG_MASK_DATA_URL }
+                }]
+            }, {
+                "role": "user",
+                "content": "edit"
+            }]
+        }),
+    )
+    .unwrap();
+    let tool = parsed
+        .dynamic_tools
+        .iter()
+        .find(|tool| tool["type"] == "image_generation")
+        .expect("image_generation");
+    assert_eq!(tool["input_image_mask"]["image_url"], PNG_MASK_DATA_URL);
+}
+
 #[test]
 fn hosted_call_output_items_are_kept_in_the_public_response() {
     for (kind, prefix) in [
@@ -2539,7 +2642,10 @@ fn api_hosted_web_search_is_forwarded() {
         }),
     )
     .unwrap();
-    assert_eq!(with_filters.dynamic_tools[0]["filters"]["allowed_domains"][0], "example.com");
+    assert_eq!(
+        with_filters.dynamic_tools[0]["filters"]["allowed_domains"][0],
+        "example.com"
+    );
 }
 
 #[test]

@@ -28,6 +28,40 @@ export const article: LearnArticle = {
         ] },
         { type: "link", text: "Deeper editing workflows: masks, batches and acceptance checks", href: "/docs/learn/image-editing-api-guide" },
       ] },
+      { h2: "Region inpaint uses Responses, not Images mask", blocks: [
+        { type: "p", text: "Do not send a multipart mask to /v1/images/edits. That field is rejected, and the ChatGPT image-edit URL would ignore it anyway. To change only part of a picture, call POST /v1/responses with a GPT text model, put the source PNG in input as input_image, and add the image_generation tool with input_image_mask.image_url set to a PNG data URL. Transparent pixels in the mask are the region to edit; opaque pixels stay. The mask must be the same size as the source. file_id masks are not supported — there is no Files API on this plane — so official OpenAI samples that upload a mask with files.create will not run here." },
+        { type: "code", code: `import base64, os
+from pathlib import Path
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["APITOKEN_API_KEY"],
+    base_url="${OPENAI}",
+)
+
+def png_url(path):
+    return "data:image/png;base64," + base64.b64encode(Path(path).read_bytes()).decode()
+
+response = client.responses.create(
+    model="gpt-5.6-sol",
+    input=[{
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": "Change only the masked region."},
+            {"type": "input_image", "image_url": png_url("photo.png")},
+        ],
+    }],
+    tools=[{
+        "type": "image_generation",
+        "input_image_mask": {"image_url": png_url("mask.png")},
+    }],
+)` },
+        { type: "list", items: [
+          "Use a text GPT model on /v1/responses (for example gpt-5.6-sol), not gpt-image-2 — that id belongs to the Images routes.",
+          "Both the source and the mask must be data:image/png;base64,… URLs, not https:// and not OpenAI file ids.",
+          "The mask is not billed as a second reference image; settlement still follows image-input and image-output tokens on the turn.",
+        ] },
+      ] },
       { h2: "Call it from the official OpenAI SDK", blocks: [
         { type: "p", text: "No custom HTTP layer is needed in application code. The official OpenAI SDKs expose the images API, and switching the client to apiToken.sale is the same two constructor arguments as for text models: base_url and api_key." },
         { type: "code", code: `import os\nfrom openai import OpenAI\n\nclient = OpenAI(\n    api_key=os.environ["APITOKEN_API_KEY"],\n    base_url="${OPENAI}",\n)\n\nresult = client.images.generate(\n    model="gpt-image-2",\n    prompt="A clean isometric diagram of a wind turbine",\n    quality="low",\n    size="auto",\n)\n\npng_bytes = result.data[0].b64_json  # decode base64 and write to disk` },
@@ -55,7 +89,7 @@ export const article: LearnArticle = {
         { type: "list", items: [
           "One PNG per call, non-streaming — batch workloads loop the endpoint instead of asking for n images in one request.",
           "Controls are background opaque, quality low, size auto; anything else, including transparency, is rejected.",
-          "Edits accept one to five PNG references in multipart/form-data and nothing else.",
+          "Edits accept one to five PNG references in multipart/form-data. A multipart mask field is rejected — region inpaint is the Responses input_image_mask path above.",
           "Image usage settles against the same prepaid balance as GPT, Claude and Gemini calls — one pool to watch, not four.",
         ] },
         { type: "p", text: "If you need a different image model for comparison, the Gemini-side image route is documented alongside this one, and the head-to-head guide covers where each wins." },
@@ -75,7 +109,8 @@ export const article: LearnArticle = {
     ],
     faq: [
       { q: "What endpoint does the GPT Image 2 API use?", a: "POST /v1/images/generations for a new image and POST /v1/images/edits for reference-based edits, both on the OpenAI-compatible base URL https://router.apitoken.sale/v1 with an Authorization: Bearer header." },
-      { q: "Can GPT Image 2 edit an existing image?", a: "Yes. The edits route accepts multipart/form-data with one to five PNG reference images plus a prompt, and returns one PNG with the requested change applied." },
+      { q: "Can GPT Image 2 edit an existing image?", a: "Yes. The edits route accepts multipart/form-data with one to five PNG reference images plus a prompt, and returns one PNG with the requested change applied. That route has no mask field." },
+      { q: "How do I inpaint only part of an image?", a: "Call POST /v1/responses with a GPT text model, the source PNG as input_image, and tools: [{type:\"image_generation\", input_image_mask:{image_url:\"data:image/png;base64,…\"}}]. Transparent mask pixels are the region to change. Do not send mask to /v1/images/edits, and do not use file_id." },
       { q: "What is the exact model ID for GPT Image 2?", a: "Use gpt-image-2, which aliases the immutable gpt-image-2-2026-04-21 snapshot. Pin the dated ID in code if you want the snapshot spelled out explicitly." },
       { q: "How much does GPT Image 2 cost per image?", a: "There is no fixed per-image price: billing follows terminal usage across text input ($5/M official), image input ($8/M), cached input (25% of fresh) and image output ($30/M), with a flat 50% discount on every leg here — $2.50, $4 and $15 per 1M respectively." },
       { q: "Does GPT Image 2 support transparent backgrounds or streaming?", a: "No on both. The confirmed profile is background opaque, quality low, size auto, one non-streaming PNG per call; transparency requests are rejected rather than approximated." },
@@ -83,5 +118,5 @@ export const article: LearnArticle = {
     ],
     related: ["gpt-image-2-api-cost", "nano-banana-2-vs-gpt-image-2", "image-editing-api-guide", "image-generation-api-pricing"],
     published: "2026-08-09",
-    updated: "2026-08-17",
+    updated: "2026-08-24",
   };

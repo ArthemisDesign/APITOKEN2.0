@@ -283,6 +283,81 @@ const image = await client.images.generate({
 await writeFile("image.png", Buffer.from(image.data[0].b64_json!, "base64"));`;
 }
 
+function imageMaskRequestCode(apiLanguage: ApiLanguage): string {
+  if (apiLanguage === "curl") {
+    return `curl ${ROUTER_OPENAI_BASE_URL}/responses \\
+  -H "Authorization: Bearer $APITOKEN_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "gpt-5.6-sol",
+    "input": [{
+      "role": "user",
+      "content": [
+        {"type": "input_text", "text": "Change only the masked region."},
+        {"type": "input_image", "image_url": "data:image/png;base64,SOURCE_PNG"}
+      ]
+    }],
+    "tools": [{
+      "type": "image_generation",
+      "input_image_mask": {"image_url": "data:image/png;base64,MASK_PNG"}
+    }]
+  }'`;
+  }
+  if (apiLanguage === "python") {
+    return `import base64, os
+from pathlib import Path
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["APITOKEN_API_KEY"],
+    base_url="${ROUTER_OPENAI_BASE_URL}",
+)
+
+def png_url(path):
+    return "data:image/png;base64," + base64.b64encode(Path(path).read_bytes()).decode()
+
+response = client.responses.create(
+    model="gpt-5.6-sol",
+    input=[{
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": "Change only the masked region."},
+            {"type": "input_image", "image_url": png_url("photo.png")},
+        ],
+    }],
+    tools=[{
+        "type": "image_generation",
+        "input_image_mask": {"image_url": png_url("mask.png")},
+    }],
+)`;
+  }
+  return `import { readFile } from "node:fs/promises";
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env["APITOKEN_API_KEY"],
+  baseURL: "${ROUTER_OPENAI_BASE_URL}",
+});
+
+const pngUrl = async (path: string) =>
+  "data:image/png;base64," + (await readFile(path)).toString("base64");
+
+const response = await client.responses.create({
+  model: "gpt-5.6-sol",
+  input: [{
+    role: "user",
+    content: [
+      { type: "input_text", text: "Change only the masked region." },
+      { type: "input_image", image_url: await pngUrl("photo.png") },
+    ],
+  }],
+  tools: [{
+    type: "image_generation",
+    input_image_mask: { image_url: await pngUrl("mask.png") },
+  }],
+});`;
+}
+
 function installStep(provider: IntegrationProvider, style: ApiStyle, apiLanguage: ApiLanguage, language: IntegrationLanguage): ApiStep | null {
   if (apiLanguage === "curl") return null;
   const native = style === "native";
@@ -389,6 +464,14 @@ export function buildApiGuide({
         `Images run on the same unified endpoint: \`POST ${ROUTER_OPENAI_BASE_URL}/images/generations\` returns one non-streaming base64 PNG billed to the same prepaid balance. The proved contract is deliberately narrow — omit background/quality/size, or send only background=opaque, quality=low, size=auto (an explicit "auto" for background or quality is rejected with 400). To edit, send multipart \`POST /v1/images/edits\` with up to five reference PNGs. The legacy host openai.api.apitoken.sale serves the same routes.`,
         `Изображения работают через тот же единый endpoint: \`POST ${ROUTER_OPENAI_BASE_URL}/images/generations\` возвращает один непотоковый base64 PNG и списывает тот же предоплатный баланс. Доказанный контракт намеренно узкий — не передавайте background/quality/size вовсе либо отправляйте только background=opaque, quality=low, size=auto (явное "auto" для background или quality отклоняется с 400). Для редактирования отправьте multipart \`POST /v1/images/edits\` с одним–пятью reference PNG. Legacy-хост openai.api.apitoken.sale обслуживает те же маршруты.`),
       code: imageRequestCode(apiLanguage),
+      codeLabel: apiLanguage === "curl" ? "HTTP" : languageName,
+    });
+    steps.push({
+      title: localize(language, "Inpaint a region with a PNG mask", "Закрасьте область по PNG-маске"),
+      text: localize(language,
+        `This is not \`POST /v1/images/edits\` with a multipart \`mask\` field — that field is rejected. Region inpaint is a Responses call: send a GPT text model (for example \`gpt-5.6-sol\`) to \`POST ${ROUTER_OPENAI_BASE_URL}/responses\`, put the source PNG in \`input\` as \`input_image\`, and add \`tools: [{type:"image_generation", input_image_mask:{image_url}}]\`. Both URLs must be \`data:image/png;base64,…\`. The mask must match the source size; transparent pixels are the region to change. \`file_id\` masks are not supported (no Files API). Billing follows image tokens; the mask is not a second reference image.`,
+        `Это не \`POST /v1/images/edits\` с multipart-полем \`mask\` — это поле отклоняется. Inpaint — вызов Responses: отправьте текстовую GPT-модель (например \`gpt-5.6-sol\`) на \`POST ${ROUTER_OPENAI_BASE_URL}/responses\`, исходный PNG в \`input\` как \`input_image\`, и \`tools: [{type:"image_generation", input_image_mask:{image_url}}]\`. Оба URL — \`data:image/png;base64,…\`. Маска того же размера, что исходник; прозрачные пиксели — зона правки. \`file_id\` не поддерживается (нет Files API). Биллинг по image-токенам; маска не вторая reference-картинка.`),
+      code: imageMaskRequestCode(apiLanguage),
       codeLabel: apiLanguage === "curl" ? "HTTP" : languageName,
     });
   }

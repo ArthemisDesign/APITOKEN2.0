@@ -29,9 +29,9 @@ describe("API reference guide", () => {
             const guide = buildApiGuide({ provider, apiStyle, apiLanguage, language });
             const withImageStep = provider === "openai" && apiStyle === "native";
             expect(guide.endpoint).toBe(apiStyle === "native" ? nativeEndpoints[provider] : ROUTER_OPENAI_BASE_URL);
-            expect(guide.steps.length).toBe((apiLanguage === "curl" ? 2 : 3) + (withImageStep ? 1 : 0));
+            expect(guide.steps.length).toBe((apiLanguage === "curl" ? 2 : 3) + (withImageStep ? 2 : 0));
             expect(guide.steps.every((step) => step.code.trim().length > 0)).toBe(true);
-            const request = guide.steps.at(withImageStep ? -2 : -1)!.code;
+            const request = guide.steps.at(withImageStep ? -3 : -1)!.code;
             expect(request).toContain(
               apiStyle === "native" ? INTEGRATION_MODELS[provider][0].id : namespacedModelId(provider, INTEGRATION_MODELS[provider][0].id),
             );
@@ -112,8 +112,7 @@ describe("API reference guide", () => {
   it("documents the GPT Image 2 route only on the OpenAI native lane", () => {
     for (const apiLanguage of ["curl", "python", "typescript"] as const) {
       const openai = buildApiGuide({ provider: "openai", apiStyle: "native", apiLanguage, language: "en" });
-      const imageStep = openai.steps.at(-1)!;
-      expect(imageStep.title).toContain("GPT Image 2");
+      const imageStep = openai.steps.find((step) => step.title.includes("GPT Image 2"))!;
       expect(imageStep.text).toContain("/v1/images/edits");
       expect(imageStep.code).toContain(ROUTER_OPENAI_BASE_URL);
       if (apiLanguage === "curl") {
@@ -121,6 +120,12 @@ describe("API reference guide", () => {
       }
       expect(imageStep.code).toContain('"gpt-image-2"');
       expect(imageStep.code).toContain("APITOKEN_API_KEY");
+      const maskStep = openai.steps.find((step) => step.title.includes("PNG mask"))!;
+      expect(maskStep.text).toContain("input_image_mask");
+      expect(maskStep.text).toContain("file_id");
+      expect(maskStep.code).toContain("input_image_mask");
+      expect(maskStep.code).toContain("data:image/png;base64");
+      expect(maskStep.code).toContain("gpt-5.6-sol");
 
       const anthropic = buildApiGuide({ provider: "anthropic", apiStyle: "native", apiLanguage, language: "en" });
       expect(anthropic.steps.some((step) => step.code.includes("/images/generations"))).toBe(false);

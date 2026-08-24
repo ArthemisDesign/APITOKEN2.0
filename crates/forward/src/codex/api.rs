@@ -888,42 +888,37 @@ async fn input_tokens_after_admission(
     headers: &HeaderMap,
     body: Body,
 ) -> (Response, InputTokensFactEvidence) {
-    let bounded = match read_body_bounded(
-        app,
-        headers,
-        body,
-        api_limits::current::OPENAI_TEXT_REQUEST,
-    )
-    .await
-    {
-        Ok(body) => body,
-        Err(BodyAdmitError::ContentEncoding) => {
-            return (
-                ApiError::unsupported_content_encoding().into_response(),
-                InputTokensFactEvidence::default(),
-            )
-        }
-        Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
-        | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
-            return (
-                ApiError::request_body_too_large()
-                    .into_response(),
-                InputTokensFactEvidence::default(),
-            )
-        }
-        Err(BodyAdmitError::Storage(bounded_body::StorageError::Io)) => {
-            return (
-                ApiError::invalid("Could not read request body.", None::<String>).into_response(),
-                InputTokensFactEvidence::default(),
-            )
-        }
-        Err(BodyAdmitError::Storage(_)) => {
-            return (
-                ApiError::unavailable().into_response(),
-                InputTokensFactEvidence::default(),
-            )
-        }
-    };
+    let bounded =
+        match read_body_bounded(app, headers, body, api_limits::current::OPENAI_TEXT_REQUEST).await
+        {
+            Ok(body) => body,
+            Err(BodyAdmitError::ContentEncoding) => {
+                return (
+                    ApiError::unsupported_content_encoding().into_response(),
+                    InputTokensFactEvidence::default(),
+                )
+            }
+            Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge))
+            | Err(BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)) => {
+                return (
+                    ApiError::request_body_too_large().into_response(),
+                    InputTokensFactEvidence::default(),
+                )
+            }
+            Err(BodyAdmitError::Storage(bounded_body::StorageError::Io)) => {
+                return (
+                    ApiError::invalid("Could not read request body.", None::<String>)
+                        .into_response(),
+                    InputTokensFactEvidence::default(),
+                )
+            }
+            Err(BodyAdmitError::Storage(_)) => {
+                return (
+                    ApiError::unavailable().into_response(),
+                    InputTokensFactEvidence::default(),
+                )
+            }
+        };
     let raw = bounded.bytes.clone();
     let _body_lease = bounded._lease;
     let value: Value = match serde_json::from_slice(&raw) {
@@ -1790,7 +1785,11 @@ fn parse_dynamic_tools(
                     ));
                 }
                 callable_count += 1;
-                dynamic.push(hosted_tool_descriptor(object, kind));
+                dynamic.push(if kind == "image_generation" {
+                    hosted_image_generation_tool(object, &tool_param)?
+                } else {
+                    hosted_tool_descriptor(object, kind)
+                });
             }
             Some(
                 kind @ ("code_interpreter"
@@ -1823,6 +1822,80 @@ fn hosted_tool_descriptor(object: &Map<String, Value>, kind: &str) -> Value {
     let mut tool = Value::Object(object.clone());
     tool["type"] = Value::String(kind.to_string());
     tool
+}
+
+/// Live Pro 2026-08-24: ChatGPT Codex honours Responses `input_image_mask.image_url` as a PNG
+/// data URL. `file_id` has no Files API on this plane and fails upstream. Native
+/// `/images/edits` ignores a sibling `mask` field — that public route still rejects it.
+const PNG_MASK_DATA_URL_PREFIX: &str = "data:image/png;base64,";
+const MAX_INPUT_IMAGE_MASK_DECODED_BYTES: usize = 16 * 1024 * 1024;
+
+fn hosted_image_generation_tool(
+    object: &Map<String, Value>,
+    tool_param: &str,
+) -> Result<Value, ApiError> {
+    let mut tool = hosted_tool_descriptor(object, "image_generation");
+    match object.get("input_image_mask") {
+        None | Some(Value::Null) => {
+            if let Some(map) = tool.as_object_mut() {
+                map.remove("input_image_mask");
+            }
+        }
+        Some(mask) => {
+            tool["input_image_mask"] =
+                parse_input_image_mask(mask, &format!("{tool_param}.input_image_mask"))?;
+        }
+    }
+    Ok(tool)
+}
+
+fn parse_input_image_mask(value: &Value, param: &str) -> Result<Value, ApiError> {
+    let object = value.as_object().ok_or_else(|| {
+        ApiError::invalid(
+            "input_image_mask must be an object.",
+            Some(param.to_string()),
+        )
+    })?;
+    if object.get("file_id").is_some_and(|value| !value.is_null()) {
+        return Err(ApiError::documented_limitation(
+            "input_image_mask.file_id is not supported on this plane; send a PNG data URL in input_image_mask.image_url.",
+            Some(format!("{param}.file_id")),
+        ));
+    }
+    let url = object
+        .get("image_url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| {
+            ApiError::invalid(
+                "input_image_mask.image_url is required and must be a PNG data URL.",
+                Some(format!("{param}.image_url")),
+            )
+        })?;
+    if !url.starts_with(PNG_MASK_DATA_URL_PREFIX) {
+        return Err(ApiError::invalid(
+            "input_image_mask.image_url must be a data:image/png;base64,… URL.",
+            Some(format!("{param}.image_url")),
+        ));
+    }
+    let payload = &url[PNG_MASK_DATA_URL_PREFIX.len()..];
+    if payload.is_empty() {
+        return Err(ApiError::invalid(
+            "input_image_mask.image_url is missing base64 payload.",
+            Some(format!("{param}.image_url")),
+        ));
+    }
+    let decoded_bound = payload.len().saturating_mul(3).saturating_div(4);
+    if decoded_bound > MAX_INPUT_IMAGE_MASK_DECODED_BYTES {
+        return Err(ApiError::invalid(
+            format!(
+                "input_image_mask.image_url exceeds {MAX_INPUT_IMAGE_MASK_DECODED_BYTES} decoded bytes."
+            ),
+            Some(format!("{param}.image_url")),
+        ));
+    }
+    Ok(json!({ "image_url": url }))
 }
 
 fn hosted_web_search_declared(tools: &[Value]) -> bool {

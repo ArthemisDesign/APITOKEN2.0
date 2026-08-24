@@ -122,6 +122,8 @@ GET  /v1/responses/{id}/input_items               (decision 5)
 POST /v1/images/generations                     OpenAI Images (GPT Image 2) — native OpenAI
                                                 lane, one non-streaming PNG
 POST /v1/images/edits                           one-to-five-reference PNG edit — native OpenAI lane
+                                                (multipart mask rejected; region inpaint is
+                                                Responses image_generation.input_image_mask)
 
 POST /v1/chat/completions                         universal OpenAI-compatible entry
                                                   (stage 1a — OpenAI plane only,
@@ -340,7 +342,9 @@ rewritten to `__codex_client_tool_search`; hosted `tool_search` (`execution` omi
 Function-tool `strict` and json_schema `text.format.strict` are forwarded to the Codex
 upstream body; they are not rewritten to false. Hosted `web_search` and
 `image_generation` are forwarded to the ChatGPT Codex backend (live Pro 2026-08-24:
-search and image_generation_call executed). `code_interpreter` is rejected upstream
+search and image_generation_call executed). `image_generation.input_image_mask.image_url`
+(PNG data URL) is forwarded and live-inpainted; `file_id` is `400 documented_limitation`.
+Images HTTP multipart `mask` stays rejected. `code_interpreter` is rejected upstream
 (`Unsupported tool type`) so the gateway fails closed. `web_search_call` items settle
 at `$0.01` per call. `file_search`, `computer`, `computer_use`, `computer_use_preview`,
 and `mcp` fail closed with `400 documented_limitation`. A `web_search` nested inside a namespace still fails

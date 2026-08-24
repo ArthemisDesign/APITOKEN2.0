@@ -25,9 +25,18 @@ export const content: LocalizedContent = {
         ] },
         { type: "link", text: "更深入的编辑工作流：蒙版、批量与验收检查", href: "/docs/learn/image-editing-api-guide" },
       ] },
+      { h2: "局部重绘走 Responses，不是 Images 的 mask 字段", blocks: [
+        { type: "p", text: "不要把 multipart mask 发到 /v1/images/edits。该字段会被拒绝，ChatGPT 的图像编辑 URL 也会忽略它。若要只改图片的一部分，请用 GPT 文本模型调用 POST /v1/responses：源 PNG 作为 input 里的 input_image，并添加 image_generation 工具，将 input_image_mask.image_url 设为 PNG data URL。蒙版中透明像素是要修改的区域，不透明像素保持不变。蒙版须与源图尺寸相同。不支持 file_id——此平面没有 Files API，因此官方 OpenAI 里 files.create 上传蒙版的示例在这里无法运行。" },
+        sourceBlock("gpt-image-2-api-guide", 2, 1),
+        { type: "list", items: [
+          "在 /v1/responses 上使用 GPT 文本模型（例如 gpt-5.6-sol），不要用 gpt-image-2——该 id 属于 Images 路由。",
+          "源图和蒙版都必须是 data:image/png;base64,… URL，不能是 https://，也不能是 OpenAI file id。",
+          "蒙版不会作为第二张参考图计费；结算仍按该回合的 image-input 与 image-output token。",
+        ] },
+      ] },
       { h2: "用官方 OpenAI SDK 调用", blocks: [
         { type: "p", text: "应用代码里不需要自己写 HTTP 层。官方 OpenAI SDK 已经暴露了 images API，把客户端切到 apiToken.sale 只需和文本模型相同的两个构造参数：base_url 和 api_key。" },
-        sourceBlock("gpt-image-2-api-guide", 2, 1),
+        sourceBlock("gpt-image-2-api-guide", 3, 1),
         { type: "p", text: "编辑场景下，同一个客户端暴露 images.edits，参考文件以二进制模式打开传入。密钥放在服务端环境变量里；图像端点和聊天端点同样敏感，因为它们扣的是同一个余额。" },
       ] },
       { h2: "一次生成的真实成本", blocks: [
@@ -52,7 +61,7 @@ export const content: LocalizedContent = {
         { type: "list", items: [
           "每次调用一张 PNG，非流式——批量任务循环调用端点，而不是在一个请求里要 n 张图。",
           "控制项为 background opaque、quality low、size auto；其他取值（包括透明背景）都会被拒绝。",
-          "编辑只接受 multipart/form-data 里的一到五张 PNG 参考图，其他一概不支持。",
+          "编辑接受 multipart/form-data 里的一到五张 PNG 参考图。multipart mask 字段会被拒绝——局部重绘走上面的 Responses input_image_mask。",
           "图像用量和 GPT、Claude、Gemini 调用从同一个预付余额扣费——只需盯一个池子，而不是四个。",
         ] },
         { type: "p", text: "如果想换一个图像模型做对比，Gemini 侧的图像路由有并列文档，正面对比指南也覆盖了两者各自擅长的场景。" },
@@ -72,7 +81,8 @@ export const content: LocalizedContent = {
     ],
     faq: [
       { q: "GPT Image 2 API 用哪个端点？", a: "生成新图用 POST /v1/images/generations，参考图编辑用 POST /v1/images/edits，两者都在 OpenAI 兼容基础 URL https://router.apitoken.sale/v1 上，带 Authorization: Bearer 请求头。" },
-      { q: "GPT Image 2 能编辑现有图像吗？", a: "可以。edits 路由接受 multipart/form-data，包含一到五张 PNG 参考图和提示词，返回一张应用了所请求修改的 PNG。" },
+      { q: "GPT Image 2 能编辑现有图像吗？", a: "可以。edits 路由接受 multipart/form-data，包含一到五张 PNG 参考图和提示词，返回一张应用了所请求修改的 PNG。该路由没有 mask 字段。" },
+      { q: "如何只重绘图像的一部分？", a: "对 GPT 文本模型调用 POST /v1/responses，源 PNG 作为 input_image，并使用 tools: [{type:\"image_generation\", input_image_mask:{image_url:\"data:image/png;base64,…\"}}]。蒙版透明像素是修改区域。不要把 mask 发到 /v1/images/edits，也不要使用 file_id。" },
       { q: "GPT Image 2 的准确 model ID 是什么？", a: "用 gpt-image-2，它是不可变快照 gpt-image-2-2026-04-21 的别名。想在代码里显式写明快照，就固定带日期的 ID。" },
       { q: "GPT Image 2 每张图多少钱？", a: "没有固定的单图价格：计费按最终 usage 计算，覆盖文本输入（官方 $5/M）、图像输入（$8/M）、缓存输入（新鲜输入的 25%）和图像输出（$30/M），本站每条计费腿统一五折——分别为每 1M $2.50、$4 和 $15。" },
       { q: "GPT Image 2 支持透明背景或流式输出吗？", a: "都不支持。已确认的能力组合是 background opaque、quality low、size auto，每次调用返回一张非流式 PNG；透明背景请求会被拒绝，而不是被近似处理。" },

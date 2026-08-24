@@ -25,9 +25,18 @@ export const content: LocalizedContent = {
         ] },
         { type: "link", text: "Более глубокие сценарии редактирования: маски, батчи и приёмочные проверки", href: "/docs/learn/image-editing-api-guide" },
       ] },
+      { h2: "Inpaint области — через Responses, не через Images mask", blocks: [
+        { type: "p", text: "Не отправляйте multipart-поле mask на /v1/images/edits. Это поле отклоняется, а URL редактирования ChatGPT его всё равно игнорирует. Чтобы изменить только часть картинки, вызовите POST /v1/responses с текстовой GPT-моделью: исходный PNG в input как input_image, инструмент image_generation с input_image_mask.image_url — PNG data URL. Прозрачные пиксели маски — зона правки, непрозрачные остаются. Маска того же размера, что исходник. file_id не поддерживается: Files API на этой плоскости нет, поэтому официальные примеры OpenAI с files.create здесь не работают." },
+        sourceBlock("gpt-image-2-api-guide", 2, 1),
+        { type: "list", items: [
+          "Текстовая GPT-модель на /v1/responses (например gpt-5.6-sol), не gpt-image-2 — этот id принадлежит маршрутам Images.",
+          "Исходник и маска — только data:image/png;base64,…, не https:// и не OpenAI file id.",
+          "Маска не тарифицируется как второй референс; settlement идёт по image-input и image-output токенам хода.",
+        ] },
+      ] },
       { h2: "Вызов через официальный OpenAI SDK", blocks: [
         { type: "p", text: "Свой HTTP-слой в коде приложения не нужен. Официальные SDK OpenAI дают доступ к images API, а переключение клиента на apiToken.sale — те же два аргумента конструктора, что для текстовых моделей: base_url и api_key." },
-        sourceBlock("gpt-image-2-api-guide", 2, 1),
+        sourceBlock("gpt-image-2-api-guide", 3, 1),
         { type: "p", text: "Для редактирования тот же клиент предоставляет images.edits — референс-файлы открываются в бинарном режиме. Держите ключ в серверной переменной окружения: image-endpoints так же чувствительны, как chat, потому что списывают с того же баланса." },
       ] },
       { h2: "Сколько на самом деле стоит генерация", blocks: [
@@ -52,7 +61,7 @@ export const content: LocalizedContent = {
         { type: "list", items: [
           "Один PNG на вызов, без стриминга: батч-нагрузки крутят endpoint в цикле, а не просят n изображений в одном запросе.",
           "Управление — background opaque, quality low, size auto; всё остальное, включая прозрачность, отклоняется.",
-          "Редактирование принимает от одного до пяти PNG-референсов в multipart/form-data — и ничего больше.",
+          "Редактирование принимает от одного до пяти PNG-референсов в multipart/form-data. Multipart-поле mask отклоняется — inpaint области идёт через Responses input_image_mask выше.",
           "Image usage списывается с того же предоплаченного баланса, что запросы к GPT, Claude и Gemini: следить нужно за одним пулом, а не за четырьмя.",
         ] },
         { type: "p", text: "Если для сравнения нужна другая image-модель, маршрут на стороне Gemini задокументирован рядом с этим, а в сравнительном гайде разобрано, где какая модель сильнее." },
@@ -72,7 +81,8 @@ export const content: LocalizedContent = {
     ],
     faq: [
       { q: "Какой endpoint использует GPT Image 2 API?", a: "POST /v1/images/generations для нового изображения и POST /v1/images/edits для редактирования по референсам — оба на OpenAI-совместимом base URL https://router.apitoken.sale/v1 с заголовком Authorization: Bearer." },
-      { q: "Умеет ли GPT Image 2 редактировать существующее изображение?", a: "Да. Маршрут edits принимает multipart/form-data с одним-пятью PNG-референсами и промптом и возвращает один PNG с внесённым изменением." },
+      { q: "Умеет ли GPT Image 2 редактировать существующее изображение?", a: "Да. Маршрут edits принимает multipart/form-data с одним-пятью PNG-референсами и промптом и возвращает один PNG с внесённым изменением. Поля mask на этом маршруте нет." },
+      { q: "Как закрасить только часть изображения?", a: "POST /v1/responses с текстовой GPT-моделью, исходный PNG как input_image и tools: [{type:\"image_generation\", input_image_mask:{image_url:\"data:image/png;base64,…\"}}]. Прозрачные пиксели маски — зона правки. Не отправляйте mask на /v1/images/edits и не используйте file_id." },
       { q: "Какой точный model ID у GPT Image 2?", a: "Используйте gpt-image-2 — алиас иммутабельного снапшота gpt-image-2-2026-04-21. Зафиксируйте датированный ID в коде, если хотите снапшот прописанным явно." },
       { q: "Сколько стоит одно изображение в GPT Image 2?", a: "Фиксированной цены за изображение нет: биллинг идёт по финальному usage — text input ($5/1M официально), image input ($8/1M), cached input (25% от некэшированного) и image output ($30/1M) — с плоской скидкой 50% на каждую составляющую здесь: $2.50, $4 и $15 за 1M соответственно." },
       { q: "Поддерживает ли GPT Image 2 прозрачный фон или стриминг?", a: "Ни то, ни другое. Подтверждённый профиль — background opaque, quality low, size auto, один PNG на вызов без стриминга; запросы прозрачности отклоняются, а не аппроксимируются." },

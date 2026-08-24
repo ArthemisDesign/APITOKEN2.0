@@ -620,13 +620,14 @@ const OPENAI_MODELS_STANDARD: OpenAiModel[] = [
     ],
     notes: [
       "gpt-image-2 is the alias of the immutable snapshot gpt-image-2-2026-04-21 — the same model at the same price.",
-      "Generation is POST /v1/images/generations, editing is POST /v1/images/edits with up to five reference PNGs — on the unified router (router.apitoken.sale/v1) or the legacy OpenAI host; one non-streaming PNG per call.",
+      "Generation is POST /v1/images/generations, editing is POST /v1/images/edits with up to five reference PNGs — on the unified router (router.apitoken.sale/v1) or the legacy OpenAI host; one non-streaming PNG per call. Multipart mask is rejected. Region inpaint is POST /v1/responses with a GPT text model, input_image, and image_generation.input_image_mask.image_url (PNG data URL only; no file_id).",
       "The shipped contract is deliberately narrow: omit background/quality/size, or send only background=opaque, quality=low, size=auto — an explicit \"auto\" for background or quality is rejected with 400. The upstream subscription wire normalizes explicit sizes, so exact dimensions are not advertised.",
       "Image output bills per image-output token; cached text/image input bills at 25% of the fresh rate.",
     ],
     faq: [
       { q: "How much does the GPT Image 2 API cost?", a: "Officially $5 per 1M text input tokens, $8 per 1M image input tokens and $30 per 1M image output tokens (cached input at 25%). On apiToken.sale the same calls cost 50% less — $2.50/$4/$15 — at the flat discount applied to every call." },
       { q: "What is the model ID for GPT Image 2?", a: "gpt-image-2, an alias of the immutable snapshot gpt-image-2-2026-04-21. Send it as the model field of POST /v1/images/generations or /v1/images/edits on https://router.apitoken.sale/v1 (the legacy https://openai.api.apitoken.sale/v1 serves the same routes) with your Bearer key." },
+      { q: "Can I send an OpenAI Images mask file?", a: "No. POST /v1/images/edits rejects the mask field. To inpaint a region, call POST /v1/responses with a GPT text model, the source PNG as input_image, and input_image_mask.image_url as a PNG data URL. file_id is not supported." },
       { q: "Does the same balance really cover image generation?", a: "Yes. GPT Image 2 debits the same prepaid balance as every Claude, GPT and Gemini model on the account — no separate image plan or key." },
     ],
     related: ["gpt-image-2-api-guide", "gpt-image-2-api-cost", "nano-banana-2-vs-gpt-image-2", "image-editing-api-guide"],

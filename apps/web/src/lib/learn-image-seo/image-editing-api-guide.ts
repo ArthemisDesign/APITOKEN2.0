@@ -108,6 +108,48 @@ export const spec: ImageSeoSpec = {
       ),
       section(
         tr(
+          "Region inpaint: Responses mask, not Images mask",
+          "Inpaint области: маска в Responses, не в Images",
+          "局部重绘：用 Responses 蒙版，不是 Images 的 mask",
+          "영역 inpaint: Responses 마스크, Images mask 아님",
+        ),
+        [
+          paragraph(
+            "A multipart mask field on POST /v1/images/edits is rejected. That OpenAI Images shape is not available on this ChatGPT pool. To change only part of a picture, call POST /v1/responses with a GPT text model (for example gpt-5.6-sol): put the source PNG in input as input_image, and add tools: [{type:\"image_generation\", input_image_mask:{image_url}}] where image_url is a data:image/png;base64,… string. The mask must match the source size. Transparent pixels are the region to edit; opaque pixels stay. file_id masks fail — there is no Files API here — so official samples that files.create a mask will not run. Billing follows image tokens; the mask is not a second reference image.",
+            "Multipart-поле mask на POST /v1/images/edits отклоняется. Форма OpenAI Images на этом пуле ChatGPT недоступна. Чтобы изменить только часть картинки, вызовите POST /v1/responses с текстовой GPT-моделью (например gpt-5.6-sol): исходный PNG в input как input_image и tools: [{type:\"image_generation\", input_image_mask:{image_url}}], где image_url — строка data:image/png;base64,…. Маска того же размера, что исходник. Прозрачные пиксели — зона правки, непрозрачные остаются. file_id не работает: Files API здесь нет, официальные примеры с files.create не пройдут. Биллинг по image-токенам; маска не второй референс.",
+            "POST /v1/images/edits 上的 multipart mask 字段会被拒绝。此 ChatGPT 池不提供该 OpenAI Images 形态。若要只改图片的一部分，请用 GPT 文本模型（例如 gpt-5.6-sol）调用 POST /v1/responses：源 PNG 作为 input 中的 input_image，并添加 tools: [{type:\"image_generation\", input_image_mask:{image_url}}]，image_url 为 data:image/png;base64,… 字符串。蒙版须与源图尺寸相同。透明像素是要修改的区域，不透明像素保持不变。file_id 会失败——这里没有 Files API，官方 files.create 蒙版示例无法运行。结算按 image token；蒙版不是第二张参考图。",
+            "POST /v1/images/edits의 multipart mask 필드는 거부됩니다. 이 ChatGPT 풀에서는 그 OpenAI Images 형태를 쓸 수 없습니다. 일부만 바꾸려면 GPT 텍스트 모델(예: gpt-5.6-sol)로 POST /v1/responses를 호출하세요. 원본 PNG는 input의 input_image이고 tools: [{type:\"image_generation\", input_image_mask:{image_url}}]이며 image_url은 data:image/png;base64,… 문자열입니다. 마스크는 원본과 같은 크기여야 합니다. 투명 픽셀이 수정 영역이고 불투명 픽셀은 유지됩니다. file_id는 실패합니다. 여기 Files API가 없어 files.create 마스크 예제는 동작하지 않습니다. 정산은 image token 기준이며 마스크는 두 번째 reference 이미지가 아닙니다.",
+          ),
+          sharedCode(`import base64, os
+from pathlib import Path
+from openai import OpenAI
+
+client = OpenAI(
+    api_key=os.environ["APITOKEN_API_KEY"],
+    base_url="${OPENAI}",
+)
+
+def png_url(path):
+    return "data:image/png;base64," + base64.b64encode(Path(path).read_bytes()).decode()
+
+response = client.responses.create(
+    model="gpt-5.6-sol",
+    input=[{
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": "Change only the masked region."},
+            {"type": "input_image", "image_url": png_url("photo.png")},
+        ],
+    }],
+    tools=[{
+        "type": "image_generation",
+        "input_image_mask": {"image_url": png_url("mask.png")},
+    }],
+)`),
+        ],
+      ),
+      section(
+        tr(
           "The Nano Banana 2 edit: references as multimodal input",
           "Edit через Nano Banana 2: references как multimodal input",
           "Nano Banana 2 编辑：参考图即多模态输入",

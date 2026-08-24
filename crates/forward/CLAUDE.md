@@ -885,7 +885,9 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    and never executes it. Hosted `tool_search` (`execution` omitted, `server`, or `hosted`) stays
    `type:tool_search` in the upstream body so the Codex backend can run it; the gateway does not
    search tools itself. Hosted `web_search` and `image_generation` are forwarded to the
-   ChatGPT Codex backend (live Pro 2026-08-24 executed both). `code_interpreter` is an
+   ChatGPT Codex backend (live Pro 2026-08-24 executed both). `image_generation.input_image_mask.image_url`
+   (PNG `data:image/png;base64,…`) is normalised and forwarded; `file_id` is
+   `400 documented_limitation`. Images HTTP `mask` stays rejected. `code_interpreter` is an
    upstream `Unsupported tool type` and fails closed here. `web_search_call` items (and
    provider `server_tool_use.web_search_requests`) settle at `metering::WEB_SEARCH_NANO`
    ($0.01/call); a declared `web_search` adds an eight-call hold. `file_search`,

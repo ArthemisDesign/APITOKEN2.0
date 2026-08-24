@@ -16,7 +16,7 @@ Public contract (unchanged from the app-server era):
 | `POST /v1/responses/input_tokens` | supported; estimates input tokens without running a turn |
 | `POST /v1/chat/completions` | supported adapter, streaming and non-streaming |
 | `POST /v1/images/generations` | supported (GPT Image 2); one `opaque/low/auto` PNG, non-streaming |
-| `POST /v1/images/edits` | supported (GPT Image 2); one to five strict PNG references, one edited PNG, non-streaming |
+| `POST /v1/images/edits` | supported (GPT Image 2); one to five strict PNG references, one edited PNG, non-streaming. Multipart `mask` is rejected (`400`). Native Codex `/images/edits` ignores that field. |
 | `GET /v1/models`, `GET /v1/models/{model}` | supported; text models are the last-good live intersection with the pinned billing catalog; GPT Image 2 is listed too, under exactly the two ids the image routes admit, with an authoritative image-only capability block and `apitoken.endpoints` naming those routes. It is not intersected with the text catalog (it has no upstream text entry) and publishes no token limits. Sending it to a text lane is a `400` naming the image routes, not a `404`. |
 
 Everything else on the OpenAI hostname returns an OpenAI-shaped `404`; nothing is ever forwarded
@@ -150,12 +150,31 @@ the router `not_started` proof.
 
 Generation and the separately bounded one-reference edit are watchdog-GREEN with real PNGs, terminal
 usage, exact local turn/home/SHA attribution, and non-replay semantics. The edit corrective verdict is
-non-network and would have failed a terminal withdrawal. The native wire still proves no masks,
-transparent backgrounds, exact dimensions, medium/high quality, multiple references/outputs,
-partial-image streaming, JPEG/WebP/compression, or Responses multi-turn image state; those fields are
-explicitly rejected. No image key, reseller origin, reseller schema, or new environment variable exists.
+non-network and would have failed a terminal withdrawal. The Images HTTP native wire still proves no
+`mask` field, transparent backgrounds, exact dimensions, medium/high quality, multiple
+references/outputs, partial-image streaming, or JPEG/WebP/compression; those Images fields are
+explicitly rejected. Region inpaint lives on Responses (below), not on `/v1/images/edits`.
+No image key, reseller origin, reseller schema, or new environment variable exists.
 The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANARY.md` and
-`research/GPT_IMAGE_2_EVIDENCE.md`.
+`research/GPT_IMAGE_2_EVIDENCE.md`. Live mask probe: `research/2026-08-24-codex-image-mask-live.md`.
+
+### Region inpaint (client contract)
+
+This is **not** OpenAI Images `client.images.edit(..., mask=file)`. That multipart field is
+rejected. Native Codex `POST /images/edits` ignores a JSON `mask` key (live: 200, no inpaint).
+
+Inpaint on this pool is a **Responses** call:
+
+1. Use a text GPT model on `POST /v1/responses` (for example `gpt-5.6-sol`), not `gpt-image-2`.
+2. Put the source PNG in `input` as `input_image` with a `data:image/png;base64,…` URL.
+3. Add `tools: [{ "type": "image_generation", "input_image_mask": { "image_url": "<mask PNG data URL>" } }]`.
+4. The mask PNG must be the same size as the source. Transparent pixels are the region to change;
+   opaque pixels stay. Billing follows image-input / image-output tokens; the mask is not a
+   second billed reference image (live: 1024 image-input tokens for one 1024×1024 source).
+
+`input_image_mask.file_id` is `400 documented_limitation` — there is no Files API on ChatGPT
+OAuth. Official OpenAI examples that `files.create` a mask will not run here. Codex CLI
+built-in `image_gen` has no mask argument; CLI `--mask` is the API-key fallback, not this plane.
 
 ## Runtime behavior
 
@@ -174,8 +193,11 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   registry. Hosted `web_search` and `image_generation` are forwarded to the ChatGPT Codex
   `/responses` backend. Live Pro probe 2026-08-24: `web_search` emitted `web_search_call`
   items and search SSE; `image_generation` emitted `image_generation_call` plus
-  generating/partial_image events; `code_interpreter` returned upstream `400 Unsupported
-  tool type: code_interpreter` and therefore fails closed here. Completed `web_search_call`
+  generating/partial_image events. `image_generation.input_image_mask.image_url` (PNG
+  `data:image/png;base64,…`) inpainted on that same wire (whole-canvas-red prompt, unmasked
+  half unchanged, `action: "edit"`). `input_image_mask.file_id` has no Files API here and
+  fails closed with `400 documented_limitation`. `code_interpreter` returned upstream
+  `400 Unsupported tool type: code_interpreter` and therefore fails closed here. Completed `web_search_call`
   items (and provider `server_tool_use.web_search_requests` when present) settle at the
   official `$0.01` per call (`metering::WEB_SEARCH_NANO`); search content tokens stay in
   the normal input buckets. A turn that declares `web_search` reserves eight calls as a

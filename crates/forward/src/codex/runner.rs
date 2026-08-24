@@ -793,9 +793,7 @@ impl CodexHome {
             }
             let observed_searches = output
                 .iter()
-                .filter(|item| {
-                    item.get("type").and_then(Value::as_str) == Some("web_search_call")
-                })
+                .filter(|item| item.get("type").and_then(Value::as_str) == Some("web_search_call"))
                 .count() as u64;
             usage.web_search_requests = usage.web_search_requests.max(observed_searches);
             let effective_service_tier = Some(
@@ -1108,6 +1106,23 @@ mod tests {
             .map(|tool| tool["type"].as_str().unwrap())
             .collect();
         assert_eq!(types, ["web_search", "image_generation"]);
+    }
+
+    #[test]
+    fn image_generation_input_image_mask_reaches_the_upstream_body() {
+        let mut request = turn_request(test_model());
+        request.dynamic_tools = vec![json!({
+            "type": "image_generation",
+            "input_image_mask": {
+                "image_url": "data:image/png;base64,AAAA"
+            }
+        })];
+        let body = build_responses_body(&request);
+        assert_eq!(body["tools"][0]["type"], "image_generation");
+        assert_eq!(
+            body["tools"][0]["input_image_mask"]["image_url"],
+            "data:image/png;base64,AAAA"
+        );
     }
 
     #[test]
