@@ -121,6 +121,7 @@ grep -Fq 'make_user stage-ci' "$I" || exit 1
 stage_ci_line=$(grep -nF 'make_user stage-ci' "$I" | cut -d: -f1)
 bind_line=$(grep -nF 'mount --bind "$src" "$dst"' "$I" | cut -d: -f1)
 [[ $stage_ci_line -gt $bind_line ]] || { echo 'stage-ci is created before loopback bind roots' >&2; exit 1; }
+bash "$ROOT/deploy/apitoken-stage-ctl.test.sh"
 grep -Fq 'attest|sync)' "$ROOT/deploy/stage-ctl-helper.sh"
 grep -Fq 'stage-seed.sh reseed' "$ROOT/deploy/stage-ctl-helper.sh"
 grep -Fq 'phase-disabled' "$ROOT/deploy/stage-ctl-helper.sh"

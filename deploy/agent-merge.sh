@@ -16,9 +16,9 @@
 #   * it refuses a master push unless deploy/stage is GREEN for that exact SHA, or --hotfix
 #     skips that client check. --hotfix does not prove a host-owned hotfix record; production
 #     admission still requires hotfix-eligible.json. A hotfix/* branch name is not authorization.
-#   * after GREEN deploy/stage it also reads GitHub promotion/eligible. A RED eligible status
-#     refuses the push. A missing/pending eligible status is a warning until that mirror is live
-#     on the host; production admission still requires the host-owned record.
+#   * after GREEN deploy/stage it also requires GREEN GitHub promotion/eligible for that exact SHA.
+#     Missing, pending, unknown, and RED eligible statuses refuse the push. --hotfix skips both
+#     client checks; production admission still requires the host-owned record.
 #
 # Usage:  deploy/agent-merge.sh [--allow-primary-tree] [--dry-run] [--fix-red] [--hotfix]
 #
@@ -527,11 +527,8 @@ am_require_stage_promotable() {
   eligible=${result%%$'\t'*}
   case "$eligible" in
     success) am_log "promotion/eligible is GREEN for $sha" ;;
-    failure|error)
-      am_die "refusing to push $sha to $AGENT_MERGE_TARGET because promotion/eligible is ${eligible}. Re-attest this exact SHA after GREEN deploy/stage, then merge."
-      ;;
     *)
-      am_log "WARNING: GitHub promotion/eligible is ${eligible:-unknown} for $sha; host admission still requires operator attestation of this exact SHA"
+      am_die "refusing to push $sha to $AGENT_MERGE_TARGET without GREEN promotion/eligible (got ${eligible:-unknown}). Attest this exact SHA after GREEN deploy/stage, then merge."
       ;;
   esac
 }

@@ -9,9 +9,10 @@ Production delivery is fail-closed. First move the exact SHA to `stage` with
 `deploy/agent-merge-stage.sh`. After GREEN `deploy/stage` and explicit operator
 attestation (`deploy/promotion-attest.sh <sha> <actor> <reason>`), fast-forward that same SHA to
 `master` with `deploy/agent-merge.sh`. `agent-merge.sh` refuses that push unless GitHub
-`deploy/stage` is GREEN for the exact SHA, or `--hotfix` skips that client check. `--hotfix` does
-not prove a host-owned hotfix record; production admission still requires `hotfix-eligible.json`.
-A `hotfix/*` name is not authorization. After a hotfix, run `deploy/stage-sync.sh --after-hotfix <sha>`;
+`deploy/stage` and `promotion/eligible` are GREEN for the exact SHA, or `--hotfix` skips those
+client checks. `--hotfix` does not prove a host-owned hotfix record; production admission still
+requires `hotfix-eligible.json`. The attest reason may contain spaces; `stage-ctl` joins remaining
+words. A `hotfix/*` name is not authorization. After a hotfix, run `deploy/stage-sync.sh --after-hotfix <sha>`;
 it invalidates stale approval before requesting exact stage convergence. The watchdog rejects
 an unattested master SHA in phase `admitting` and records `admission-rejected.sha`. Do not retry
 that SHA; land a new descendant through stage→attest or hotfix. A valid host-owned hotfix

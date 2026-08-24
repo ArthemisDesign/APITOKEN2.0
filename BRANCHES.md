@@ -41,8 +41,8 @@ Check out the branch → its purpose is immediately visible.
    attestation, unless `--fix-red` is recovering a red `master` (`origin/master` `deploy/watchdog`
    must be RED). Production accepts only the same
    exact attested SHA or a valid hotfix attestation. `agent-merge.sh` refuses a `master` push
-   without GREEN `deploy/stage` unless `--hotfix` skips that client check. `--hotfix` does not
-   prove a host-owned hotfix record.
+   without GREEN `deploy/stage` and GREEN GitHub `promotion/eligible` unless `--hotfix` skips those
+   client checks. `--hotfix` does not prove a host-owned hotfix record.
 4. **`master` = production trigger.** Merge only via `deploy/agent-merge.sh` and only when the
    change is fully production-ready. Before the gate, the script rejects a red target and rebases
    the branch onto the latest committed `master`, then runs in parallel a fail-closed local

@@ -35,8 +35,8 @@ then moves only `stage` and waits for informational `deploy/stage`. It never cha
 does not create promotion admission. Attest (`deploy/promotion-attest.sh`) writes the host-owned
 record and publishes a GitHub `promotion/eligible` mirror. `agent-merge.sh` then refuses the
 `master` push unless `deploy/stage` is GREEN for that exact SHA, or `--hotfix` skips that client
-check. `--hotfix` does not prove a host-owned hotfix record. A RED GitHub `promotion/eligible`
-also refuses the `master` push.
+check. `--hotfix` does not prove a host-owned hotfix record. A missing, pending, unknown, or RED
+GitHub `promotion/eligible` also refuses the `master` push.
 
 `apitoken-stage-watchdog.timer` polls `stage` as `deploy-stage` inside `staging.slice` and the stage
 netns. Phase 3 validates the exact SHA, rejects host-global candidate paths on the production host,

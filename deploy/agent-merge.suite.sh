@@ -126,7 +126,7 @@ run_merge() {  # $1 = tree, rest = extra env assignments / flags
       AGENT_MERGE_STATIC_GATE_CMD="${STATIC_GATE_STUB-}" \
       AGENT_MERGE_STATUS_CMD="${STATUS_STUB-printf success}" \
       AGENT_MERGE_STAGE_STATUS_CMD="${STAGE_STATUS_STUB-printf success}" \
-      AGENT_MERGE_ELIGIBLE_STATUS_CMD="${ELIGIBLE_STATUS_STUB-printf pending}" \
+      AGENT_MERGE_ELIGIBLE_STATUS_CMD="${ELIGIBLE_STATUS_STUB-printf success}" \
       AGENT_MERGE_FAILURE_LOG_CMD="${FAILURE_LOG_STUB-true}" \
       AGENT_MERGE_VALIDATION_REQUEST_CMD="${VALIDATION_REQUEST_STUB-printf 1}" \
       AGENT_MERGE_VALIDATION_STATUS_CMD="${VALIDATION_STATUS_STUB-printf success}" \
@@ -753,10 +753,18 @@ pushed=$(git --git-dir="$ORIGIN" rev-parse master)
 tree_eligible=$(new_agent_worktree agent-eligible feat/agent-eligible)
 STAGE_STATUS_STUB='printf success' ELIGIBLE_STATUS_STUB='printf failure' MERGE_FLAGS= \
   expect_failure 'a SHA whose promotion/eligible was revoked' \
-  'because promotion/eligible is failure' \
+  'without GREEN promotion/eligible' \
   run_merge "$tree_eligible"
 [[ $(git --git-dir="$ORIGIN" rev-parse master) == "$pushed" ]] \
   || wd_die 'a revoked eligible SHA still pushed to master'
+STAGE_STATUS_STUB='printf success' ELIGIBLE_STATUS_STUB='printf pending' MERGE_FLAGS= \
+  expect_failure 'a SHA whose promotion/eligible is still pending' \
+  'without GREEN promotion/eligible' \
+  run_merge "$tree_eligible"
+[[ $(git --git-dir="$ORIGIN" rev-parse master) == "$pushed" ]] \
+  || wd_die 'a pending eligible SHA still pushed to master'
+grep -Fq 'without GREEN promotion/eligible' "$MERGE" \
+  || wd_die 'the merge client must refuse a missing GitHub eligible mirror'
 grep -Fq 'without GREEN deploy/stage' "$MERGE" \
   || wd_die 'the merge client must name the unattested-master refusal'
 grep -Fq -- '--hotfix' "$MERGE" \

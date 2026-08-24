@@ -685,8 +685,10 @@ server-side branch rules учётка с repository write технически �
 **Promotion-прекондишн (клиентская сторона слоя C).** `deploy/agent-merge.sh` в
 `AGENT_MERGE_TARGET=master` перед пушем проверяет GREEN `deploy/stage` на той же identity,
 если это не `--hotfix`. `--hotfix` пропускает клиентскую stage-проверку и **не** доказывает
-host-owned hotfix record. RED GitHub `promotion/eligible` тоже отказывает. `stage-ctl attest`
-публикует зеркало `promotion/eligible`. Проверка только `deploy/stage` без host-owned
+host-owned hotfix record. GitHub `promotion/eligible` обязан быть GREEN; missing, pending,
+unknown и RED тоже отказывают. `stage-ctl attest` публикует зеркало `promotion/eligible`.
+Причина attestation может содержать пробелы: forced-command склеивает оставшиеся слова.
+Проверка только `deploy/stage` без host-owned
 `promotion/eligible.json` по-прежнему недостаточна на хосте: production-watchdog fail-closed.
 
 **Оставшиеся правила.**

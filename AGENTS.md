@@ -392,6 +392,7 @@ git push -u origin HEAD
 ./deploy/agent-merge-stage.sh
 # Wait for GREEN deploy/stage. Ask the operator to attest this exact SHA:
 #   ./deploy/promotion-attest.sh <sha> <actor> <reason>
+# Reason may contain spaces. The host forced command joins remaining words.
 ./deploy/agent-merge.sh
 ```
 
@@ -400,8 +401,8 @@ clone the scripts will refuse; `--allow-primary-tree` is for the person only). `
 moves only `stage` and waits for informational `deploy/stage`. `master` is the production trigger:
 the host deploys exactly one SHA at a time. `agent-merge.sh` refuses that push unless `deploy/stage`
 is GREEN for the exact SHA, or `--hotfix` skips the client stage check. `--hotfix` does not prove a
-host-owned hotfix record; production admission still requires `hotfix-eligible.json`. A RED GitHub
-`promotion/eligible` status also refuses the `master` push. After the push, the script holds the lock
+host-owned hotfix record; production admission still requires `hotfix-eligible.json`. GitHub
+`promotion/eligible` must be GREEN for the exact SHA or the `master` push is refused. After the push, the script holds the lock
 until `deploy/watchdog` is green.
 The script runs the full gate, takes a machine merge-lock,
 rebases, re-verifies the gate on the very SHA it pushes, and fast-forwards local `master` to that GitHub SHA

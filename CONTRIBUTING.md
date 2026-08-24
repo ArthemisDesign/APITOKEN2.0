@@ -60,7 +60,7 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    wait. Promotion requires an explicit operator attestation for that SHA
    (`./deploy/promotion-attest.sh <sha> <actor> <reason>`). Then run `./deploy/agent-merge.sh`
    without adding a commit. `agent-merge.sh` refuses to push `master` unless `deploy/stage` is GREEN
-   for that exact SHA. A RED GitHub `promotion/eligible` also refuses. `--hotfix` skips the client
+   for that exact SHA. GitHub `promotion/eligible` must also be GREEN. `--hotfix` skips the client
    stage check; it does not prove a host-owned hotfix record. Production admission still requires
    `hotfix-eligible.json`. A `hotfix/*` name is not authorization. When `master` is already red,
    `./deploy/agent-merge-stage.sh --fix-red` may replace a frozen unpromoted `stage` SHA only if
