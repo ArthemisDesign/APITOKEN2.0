@@ -9,6 +9,7 @@ PY
 grep -Fq 'MAX_TOKENS = 64' "$ROOT/deploy/stage-live-proxy.py"
 grep -Fq 'MAX_BODY = 1_048_576' "$ROOT/deploy/stage-live-proxy.py"
 grep -Fq 'UPSTREAM_HOST = "10.254.32.1"' "$ROOT/deploy/stage-live-proxy.py"
+grep -Fq '{"claude-sonnet-4-6", "claude-sonnet-5"}' "$ROOT/deploy/stage-live-proxy.py"
 grep -Fq "conn.request('POST','/v1/messages'" "$ROOT/deploy/stage-live-host-proxy.py"
 ! grep -Eq 'api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com' "$ROOT/deploy/stage-live-proxy.py" "$ROOT/deploy/stage-live-host-proxy.py"
 grep -Fq 'cap >= 100000 && cap <= 100000000' "$ROOT/deploy/stage-live-control.sh"

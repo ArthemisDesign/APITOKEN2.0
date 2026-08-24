@@ -27,7 +27,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception: return self.reply(400, {"error": "invalid_json"})
         if set(body) - {"model","max_tokens","messages","system","temperature","stream"}:
             return self.reply(400, {"error": "unsupported_field"})
-        if not isinstance(body.get("model"), str) or not isinstance(body.get("messages"), list):
+        if body.get("model") not in {"claude-sonnet-4-6", "claude-sonnet-5"} or not isinstance(body.get("messages"), list):
             return self.reply(400, {"error": "invalid_request"})
         if body.get("stream", False) is not False: return self.reply(400, {"error": "stream_disabled"})
         if not isinstance(body.get("max_tokens"), int) or not 1 <= body["max_tokens"] <= MAX_TOKENS:

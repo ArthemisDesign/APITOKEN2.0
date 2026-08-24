@@ -1942,7 +1942,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after a seco
 Next: open and close the exact host INPUT rule with the live lane.
 
 ### 2026-08-24 — Phase 8 veth firewall repair
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `7f6d69edcd19706c868e6a3e3e83ab25c5796a76`   watchdog: GREEN
 Result: The third key reached the stage client, but its fixed host bridge timed out. The namespace
 output rule was present; host UFW still dropped new input from `veth-stage-host`. Enable one exact
 iptables rule for source `10.254.32.2`, destination `10.254.32.1`, TCP 9081 only. Disable removes the
@@ -1951,7 +1951,18 @@ was observed.
 Checks actually run: `bash deploy/staging-phase8.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `git diff --check`; live listener/firewall diagnostics; live key disable.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; public UFW/DNS routes remain unchanged.
-Next: stage; use standing authorization to attest/promote if GREEN; issue a fresh key, probe once,
+Next: restrict the live client to current production Anthropic model IDs.
+
+### 2026-08-24 — Phase 8 live model allowlist repair
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The fourth key reached production and the fleet, but the historical
+`claude-sonnet-4-20250514` model returned an upstream 404. The capped key retained zero spent nanoUSD
+and was revoked immediately. Restrict the stage client to current audited Anthropic IDs
+`claude-sonnet-4-6` and `claude-sonnet-5`; reject every other model before the bridge.
+Checks actually run: `bash deploy/staging-phase8.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`git diff --check`; production structured error showed exact key id, zero spent, capped policy, 404.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after a bounded provider rejection.
+Next: stage; auto-attest/promote if GREEN; issue a fresh key with `claude-sonnet-4-6`, probe once,
 disable, and close Phase 8.
 
 ---
