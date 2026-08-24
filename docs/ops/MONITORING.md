@@ -182,6 +182,13 @@ Open Prometheus Targets and inspect the scrape error. Confirm the exporter conta
 the listener is loopback-only, and its dependency is healthy. Do not expose exporter ports to fix
 a networking error.
 
+Post-admission `final_verify_monitoring` uses the same job filter
+(`up{job!~"claude-router|devbot"}`) and waits the same 2-minute `for:` window. It does not use
+bare `min(up) == 1`: an unprovisioned devbot has no listener, `RouterMetricsDown` owns 8802,
+and engine blue-green can keep a scrape or collector sample stale for more than 60s. SHA
+`6ef38441` and `289993c3` both quarantined on the old combined 60s query after GREEN engine
+admission.
+
 ## PublicEndpointDown
 
 Run the failing URL locally with `curl --resolve <host>:443:127.0.0.1`. Check Caddy and the named

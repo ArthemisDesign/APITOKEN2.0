@@ -26,10 +26,17 @@ grep -Fq -- '-f /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.co
   "$ROOT/deploy/apitoken-db-dump"
 ! grep -Fq '/opt/apitoken/repo' "$ROOT/deploy/apitoken-db-dump"
 
-# Every operand in the watchdog's PromQL `and` expression must have the same empty label set.
-# Aggregate collector freshness just like target and synthetic health, or vector matching yields
-# no result even while every underlying series is healthy.
-grep -Fq 'and min(time() - apitoken_monitoring_collector_last_success_unixtime) < 180' \
+# Collector freshness stays aggregated with min() so an empty label set cannot fail vector
+# matching. The three operands are queried separately so a RED GitHub headline names the
+# failing piece. The job filter matches MonitoringTargetDown; the 24x5s window matches
+# that alert's 2m `for:` (6ef38441 and 289993c3 both quarantined after GREEN engine admission).
+grep -Fq 'query=min(up{job!~"claude-router|devbot"}) == 1' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'query=min(probe_success{job=~"public-http|openai-http|gemini-http|protected-http|support-http|loopback-http"}) == 1' \
+  "$ROOT/deploy/watchdog.sh"
+grep -Fq 'query=min(time() - apitoken_monitoring_collector_last_success_unixtime) < 180' \
+  "$ROOT/deploy/watchdog.sh"
+! grep -Fq 'min(up) == 1' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do' \
   "$ROOT/deploy/watchdog.sh"
 ! grep -Fq 'and (time() - apitoken_monitoring_collector_last_success_unixtime < 180)' \
   "$ROOT/deploy/watchdog.sh"
