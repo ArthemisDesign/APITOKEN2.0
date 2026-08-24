@@ -27,6 +27,8 @@ describe("commercial API bootstrap", () => {
     const app = await createApplication();
     try {
       await expect(app.init()).resolves.toBe(app);
+      const { DevbotPartnerNotifier } = await import("./devbot-partner.notifier.js");
+      expect(app.get(DevbotPartnerNotifier)).toBeInstanceOf(DevbotPartnerNotifier);
       const fastify = app.getHttpAdapter().getInstance();
       expect(fastify.hasContentTypeParser(
         "application/x-www-form-urlencoded",

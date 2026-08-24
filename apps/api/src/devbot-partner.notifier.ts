@@ -22,20 +22,18 @@ const TIMEOUT_MS = 2_000;
 @Injectable()
 export class DevbotPartnerNotifier {
   private readonly logger = new Logger(DevbotPartnerNotifier.name);
-  private readonly url: string | undefined;
 
-  constructor(config: ConfigService<Environment, true>) {
-    this.url = config.get("DEVBOT_PARTNER_WEBHOOK_URL", { infer: true });
-  }
+  constructor(private readonly config: ConfigService<Environment, true>) {}
 
   notify(payload: PartnerApplicationWebhookPayload): void {
-    if (this.url === undefined) return;
-    void this.post(payload);
+    const url = this.config.get("DEVBOT_PARTNER_WEBHOOK_URL", { infer: true });
+    if (url === undefined) return;
+    void this.post(url, payload);
   }
 
-  private async post(payload: PartnerApplicationWebhookPayload): Promise<void> {
+  private async post(url: string, payload: PartnerApplicationWebhookPayload): Promise<void> {
     try {
-      const response = await fetch(this.url!, {
+      const response = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
