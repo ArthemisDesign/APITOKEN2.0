@@ -9,6 +9,7 @@ import {
   type ReferralApplication,
 } from "@claude-api/db";
 import { DATABASE } from "./infrastructure.module.js";
+import { DevbotPartnerNotifier } from "./devbot-partner.notifier.js";
 import { ReferralService, type PartnerAuthorityInput } from "./referral.service.js";
 
 /** Standard terms an approved application starts on; an admin can widen them afterwards. */
@@ -29,6 +30,7 @@ export class ReferralApplicationService {
   constructor(
     @Inject(DATABASE) private readonly database: Database,
     private readonly referral: ReferralService,
+    private readonly devbot: DevbotPartnerNotifier,
   ) {}
 
   /** The applicant's own view: the latest application, or null when they never applied. */
@@ -37,7 +39,13 @@ export class ReferralApplicationService {
   }
 
   async submit(userId: string, message: string): Promise<{ application: ReferralApplication }> {
-    return { application: await submitReferralApplication(this.database, { userId, message }) };
+    const previous = await findLatestReferralApplication(this.database, userId);
+    const application = await submitReferralApplication(this.database, { userId, message });
+    this.devbot.notify({
+      event: previous?.status === "pending" && previous.id === application.id ? "updated" : "submitted",
+      ...webhookFields(application),
+    });
+    return { application };
   }
 
   async list(query: { status?: "pending" | "approved" | "rejected" | undefined; limit?: number | undefined }): Promise<{ items: ReferralApplication[] }> {
@@ -77,6 +85,19 @@ export class ReferralApplicationService {
       reviewerNote: input.note,
     });
     if (!decided) throw new UnprocessableEntityException("application already decided");
+    this.devbot.notify({ event: "decided", ...webhookFields(decided) });
     return { application: decided };
   }
+}
+
+function webhookFields(application: ReferralApplication) {
+  return {
+    id: application.id,
+    email: application.email,
+    status: application.status,
+    message: application.message,
+    createdAt: application.createdAt,
+    reviewerActor: application.reviewerActor,
+    reviewerNote: application.reviewerNote,
+  };
 }

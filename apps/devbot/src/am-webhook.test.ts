@@ -6,7 +6,8 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { createAmServer, mapAmPayload, MetricsRegistry, writeHeartbeatFile } from "./am-webhook.js";
 import { CHATWOOT_WEBHOOK_PREFIX } from "./chatwoot.js";
-import type { AlertInstance, ChatwootIncomingMessage } from "./events.js";
+import type { AlertInstance, ChatwootIncomingMessage, PartnerApplicationEvent } from "./events.js";
+import { PARTNER_WEBHOOK_PREFIX } from "./partner-application.js";
 import { Logger } from "./log.js";
 
 const SECRET = "test-am-secret-128bit";
@@ -277,6 +278,81 @@ describe("chatwoot webhook server", () => {
       });
       expect(authorized.status).toBe(200);
       expect(received).toHaveLength(1);
+    });
+  });
+});
+
+describe("partner application webhook server", () => {
+  const PARTNER_SECRET = "partner-path-secret";
+  const incoming = {
+    event: "submitted",
+    id: "6a3a0f4b-2f24-4a2e-a0a5-2f1ad2d7f4b1",
+    email: "partner@example.com",
+    status: "pending",
+    message: "I run an agency.",
+    createdAt: "2026-08-23T09:00:00.000Z",
+    reviewerActor: null,
+    reviewerNote: null,
+  };
+
+  async function withPartners(run: (base: string, received: PartnerApplicationEvent[]) => Promise<void>) {
+    const received: PartnerApplicationEvent[] = [];
+    const am = createAmServer({
+      port: 0,
+      secret: SECRET,
+      metrics: new MetricsRegistry(),
+      onAlerts: () => undefined,
+      heartbeatRefreshMs: 3_600_000,
+      heartbeatFileMs: 3_600_000,
+      partners: {
+        secret: PARTNER_SECRET,
+        onEvent: (event) => received.push(event),
+      },
+    });
+    await new Promise<void>((resolve) => am.server.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = am.server.address() as AddressInfo;
+    try {
+      await run(`http://127.0.0.1:${port}`, received);
+    } finally {
+      await am.close();
+    }
+  }
+
+  it("routes a partner application on the secret path", async () => {
+    await withPartners(async (base, received) => {
+      const response = await fetch(`${base}${PARTNER_WEBHOOK_PREFIX}${PARTNER_SECRET}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(incoming),
+      });
+      expect(response.status).toBe(200);
+      expect(received).toHaveLength(1);
+      expect(received[0]?.id).toBe(incoming.id);
+      expect(received[0]?.event).toBe("submitted");
+    });
+  });
+
+  it("returns 400 for a malformed partner payload", async () => {
+    await withPartners(async (base, received) => {
+      const response = await fetch(`${base}${PARTNER_WEBHOOK_PREFIX}${PARTNER_SECRET}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ event: "ping" }),
+      });
+      expect(response.status).toBe(400);
+      expect(received).toHaveLength(0);
+    });
+  });
+
+  it("returns 404 for a near-miss partner secret", async () => {
+    await withPartners(async (base, received) => {
+      const response = await fetch(`${base}${PARTNER_WEBHOOK_PREFIX}wrong`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(incoming),
+      });
+      expect(response.status).toBe(404);
+      expect(received).toHaveLength(0);
     });
   });
 });

@@ -10,6 +10,7 @@ import {
   ReferralApplicationController,
 } from "./referral-applications.controller.js";
 import { ReferralApplicationService } from "./referral-applications.service.js";
+import { DevbotPartnerNotifier } from "./devbot-partner.notifier.js";
 import { ReferralInvitationController } from "./referral-invitations.controller.js";
 import { ReferralInvitationService } from "./referral-invitations.service.js";
 import { ReferralSalesClient } from "./referral-sales.client.js";
@@ -24,6 +25,6 @@ import { ReferralService } from "./referral.service.js";
     AdminReferralApplicationController,
     AdminUserReferralController,
   ],
-  providers: [AdminGuard, ReferralSalesClient, ReferralService, ReferralApplicationService, ReferralInvitationService],
+  providers: [AdminGuard, ReferralSalesClient, ReferralService, DevbotPartnerNotifier, ReferralApplicationService, ReferralInvitationService],
 })
 export class ReferralModule {}

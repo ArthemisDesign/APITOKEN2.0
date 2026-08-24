@@ -3,14 +3,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { Dedup } from "./dedup.js";
-import type { AlertInstance, ChatwootIncomingMessage } from "./events.js";
+import type { AlertInstance, ChatwootIncomingMessage, PartnerApplicationEvent } from "./events.js";
 import { Router } from "./router.js";
 import { StateStore, type TopicKey } from "./state.js";
 import type { TelegramBot } from "./tg.js";
 
 const T0 = 1_700_000_000_000;
 const CHAT_ID = -100999;
-const TOPICS: Record<TopicKey, number> = { critical: 1, deploys: 2, warnings: 3, commerce: 4, digest: 5, support: 6 };
+const TOPICS: Record<TopicKey, number> = { critical: 1, deploys: 2, warnings: 3, commerce: 4, digest: 5, support: 6, partners: 7 };
 
 interface SentMessage {
   chatId: number;
@@ -340,6 +340,49 @@ describe("Router Chatwoot messages", () => {
   it("skips sending when the Support topic is not provisioned", async () => {
     const { router, sent } = await makeRouter(() => T0, "Asia/Tbilisi", 0, { ...TOPICS, support: 0 });
     await router.handleChatwoot(chatwootMessage());
+    expect(sent).toHaveLength(0);
+  });
+});
+
+function partnerEvent(overrides: Partial<PartnerApplicationEvent> = {}): PartnerApplicationEvent {
+  return {
+    event: "submitted",
+    id: "6a3a0f4b-2f24-4a2e-a0a5-2f1ad2d7f4b1",
+    email: "partner@example.com",
+    status: "pending",
+    message: "I run an agency.",
+    createdAt: "2026-08-23T09:00:00.000Z",
+    reviewerActor: null,
+    reviewerNote: null,
+    ...overrides,
+  };
+}
+
+describe("Router partner applications", () => {
+  it("posts a new application to the Partners topic", async () => {
+    const { router, sent } = await makeRouter();
+    await router.handlePartner(partnerEvent());
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.options.threadId).toBe(TOPICS.partners);
+    expect(sent[0]?.text).toContain("🤝 <b>Partner application</b> · pending");
+    expect(sent[0]?.text).toContain("partner@example.com");
+    expect(sent[0]?.text).toContain("I run an agency.");
+    expect(sent[0]?.text).toContain("https://admin.apitoken.sale/partners/applications");
+  });
+
+  it("edits the same Telegram message when the application is decided", async () => {
+    const { router, sent, edited } = await makeRouter();
+    await router.handlePartner(partnerEvent());
+    await router.handlePartner(partnerEvent({ event: "decided", status: "approved", reviewerActor: "ops" }));
+    expect(sent).toHaveLength(1);
+    expect(edited).toHaveLength(1);
+    expect(edited[0]?.text).toContain("approved");
+    expect(edited[0]?.text).toContain("ops");
+  });
+
+  it("skips sending when the Partners topic is not provisioned", async () => {
+    const { router, sent } = await makeRouter(() => T0, "Asia/Tbilisi", 0, { ...TOPICS, partners: 0 });
+    await router.handlePartner(partnerEvent());
     expect(sent).toHaveLength(0);
   });
 });

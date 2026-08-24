@@ -20,6 +20,7 @@ const TOPICS = [
   { key: "DEVBOT_TOPIC_COMMERCE", name: "💰 Commerce", icon_color: 0x8eee98 },
   { key: "DEVBOT_TOPIC_DIGEST", name: "📊 Digest", icon_color: 0x92a8d1 },
   { key: "DEVBOT_TOPIC_SUPPORT", name: "💬 Support", icon_color: 0xc38ed2 },
+  { key: "DEVBOT_TOPIC_PARTNERS", name: "🤝 Partners", icon_color: 0x6c5ce7 },
 ];
 
 const token = process.env.DEVBOT_TELEGRAM_TOKEN;
@@ -34,7 +35,7 @@ if (!token || !chatId) {
   process.exit(1);
 }
 if (selected.length === 0) {
-  console.error(`Unknown DEVBOT_PROVISION_ONLY=${only}; expected CRITICAL|DEPLOYS|WARNINGS|COMMERCE|DIGEST|SUPPORT`);
+  console.error(`Unknown DEVBOT_PROVISION_ONLY=${only}; expected CRITICAL|DEPLOYS|WARNINGS|COMMERCE|DIGEST|SUPPORT|PARTNERS`);
   process.exit(1);
 }
 

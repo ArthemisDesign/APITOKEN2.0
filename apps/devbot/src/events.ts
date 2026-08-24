@@ -38,3 +38,15 @@ export interface ChatwootIncomingMessage {
   email?: string;
   attachments: { fileName?: string; fileType?: string }[];
 }
+
+/** Partner-access application from Commerce. Fail-open loopback webhook, no user id. */
+export interface PartnerApplicationEvent {
+  event: "submitted" | "updated" | "decided";
+  id: string;
+  email: string;
+  status: "pending" | "approved" | "rejected";
+  message: string;
+  createdAt: string;
+  reviewerActor: string | null;
+  reviewerNote: string | null;
+}

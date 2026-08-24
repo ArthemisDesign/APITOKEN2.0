@@ -1,6 +1,7 @@
 import { chatwootConversationUrl, truncateChatwootContent } from "./chatwoot.js";
 import { Dedup } from "./dedup.js";
-import type { AlertInstance, ChatwootIncomingMessage, DeployEvent, JournalEvent } from "./events.js";
+import type { AlertInstance, ChatwootIncomingMessage, DeployEvent, JournalEvent, PartnerApplicationEvent } from "./events.js";
+import { PARTNER_REVIEW_QUEUE_URL, truncatePartnerMessage } from "./partner-application.js";
 import { errorMessage, type Logger } from "./log.js";
 import type { DeployState, PhaseState, StateStore, TopicKey } from "./state.js";
 import type { TelegramBot } from "./tg.js";
@@ -438,6 +439,55 @@ export class Router {
       await state.save();
     } catch (error) {
       this.deps.logger?.error(`router: chatwoot message ${message.id} failed: ${errorMessage(error)}`);
+    }
+  }
+
+  // ---------------------------------------------------------------- partners
+
+  formatPartner(event: PartnerApplicationEvent): string {
+    const status = event.status === "approved" ? "approved" : event.status === "rejected" ? "rejected" : "pending";
+    const lines = [`🤝 <b>Partner application</b> · ${escapeHtml(status)}`];
+    lines.push(`👤 <b>${escapeHtml(event.email)}</b>`);
+    if (event.reviewerActor) lines.push(`👷 ${escapeHtml(event.reviewerActor)}`);
+    const body = truncatePartnerMessage(event.message).trim();
+    if (body !== "") {
+      lines.push("");
+      lines.push(escapeHtml(body));
+    }
+    lines.push("");
+    lines.push(`<a href="${PARTNER_REVIEW_QUEUE_URL}">open the review queue</a>`);
+    return lines.join("\n");
+  }
+
+  async handlePartner(event: PartnerApplicationEvent): Promise<void> {
+    try {
+      const { state, dedup, tg, chatId, topics } = this.deps;
+      const threadId = topics.partners;
+      if (!threadId) return;
+      const now = this.now();
+      const fingerprint = `partner:${event.id}`;
+      const text = this.formatPartner(event);
+      const existing = dedup.lookup(fingerprint, now);
+      if (existing) {
+        const ok = await tg.editMessageText(chatId, existing.messageId, text);
+        if (!ok) {
+          const messageId = await tg.sendMessage(chatId, text, { threadId });
+          if (messageId !== null) existing.messageId = messageId;
+        }
+        dedup.markRepeat(existing, now);
+        dedup.markEdited(existing, now);
+        this.countEvent("partners", event.event);
+        await state.save();
+        return;
+      }
+      const messageId = await tg.sendMessage(chatId, text, { threadId });
+      if (messageId === null) return;
+      dedup.register(fingerprint, { messageId, topic: "partners", now });
+      state.recordEvent({ ts: now, kind: "partners", name: event.id }, now);
+      this.countEvent("partners", event.event);
+      await state.save();
+    } catch (error) {
+      this.deps.logger?.error(`router: partner application ${event.id} failed: ${errorMessage(error)}`);
     }
   }
 }

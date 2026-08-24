@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { errorMessage, type Logger } from "./log.js";
 
-export type TopicKey = "critical" | "deploys" | "warnings" | "commerce" | "digest" | "support";
+export type TopicKey = "critical" | "deploys" | "warnings" | "commerce" | "digest" | "support" | "partners";
 
 export type PhaseState = "pending" | "success" | "failure";
 
@@ -46,7 +46,7 @@ export interface GithubSnapshot {
 
 export interface DigestEvent {
   ts: number;
-  kind: "alert" | "deploy" | "support";
+  kind: "alert" | "deploy" | "support" | "partners";
   name: string;
   severity?: string;
 }

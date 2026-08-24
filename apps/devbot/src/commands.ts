@@ -95,6 +95,7 @@ export function buildDigestReport(events: StateStore["data"]["events"], now: num
   const deploysQuarantined = recent.filter((event) => event.kind === "deploy" && event.severity === "quarantine").length;
   const alerts = recent.filter((event) => event.kind === "alert");
   const supportCount = recent.filter((event) => event.kind === "support").length;
+  const partnerCount = recent.filter((event) => event.kind === "partners").length;
   const critical = alerts.filter((event) => event.severity === "critical").length;
   const warnings = alerts.filter((event) => event.severity === "warning");
   const topWarnings = new Map<string, number>();
@@ -107,6 +108,7 @@ export function buildDigestReport(events: StateStore["data"]["events"], now: num
     `Деплои: ✅ ${deploysOk} · карантин 🚨 ${deploysQuarantined}`,
     `Алерты: 🔴 ${critical} critical · 🟡 ${warnings.length} warning`,
     `Support: 💬 ${supportCount} входящих`,
+    `Partners: 🤝 ${partnerCount} заявок`,
   ];
   if (top.length > 0) {
     lines.push("Топ warning:");

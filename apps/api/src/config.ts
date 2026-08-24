@@ -58,6 +58,22 @@ const environmentSchema = z.object({
   SALES_CONTROL_KEY: z.string().min(32).optional(),
   // База sales-api для account-bound Referral и CRM bridge. Секрет остаётся только на сервере.
   SALES_API_URL: z.string().url().optional(),
+  // Fail-open loopback notify to Devbot. Empty = off. HTTP loopback only; the path secret lives in the URL.
+  DEVBOT_PARTNER_WEBHOOK_URL: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().url().superRefine((value, context) => {
+      const url = new URL(value);
+      if (url.protocol !== "http:") {
+        context.addIssue({ code: "custom", message: "DEVBOT_PARTNER_WEBHOOK_URL must use HTTP" });
+      }
+      if (url.username || url.password) {
+        context.addIssue({ code: "custom", message: "DEVBOT_PARTNER_WEBHOOK_URL must not include credentials" });
+      }
+      if (!isLoopbackHostname(url.hostname)) {
+        context.addIssue({ code: "custom", message: "DEVBOT_PARTNER_WEBHOOK_URL is allowed only for loopback hosts" });
+      }
+    }).optional(),
+  ),
   // Узкий PII-мост CRM→Commerce. Он не переиспользует sales/admin credentials и включается
   // только полной парой; партнёрский владелец всегда выбирается сервером, а не телом запроса.
   CRM_CONTROL_KEY: z.preprocess((value) => value === "" ? undefined : value, z.string().min(32).optional()),

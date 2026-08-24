@@ -44,6 +44,10 @@ const configSchema = z.object({
     (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
     threadId("DEVBOT_TOPIC_SUPPORT").optional(),
   ),
+  DEVBOT_TOPIC_PARTNERS: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    threadId("DEVBOT_TOPIC_PARTNERS").optional(),
+  ),
   DEVBOT_PORT: z.coerce.number().int().min(1).max(65_535).default(3800),
   DEVBOT_AM_SECRET: z.string().min(16),
   DEVBOT_GITHUB_TOKEN: optionalSecret(10),
@@ -62,6 +66,7 @@ const configSchema = z.object({
   DEVBOT_CHATWOOT_SECRET: optionalSecret(16),
   DEVBOT_CHATWOOT_HMAC_SECRET: optionalSecret(8),
   DEVBOT_CHATWOOT_BASE_URL: z.string().url().default("https://support.apitoken.sale"),
+  DEVBOT_PARTNER_SECRET: optionalSecret(16),
 });
 
 export type RawConfig = z.infer<typeof configSchema>;
@@ -74,6 +79,8 @@ export interface TopicMap {
   digest: number;
   /** 0 = Chatwoot support topic not provisioned; intake stays disabled. */
   support: number;
+  /** 0 = partner-application topic not provisioned; intake stays disabled. */
+  partners: number;
 }
 
 export interface DevbotConfig {
@@ -98,6 +105,7 @@ export interface DevbotConfig {
   chatwootSecret?: string;
   chatwootHmacSecret?: string;
   chatwootBaseUrl: string;
+  partnerSecret?: string;
 }
 
 /** Парсит произвольный env-like объект — безопасно вызывать в тестах без process.env. */
@@ -114,6 +122,7 @@ export function parseConfig(env: Record<string, unknown>): DevbotConfig {
       commerce: raw.DEVBOT_TOPIC_COMMERCE,
       digest: raw.DEVBOT_TOPIC_DIGEST,
       support: raw.DEVBOT_TOPIC_SUPPORT ?? 0,
+      partners: raw.DEVBOT_TOPIC_PARTNERS ?? 0,
     },
     port: raw.DEVBOT_PORT,
     amSecret: raw.DEVBOT_AM_SECRET,
@@ -133,6 +142,7 @@ export function parseConfig(env: Record<string, unknown>): DevbotConfig {
   if (raw.DEVBOT_ENGINE_CONTROL_KEY !== undefined) config.engineControlKey = raw.DEVBOT_ENGINE_CONTROL_KEY;
   if (raw.DEVBOT_CHATWOOT_SECRET !== undefined) config.chatwootSecret = raw.DEVBOT_CHATWOOT_SECRET;
   if (raw.DEVBOT_CHATWOOT_HMAC_SECRET !== undefined) config.chatwootHmacSecret = raw.DEVBOT_CHATWOOT_HMAC_SECRET;
+  if (raw.DEVBOT_PARTNER_SECRET !== undefined) config.partnerSecret = raw.DEVBOT_PARTNER_SECRET;
   return config;
 }
 

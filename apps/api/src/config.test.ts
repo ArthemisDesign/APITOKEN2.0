@@ -90,4 +90,24 @@ describe("commercial API configuration", () => {
       CRM_REFERRAL_PARTNER_CODE: "crm-owner",
     })).toThrow("CRM bridge requires SALES_API_URL and SALES_CONTROL_KEY");
   });
+
+  it("accepts a loopback HTTP Devbot partner webhook and rejects anything else", () => {
+    expect(validateEnvironment(requiredEnvironment).DEVBOT_PARTNER_WEBHOOK_URL).toBeUndefined();
+    expect(validateEnvironment({
+      ...requiredEnvironment,
+      DEVBOT_PARTNER_WEBHOOK_URL: "http://127.0.0.1:3800/hooks/partners/secret",
+    }).DEVBOT_PARTNER_WEBHOOK_URL).toBe("http://127.0.0.1:3800/hooks/partners/secret");
+    expect(validateEnvironment({
+      ...requiredEnvironment,
+      DEVBOT_PARTNER_WEBHOOK_URL: "",
+    }).DEVBOT_PARTNER_WEBHOOK_URL).toBeUndefined();
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      DEVBOT_PARTNER_WEBHOOK_URL: "https://127.0.0.1:3800/hooks/partners/secret",
+    })).toThrow("DEVBOT_PARTNER_WEBHOOK_URL must use HTTP");
+    expect(() => validateEnvironment({
+      ...requiredEnvironment,
+      DEVBOT_PARTNER_WEBHOOK_URL: "http://devbot.apitoken.sale/hooks/partners/secret",
+    })).toThrow("DEVBOT_PARTNER_WEBHOOK_URL is allowed only for loopback hosts");
+  });
 });

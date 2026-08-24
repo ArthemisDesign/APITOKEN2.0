@@ -32,9 +32,10 @@ const db = await import("@claude-api/db") as unknown as {
   decideReferralApplication: ReturnType<typeof vi.fn>;
 };
 
-function service(onboard = vi.fn().mockResolvedValue({ ok: true })) {
+function service(onboard = vi.fn().mockResolvedValue({ ok: true }), notify = vi.fn()) {
   const referral = { onboardByEmail: onboard } as never;
-  return { service: new ReferralApplicationService({} as never, referral), onboard };
+  const devbot = { notify } as never;
+  return { service: new ReferralApplicationService({} as never, referral, devbot), onboard, notify };
 }
 
 describe("Partner access applications", () => {
@@ -43,7 +44,7 @@ describe("Partner access applications", () => {
   it("approves by running the same onboarding an administrator runs by hand", async () => {
     db.findReferralApplication.mockResolvedValue(APPLICATION);
     db.decideReferralApplication.mockResolvedValue({ ...APPLICATION, status: "approved", reviewerActor: "ops", reviewerNote: "Known agency." });
-    const { service: subject, onboard } = service();
+    const { service: subject, onboard, notify } = service();
 
     const result = await subject.decide({ id: APPLICATION.id, action: "approve", note: "Known agency.", actor: "ops" });
 
@@ -54,6 +55,49 @@ describe("Partner access applications", () => {
       actor: "ops",
     });
     expect(result.application.status).toBe("approved");
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({
+      event: "decided",
+      id: APPLICATION.id,
+      email: APPLICATION.email,
+      status: "approved",
+      reviewerActor: "ops",
+    }));
+    expect(notify.mock.calls[0]?.[0]).not.toHaveProperty("userId");
+  });
+
+  it("notifies Devbot after a first submission", async () => {
+    db.findLatestReferralApplication.mockResolvedValue(null);
+    db.submitReferralApplication.mockResolvedValue(APPLICATION);
+    const { service: subject, notify } = service();
+
+    await subject.submit(APPLICATION.userId, APPLICATION.message);
+
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({
+      event: "submitted",
+      id: APPLICATION.id,
+      email: APPLICATION.email,
+      status: "pending",
+    }));
+    expect(notify.mock.calls[0]?.[0]).not.toHaveProperty("userId");
+  });
+
+  it("notifies an update when the pending application is refreshed", async () => {
+    db.findLatestReferralApplication.mockResolvedValue(APPLICATION);
+    db.submitReferralApplication.mockResolvedValue({ ...APPLICATION, message: "Updated pitch." });
+    const { service: subject, notify } = service();
+
+    await subject.submit(APPLICATION.userId, "Updated pitch.");
+
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ event: "updated", id: APPLICATION.id }));
+  });
+
+  it("does not notify when onboarding fails before a decision is recorded", async () => {
+    db.findReferralApplication.mockResolvedValue(APPLICATION);
+    const onboard = vi.fn().mockRejectedValue(new Error("sales unavailable"));
+    const { service: subject, notify } = service(onboard);
+
+    await expect(subject.decide({ id: APPLICATION.id, action: "approve", note: "ok", actor: "ops" })).rejects.toThrow("sales unavailable");
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it("records a rejection without touching partner onboarding", async () => {

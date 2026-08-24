@@ -333,7 +333,9 @@ discount.
   Approving runs the same `onboardByEmail` path as manual onboarding — commission, Team ceiling and
   B2B ceiling are set in the decision dialog and default to 10% / 20% / B2B off — and the decision is
   recorded only after onboarding succeeds, so a failed Sales call leaves the application pending
-  instead of marking an account approved that never got access. Rejecting records the note and never
+  instead of marking an account approved that never got access. A successful submit or decision also
+  fail-open notifies the Devbot 🤝 Partners topic when `DEVBOT_PARTNER_WEBHOOK_URL` is set.
+  Rejecting records the note and never
   touches onboarding. A decided application cannot be decided twice. Storage is commerce
   `referral_applications` (migration `0050_referral_applications`); it records the review only,
   never partner terms, which stay authoritative in Sales.

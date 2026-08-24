@@ -2,7 +2,8 @@ import http from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { CHATWOOT_WEBHOOK_PREFIX, mapChatwootPayload, verifyChatwootSignature } from "./chatwoot.js";
-import type { AlertInstance, ChatwootIncomingMessage } from "./events.js";
+import type { AlertInstance, ChatwootIncomingMessage, PartnerApplicationEvent } from "./events.js";
+import { mapPartnerApplicationPayload, PARTNER_WEBHOOK_PREFIX } from "./partner-application.js";
 import { errorMessage, type Logger } from "./log.js";
 import type { TopicKey } from "./state.js";
 
@@ -20,6 +21,8 @@ export class MetricsRegistry {
   lastWebhookTs = Math.floor(Date.now() / 1000);
   /** Unix timestamp of the last ACCEPTED Chatwoot webhook delivery; 0 = none yet. */
   lastChatwootTs = 0;
+  /** Unix timestamp of the last ACCEPTED partner-application webhook delivery; 0 = none yet. */
+  lastPartnerTs = 0;
   private readonly events = new Map<string, number>();
 
   incEvent(topic: TopicKey, kind: string): void {
@@ -52,6 +55,11 @@ export class MetricsRegistry {
       "# HELP devbot_last_chatwoot_seconds Unix timestamp of the last accepted Chatwoot webhook delivery.",
       "# TYPE devbot_last_chatwoot_seconds gauge",
       `devbot_last_chatwoot_seconds ${this.lastChatwootTs}`,
+    );
+    lines.push(
+      "# HELP devbot_last_partner_seconds Unix timestamp of the last accepted partner-application webhook delivery.",
+      "# TYPE devbot_last_partner_seconds gauge",
+      `devbot_last_partner_seconds ${this.lastPartnerTs}`,
     );
     lines.push(
       "# HELP devbot_telegram_send_failures_total Telegram send/edit attempts dropped after retries.",
@@ -104,6 +112,11 @@ export interface ChatwootIntake {
   nowSec?: () => number;
 }
 
+export interface PartnerIntake {
+  secret: string;
+  onEvent: (event: PartnerApplicationEvent) => void;
+}
+
 export interface AmServerDeps {
   port: number;
   secret: string;
@@ -116,6 +129,7 @@ export interface AmServerDeps {
   /** Интервал записи textfile для node-exporter (60 с по дизайну). */
   heartbeatFileMs?: number;
   chatwoot?: ChatwootIntake;
+  partners?: PartnerIntake;
 }
 
 export interface AmServer {
@@ -216,6 +230,19 @@ export function createAmServer(deps: AmServerDeps): AmServer {
           res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
         } catch (error) {
           deps.logger?.warn(`chatwoot-webhook: bad payload: ${errorMessage(error)}`);
+          res.writeHead(400, { "content-type": "application/json" }).end('{"ok":false}');
+        }
+        return;
+      }
+      const partnerPath = deps.partners ? `${PARTNER_WEBHOOK_PREFIX}${deps.partners.secret}` : undefined;
+      if (req.method === "POST" && partnerPath !== undefined && url.pathname === partnerPath) {
+        try {
+          const mapped = mapPartnerApplicationPayload(JSON.parse(await readBody(req)));
+          deps.metrics.lastPartnerTs = Math.floor(Date.now() / 1000);
+          deps.partners?.onEvent(mapped);
+          res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
+        } catch (error) {
+          deps.logger?.warn(`partner-webhook: bad payload: ${errorMessage(error)}`);
           res.writeHead(400, { "content-type": "application/json" }).end('{"ok":false}');
         }
         return;

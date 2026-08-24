@@ -48,6 +48,14 @@ async function main(): Promise<void> {
     logger.warn("DEVBOT_TOPIC_SUPPORT is set but DEVBOT_CHATWOOT_SECRET is missing — Chatwoot intake disabled");
   }
 
+  const partnerSecret = config.partnerSecret;
+  const partnerEnabled = partnerSecret !== undefined && config.topics.partners > 0;
+  if (partnerSecret !== undefined && config.topics.partners <= 0) {
+    logger.warn("DEVBOT_PARTNER_SECRET is set but DEVBOT_TOPIC_PARTNERS is missing — partner intake disabled");
+  } else if (partnerSecret === undefined && config.topics.partners > 0) {
+    logger.warn("DEVBOT_TOPIC_PARTNERS is set but DEVBOT_PARTNER_SECRET is missing — partner intake disabled");
+  }
+
   const am = createAmServer({
     port: config.port,
     secret: config.amSecret,
@@ -66,6 +74,14 @@ async function main(): Promise<void> {
         },
       }
       : {}),
+    ...(partnerEnabled && partnerSecret !== undefined
+      ? {
+        partners: {
+          secret: partnerSecret,
+          onEvent: (event) => void router.handlePartner(event),
+        },
+      }
+      : {}),
   });
   await new Promise<void>((resolve, reject) => {
     am.server.once("error", reject);
@@ -73,6 +89,9 @@ async function main(): Promise<void> {
   });
   if (chatwootEnabled) {
     logger.info("Chatwoot intake enabled on POST /hooks/devbot/{secret}");
+  }
+  if (partnerEnabled) {
+    logger.info("Partner intake enabled on POST /hooks/partners/{secret}");
   }
 
   let poller: GithubPoller | undefined;

@@ -90,7 +90,7 @@ document, update this index.
 - [TRIPO3D_CALIBRATION.md](ops/TRIPO3D_CALIBRATION.md) — dry-run-by-default live calibration run of the Tripo3D plane: single-profile no-spill attribution, version/option/refund matrix, explicit budget with a $5.00 hard cap.
 - [SUNO_CALIBRATION.md](ops/SUNO_CALIBRATION.md) — dry-run-by-default live calibration run of the Suno plane: single-profile no-spill attribution, song/extend/lyrics/stems matrix with reserve-fallback settlement recording, explicit budget with a $1.00 hard cap.
 - [GPT_IMAGE_2_CANARY.md](ops/GPT_IMAGE_2_CANARY.md) — GPT Image 2 canary and publication journal: private exact-profile generation/edit proofs, the fenced public preflight/paid-smoke gate chain, and the GREEN one-shot that authorized publication (the model is now published).
-- [DEVBOT.md](ops/DEVBOT.md) — design of the Telegram dev bot (`apps/devbot`): topics, notifications, event sources (stages 1–3 plus Chatwoot incoming messages; stage 4 — business events — ahead).
+- [DEVBOT.md](ops/DEVBOT.md) — design of the Telegram dev bot (`apps/devbot`): topics, notifications, event sources (stages 1–3 plus Chatwoot incoming messages and partner-access applications; stage 4 — business events — ahead).
 - [FRONTEND_VISUAL_QA.md](ops/FRONTEND_VISUAL_QA.md) — frontend visual QA.
 - [VERCEL_PRODUCT_ANALYTICS.md](ops/VERCEL_PRODUCT_ANALYTICS.md) — Vercel product analytics.
 - [VERCEL.md](ops/VERCEL.md) — Vercel deployment runbook for `apps/web`: trigger model, state triage via the GitHub API without Vercel access, failure signatures, access policy.

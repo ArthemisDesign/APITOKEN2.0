@@ -21,7 +21,7 @@ describe("parseConfig", () => {
     expect(config.chatId).toBe(-100999);
     expect(config.adminIds.has(42)).toBe(true);
     expect(config.adminIds.has(43)).toBe(true);
-    expect(config.topics).toEqual({ critical: 1, deploys: 2, warnings: 3, commerce: 4, digest: 5, support: 0 });
+    expect(config.topics).toEqual({ critical: 1, deploys: 2, warnings: 3, commerce: 4, digest: 5, support: 0, partners: 0 });
     expect(config.chatwootSecret).toBeUndefined();
     expect(config.chatwootBaseUrl).toBe("https://support.apitoken.sale");
     expect(config.port).toBe(3800);
@@ -67,5 +67,16 @@ describe("parseConfig", () => {
     expect(config.chatwootSecret).toBe("0123456789abcdef");
     expect(config.chatwootHmacSecret).toBe("hmac-secret");
     expect(parseConfig({ ...minimalEnv(), DEVBOT_TOPIC_SUPPORT: "", DEVBOT_CHATWOOT_SECRET: "" }).topics.support).toBe(0);
+  });
+
+  it("enables partner intake env only when the secret and topic are present", () => {
+    const config = parseConfig({
+      ...minimalEnv(),
+      DEVBOT_TOPIC_PARTNERS: "7",
+      DEVBOT_PARTNER_SECRET: "0123456789abcdef",
+    });
+    expect(config.topics.partners).toBe(7);
+    expect(config.partnerSecret).toBe("0123456789abcdef");
+    expect(parseConfig({ ...minimalEnv(), DEVBOT_TOPIC_PARTNERS: "", DEVBOT_PARTNER_SECRET: "" }).topics.partners).toBe(0);
   });
 });
