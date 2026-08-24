@@ -1920,7 +1920,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after the fi
 Next: make the root-created probe output writable by the stage-netns curl process.
 
 ### 2026-08-24 — Phase 8 probe output permission repair
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `c05bfb8027679e25860f505e3d57e5648d823816`   watchdog: GREEN
 Result: Enable issued one capped key successfully. The first probe dispatched nothing because
 `deploy-stage` could not open root's mode-0600 `mktemp` output file; curl exited 23. Revoke the key
 immediately. Make only the disposable response file mode 0644 before the unprivileged curl writes it.
@@ -1928,7 +1928,19 @@ The file contains provider response data, not credentials, and the root trap rem
 Checks actually run: `bash deploy/staging-phase8.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `git diff --check`; live key disable.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after a zero-dispatch probe error.
-Next: stage, attest, promote, issue a fresh cents-scale key, probe once, disable, and close Phase 8.
+Next: move the disposable probe body into the stage loopback root.
+
+### 2026-08-24 — Phase 8 probe body root repair
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The second key also dispatched nothing. Mode 0644 was insufficient because systemd `PrivateTmp`
+gives the stage client a different `/tmp` mount. Create the disposable file under
+`/var/lib/apitoken-staging/watchdog`, transfer ownership to `deploy-stage`, and keep mode 0600. The
+root controller can read it after curl returns and removes it on exit. The key was revoked immediately.
+Checks actually run: `bash deploy/staging-phase8.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`git diff --check`; live key disable.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after a second zero-dispatch probe error.
+Next: stage; use the owner's standing authorization to attest/promote if GREEN; issue a fresh key,
+probe once, disable, and close Phase 8.
 
 ---
 

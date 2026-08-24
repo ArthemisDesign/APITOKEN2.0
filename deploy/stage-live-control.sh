@@ -38,7 +38,7 @@ case "${1:-}" in
     [[ $# -eq 3 && $2 =~ ^[A-Za-z0-9._:-]{1,128}$ && $3 =~ ^[A-Za-z0-9_.-]{1,128}$ ]] || exit 2
     [[ -s $META && -s /etc/apitoken-staging/stage-live.key ]] || { echo 'stage-live-control: not enabled' >&2; exit 1; }
     key_id=$(jq -er '.key_id' "$META"); [[ ! -e $STAGE_STATE/live-probe-$key_id.json ]] || { echo 'stage-live-control: probe already consumed' >&2; exit 1; }
-    model=$2 actor=$3; body=$(mktemp); chmod 0644 "$body"; trap 'rm -f "$body"' EXIT
+    model=$2 actor=$3; body=$(mktemp -p /var/lib/apitoken-staging/watchdog); chown deploy-stage:deploy-stage "$body"; chmod 0600 "$body"; trap 'rm -f "$body"' EXIT
     code=$(ip netns exec apitoken-stage runuser -u deploy-stage -- curl -sS -m 45 -o "$body" -w '%{http_code}' -H 'content-type: application/json' -X POST http://10.254.32.2:9081/v1/messages --data "{\"model\":\"$model\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with one word: ok\"}]}")
     [[ $code == 200 ]] || { echo "stage-live-control: live probe HTTP $code" >&2; exit 1; }
     jq -e '.type=="message" and (.usage.input_tokens|type=="number") and (.usage.output_tokens|type=="number")' "$body" >/dev/null
