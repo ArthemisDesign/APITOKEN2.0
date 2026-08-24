@@ -14,12 +14,17 @@
 #     changes;
 #   * it refuses to stack work on a red or still-deploying master;
 #   * it refuses a master push unless deploy/stage is GREEN for that exact SHA, or --hotfix
-#     names the documented host-owned hotfix path.
+#     skips that client check. --hotfix does not prove a host-owned hotfix record; production
+#     admission still requires hotfix-eligible.json. A hotfix/* branch name is not authorization.
+#   * after GREEN deploy/stage it also reads GitHub promotion/eligible. A RED eligible status
+#     refuses the push. A missing/pending eligible status is a warning until that mirror is live
+#     on the host; production admission still requires the host-owned record.
 #
 # Usage:  deploy/agent-merge.sh [--allow-primary-tree] [--dry-run] [--fix-red] [--hotfix]
 #
-# Agents must run it from their own worktree with no arguments. Human contributors working in a
-# plain clone pass --allow-primary-tree.
+# Land work in two steps: deploy/agent-merge-stage.sh, wait for GREEN deploy/stage and operator
+# attestation of this exact SHA, then this script. Agents must run it from their own worktree
+# with no arguments. Human contributors working in a plain clone pass --allow-primary-tree.
 set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -49,7 +54,7 @@ for argument in "$@"; do
     --validate-only) VALIDATE_ONLY=1 ;;
     --fix-red) FIX_RED=1 ;;
     --hotfix) HOTFIX=1 ;;
-    -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '2,27p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) printf 'agent-merge: unknown argument: %s\n' "$argument" >&2; exit 1 ;;
   esac
 done
@@ -469,46 +474,66 @@ am_read_status() {
   return 0
 }
 
-# Prints the deploy/stage verdict for a SHA. Stubbed separately from deploy/watchdog so a green
-# production parent cannot hide a missing stage admission.
-am_stage_status() {
-  if [[ -n ${AGENT_MERGE_STAGE_STATUS_CMD:-} ]]; then
-    eval "$AGENT_MERGE_STAGE_STATUS_CMD $1" || printf 'unknown'
+# Prints the GitHub commit-status verdict for $1 (sha) $2 (context). Stubbed so a green
+# production parent cannot hide a missing stage or eligible admission.
+am_commit_context_status() {
+  local sha=$1 context=$2
+  if [[ $context == deploy/stage && -n ${AGENT_MERGE_STAGE_STATUS_CMD:-} ]]; then
+    eval "$AGENT_MERGE_STAGE_STATUS_CMD $sha" || printf 'unknown'
+    return
+  fi
+  if [[ $context == promotion/eligible && -n ${AGENT_MERGE_ELIGIBLE_STATUS_CMD:-} ]]; then
+    eval "$AGENT_MERGE_ELIGIBLE_STATUS_CMD $sha" || printf 'unknown'
     return
   fi
   local token
   token=$(am_token)
   [[ -n $token ]] || { printf 'unknown'; return; }
   curl -fsSL --max-time 30 -K - \
-    "https://api.github.com/repos/$AGENT_MERGE_REPO/commits/$1/status" 2>/dev/null <<EOF \
+    "https://api.github.com/repos/$AGENT_MERGE_REPO/commits/$sha/status" 2>/dev/null <<EOF \
     | node -e '
 let raw = "";
 process.stdin.on("data", (chunk) => { raw += chunk; });
 process.stdin.on("end", () => {
   try {
     const payload = JSON.parse(raw);
-    const verdict = (payload.statuses || []).find((s) => s.context === "deploy/stage");
+    const context = process.argv[1];
+    const verdict = (payload.statuses || []).find((s) => s.context === context);
     const state = verdict ? String(verdict.state) : "pending";
     const description = String(verdict?.description || "").replace(/[\t\r\n]/g, " ");
     process.stdout.write(`${state}\t${description}`);
   } catch { process.stdout.write("unknown"); }
 });
-' 2>/dev/null || printf 'unknown'
+' -- "$context" 2>/dev/null || printf 'unknown'
 header = "Authorization: Bearer $token"
 header = "Accept: application/vnd.github+json"
 EOF
 }
 
+am_stage_status() { am_commit_context_status "$1" deploy/stage; }
+am_eligible_status() { am_commit_context_status "$1" promotion/eligible; }
+
 am_require_stage_promotable() {
-  local sha=$1 result verdict
+  local sha=$1 result verdict eligible
   if (( HOTFIX )); then
-    am_log "WARNING: skipping deploy/stage because --hotfix was given"
+    am_log "WARNING: skipping deploy/stage and promotion/eligible because --hotfix was given; production admission still requires a host-owned hotfix record"
     return
   fi
   result=$(am_stage_status "$sha")
   verdict=${result%%$'\t'*}
   [[ $verdict == success ]] || am_die "refusing to push $sha to $AGENT_MERGE_TARGET without GREEN deploy/stage (got ${verdict:-unknown}). Run deploy/agent-merge-stage.sh for this exact SHA, wait for GREEN, attest, then merge. Use --hotfix only with a host-owned hotfix attestation."
   am_log "deploy/stage is GREEN for $sha"
+  result=$(am_eligible_status "$sha")
+  eligible=${result%%$'\t'*}
+  case "$eligible" in
+    success) am_log "promotion/eligible is GREEN for $sha" ;;
+    failure|error)
+      am_die "refusing to push $sha to $AGENT_MERGE_TARGET because promotion/eligible is ${eligible}. Re-attest this exact SHA after GREEN deploy/stage, then merge."
+      ;;
+    *)
+      am_log "WARNING: GitHub promotion/eligible is ${eligible:-unknown} for $sha; host admission still requires operator attestation of this exact SHA"
+      ;;
+  esac
 }
 
 # Redacted host cycle excerpt published as GitHub check run `deploy/watchdog-log`. Agents diagnose

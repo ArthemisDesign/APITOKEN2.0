@@ -39,7 +39,7 @@ them. The `deploy` user in those runbooks is the watchdog/runtime identity, not 
 The only production SSH login an agent may use is `observe`. After Phase 2 provisioning, the only
 staging SSH login an agent may use is the forced read-only `observe-stage` identity documented in
 `docs/ops/INFRASTRUCTURE.md`. Neither identity is a `deploy` shell. Cutover and restart go through
-`./deploy/agent-merge.sh` only.
+`./deploy/agent-merge.sh` after GREEN `deploy/stage` and operator attestation of that exact SHA.
 
 ## CRM & Parsing — MOVED to a separate repository
 
@@ -187,11 +187,12 @@ it verifies forwarding, identity injection, rotation on 429, and streaming. Read
 The process canon is the root `AGENTS.md`: worktree isolation, forbidden commands, attribution,
 mandatory commit messages, the "living contract" of documentation, and cross-functional change
 checklists (`docs/CHANGE_CHECKLISTS.md`), the dependency map (`docs/DEPENDENCIES.md`), expand-only
-migrations and contracts, one-command merge, master synchronization, and cleanup. It is mandatory
+migrations and contracts, two-step stage then master delivery, master synchronization, and cleanup. It is mandatory
 in full and is not duplicated here — two versions of the process inevitably drift apart. The short
 gist: create a worktree only via `deploy/agent-worktree.sh create`, work in it off
 `origin/master`, keep `cargo build` green, and update documentation in the same commit; merge —
-only `git push -u origin HEAD` + `./deploy/agent-merge.sh`; after a green `deploy/watchdog` —
+`git push -u origin HEAD` + `./deploy/agent-merge-stage.sh`, then after GREEN `deploy/stage` and
+operator attestation of that exact SHA, `./deploy/agent-merge.sh`; after a green `deploy/watchdog` —
 `deploy/agent-worktree.sh finish` for your own tree. `doctor` and dry-run `gc` diagnose leftovers,
 while global `gc --apply` remains an operator maintenance command. On macOS the permanent
 `DELETE_WORKTREE` LaunchAgent picks up missed clean+merged cleanup under the fail-closed contract

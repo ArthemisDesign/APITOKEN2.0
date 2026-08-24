@@ -76,7 +76,11 @@ if [[ -z $ACTION ]]; then
   [[ -n $unresolved ]] && printf '%s\n' "$unresolved"
   cat >&2 <<'USAGE'
 Resolve every conflicted path and stage it, then finish the landing:
-  deploy/agent-merge-recover.sh --continue && ./deploy/agent-merge.sh
+  deploy/agent-merge-recover.sh --continue
+If this SHA already has GREEN deploy/stage, wait for operator attest of this exact SHA, then:
+  ./deploy/agent-merge.sh
+If the rebase created a new SHA, land it on stage first:
+  git push -u origin HEAD && ./deploy/agent-merge-stage.sh
 Or give up on this attempt and restore the branch exactly as it was:
   deploy/agent-merge-recover.sh --abort
 USAGE
@@ -96,7 +100,8 @@ $unresolved"
     GIT_EDITOR=true git -C "$ROOT" rebase --continue
   fi
   amr_log "recovered; HEAD is now $(git -C "$ROOT" rev-parse --short HEAD)"
-  amr_log "land it with: git push -u origin HEAD && ./deploy/agent-merge.sh"
+  amr_log "if this SHA already has GREEN deploy/stage, wait for operator attest, then ./deploy/agent-merge.sh"
+  amr_log "if the rebase created a new SHA, run git push -u origin HEAD && ./deploy/agent-merge-stage.sh"
   exit 0
 fi
 

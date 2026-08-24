@@ -126,6 +126,7 @@ run_merge() {  # $1 = tree, rest = extra env assignments / flags
       AGENT_MERGE_STATIC_GATE_CMD="${STATIC_GATE_STUB-}" \
       AGENT_MERGE_STATUS_CMD="${STATUS_STUB-printf success}" \
       AGENT_MERGE_STAGE_STATUS_CMD="${STAGE_STATUS_STUB-printf success}" \
+      AGENT_MERGE_ELIGIBLE_STATUS_CMD="${ELIGIBLE_STATUS_STUB-printf pending}" \
       AGENT_MERGE_FAILURE_LOG_CMD="${FAILURE_LOG_STUB-true}" \
       AGENT_MERGE_VALIDATION_REQUEST_CMD="${VALIDATION_REQUEST_STUB-printf 1}" \
       AGENT_MERGE_VALIDATION_STATUS_CMD="${VALIDATION_STATUS_STUB-printf success}" \
@@ -448,6 +449,8 @@ for blocked in \
   'git add .' \
   'git add --all' \
   'git push origin HEAD:master' \
+  'git push origin HEAD:stage' \
+  'git push origin refs/heads/stage' \
   'git worktree add ~/wt/task -b feat/task origin/master' \
   'git worktree remove ../other-agent' \
   'MODE=repair git checkout master' \
@@ -462,6 +465,7 @@ for allowed in \
   'git push -u origin HEAD' \
   'git worktree list --porcelain' \
   './deploy/agent-merge.sh' \
+  './deploy/agent-merge-stage.sh' \
   './deploy/agent-worktree.sh create feat/task' \
   './deploy/agent-worktree.sh finish ~/wt/task' \
   './deploy/agent-worktree.sh doctor' \
@@ -741,15 +745,24 @@ STAGE_STATUS_STUB='printf failure' MERGE_FLAGS=--fix-red \
 STAGE_STATUS_STUB='printf failure' MERGE_FLAGS=--hotfix \
   run_merge "$tree_stage" >"$TEMP/hotfix.log" \
   || wd_die "a hotfix path was blocked by deploy/stage: $(cat "$TEMP/hotfix.log")"
-grep -Fq 'skipping deploy/stage because --hotfix was given' "$TEMP/hotfix.log" \
+grep -Fq 'skipping deploy/stage and promotion/eligible because --hotfix was given' "$TEMP/hotfix.log" \
   || wd_die 'the hotfix override was not reported'
 [[ $(git --git-dir="$ORIGIN" rev-parse master) != "$pushed" ]] \
   || wd_die 'the hotfix path did not land'
 pushed=$(git --git-dir="$ORIGIN" rev-parse master)
+tree_eligible=$(new_agent_worktree agent-eligible feat/agent-eligible)
+STAGE_STATUS_STUB='printf success' ELIGIBLE_STATUS_STUB='printf failure' MERGE_FLAGS= \
+  expect_failure 'a SHA whose promotion/eligible was revoked' \
+  'because promotion/eligible is failure' \
+  run_merge "$tree_eligible"
+[[ $(git --git-dir="$ORIGIN" rev-parse master) == "$pushed" ]] \
+  || wd_die 'a revoked eligible SHA still pushed to master'
 grep -Fq 'without GREEN deploy/stage' "$MERGE" \
   || wd_die 'the merge client must name the unattested-master refusal'
 grep -Fq -- '--hotfix' "$MERGE" \
   || wd_die 'the merge client must expose the documented hotfix override'
+grep -Fq 'promotion/eligible' "$MERGE" \
+  || wd_die 'the merge client must read the promotion/eligible mirror'
 
 # No helper and no GITHUB_TOKEN fails closed before the gate or merge. The agent repairs its own
 # credential path and reruns; the workflow must never delegate token supply or green proof to a human.

@@ -7,7 +7,7 @@ case "${1:-}" in
   commit-status)
     [[ $# -ge 5 && $# -le 6 ]] || exit 2
     sha=$2
-    case "$4" in deploy/stage|deploy/stage-tests|deploy/stage-engine|deploy/stage-backend|stage/deployed|stage/direct-push-dry-run) ;;
+    case "$4" in deploy/stage|deploy/stage-tests|deploy/stage-engine|deploy/stage-backend|stage/deployed|stage/direct-push-dry-run|promotion/eligible) ;;
       *) echo 'watchdog-github-stage: production context rejected' >&2; exit 2 ;;
     esac
     [[ $3 =~ ^(error|failure|pending|success)$ && ${#5} -le 140 ]] || exit 2

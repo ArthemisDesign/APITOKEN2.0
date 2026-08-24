@@ -31,16 +31,18 @@ Check out the branch → its purpose is immediately visible.
    configuration uses the unique `preview/<task-slug>` prefix from creation; README-only and test-only
    tasks that cannot affect the deployment retain their ordinary prefix.
    Vercel tracks that prefix for human-review deployments. After pushing, the agent reports the exact
-   preview URL and waits for human approval before running `deploy/agent-merge.sh`. This is not a shared
+   preview URL and waits for human approval before running `deploy/agent-merge-stage.sh`. This is not a shared
    `staging` branch; full preview and exception handling rules are in `AGENTS.md`.
 2. **Crate boundaries are respected** (see the root `CLAUDE.md` and `crates/<x>/CLAUDE.md`). The
    `comp/pool` branch must not pull in networking; `comp/forward` must not read env; and so on.
 3. **`stage` = mandatory staging trigger.** `deploy/agent-merge-stage.sh` first runs the exact
    production baseline and trusted-validation gates without changing `master`, then uses a separate
    stage lock to move `stage`. A stage SHA remains frozen through degradation and explicit operator
-   attestation, unless `--fix-red` is recovering a red `master`. Production accepts only the same
+   attestation, unless `--fix-red` is recovering a red `master` (`origin/master` `deploy/watchdog`
+   must be RED). Production accepts only the same
    exact attested SHA or a valid hotfix attestation. `agent-merge.sh` refuses a `master` push
-   without GREEN `deploy/stage` unless `--hotfix`.
+   without GREEN `deploy/stage` unless `--hotfix` skips that client check. `--hotfix` does not
+   prove a host-owned hotfix record.
 4. **`master` = production trigger.** Merge only via `deploy/agent-merge.sh` and only when the
    change is fully production-ready. Before the gate, the script rejects a red target and rebases
    the branch onto the latest committed `master`, then runs in parallel a fail-closed local
@@ -79,7 +81,9 @@ cargo build                          # green
 git add crates/forward               # only your own paths, never git add -A
 git commit                           # Conventional header + detailed body (see AGENTS.md)
 git push -u origin HEAD
-./deploy/agent-merge.sh              # serialized merge into master; never manually
+./deploy/agent-merge-stage.sh     # serial freeze of this exact SHA on stage
+# wait for GREEN deploy/stage; operator attests this SHA
+./deploy/agent-merge.sh           # same SHA to master; never manually
 ```
 
 Task finished — after a green `deploy/watchdog`, the agent runs the task worktree's

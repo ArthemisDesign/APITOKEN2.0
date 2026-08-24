@@ -9,11 +9,16 @@ grep -Fq 'AGENT_MERGE_VALIDATION_ENVIRONMENT=candidate-validation' "$ROOT/deploy
 grep -Fq '"$ROOT/deploy/agent-merge.sh" --validate-only' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq 'stage is frozen at unpromoted SHA' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq 'replacing frozen unpromoted SHA' "$ROOT/deploy/agent-merge-stage.sh"
+grep -Fq 'requires origin/master deploy/watchdog to be RED' "$ROOT/deploy/agent-merge-stage.sh"
+grep -Fq -- '--hotfix is a master-only override' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq 'stage-merge.lock.d' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq 'mkdir "$LOCK"' "$ROOT/deploy/agent-merge-stage.sh"
 ! grep -Fq 'flock -n 9' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq 'rev-parse --verify refs/remotes/origin/stage' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq 'HEAD:refs/heads/stage' "$ROOT/deploy/agent-merge-stage.sh"
+grep -Fq 'promotion/eligible' "$ROOT/deploy/stage-promotion-helper.sh"
+grep -Fq 'promotion/eligible' "$ROOT/deploy/watchdog-github-stage.sh"
+grep -Fq 'eligible=' "$ROOT/deploy/stage-observe-helper.sh"
 grep -Fq 'VALIDATE_ONLY=0' "$ROOT/deploy/agent-merge.sh"
 grep -Fq 'validate-only: exact SHA' "$ROOT/deploy/agent-merge.sh"
 grep -Fq 'stage/direct-push-dry-run' "$ROOT/deploy/watchdog-github-stage.sh"
@@ -46,4 +51,5 @@ grep -Fxq 'NetworkNamespacePath=/run/netns/apitoken-stage' "$ROOT/systemd/apitok
 grep -Fxq 'OnUnitInactiveSec=15s' "$ROOT/systemd/apitoken-stage-watchdog.timer"
 python3 "$ROOT/deploy/contour-config.py" --schema "$ROOT/deploy/contour-config.schema.json" \
   --config "$ROOT/deploy/contour-stage.json" --against "$ROOT/deploy/contour-production.json" >/dev/null
+bash "$ROOT/deploy/agent-merge-stage.test.sh"
 printf 'stage-watchdog.test: PASS\n'

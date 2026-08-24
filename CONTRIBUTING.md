@@ -4,7 +4,7 @@ This repository uses trunk delivery with a production-host watchdog. Feature bra
 requests are safe: only a commit that reaches `master` is considered for production. Nobody
 SSH-deploys ordinary engine/backend changes or runs a production migration by hand. An AI agent
 must not SSH as `deploy`. The only SSH login an agent may use is `observe` (logs only). Delivery
-is `./deploy/agent-merge.sh`.
+is `./deploy/agent-merge-stage.sh`, then operator attestation, then `./deploy/agent-merge.sh`.
 
 The customer frontend remains an independent Vercel deployment. This workflow covers the Rust
 engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreSQL migrations.
@@ -34,8 +34,8 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
 
    Vercel's custom pre-production environment tracks the `preview/` prefix; its catch-all Preview
    environment is disabled. Once the frontend commit and local checks are ready, push the branch,
-   wait for the Vercel result, and send the exact preview URL and review focus to the person. Pause
-   before `deploy/agent-merge.sh` so the person can review it; merge only after approval or an explicit
+   wait for the Vercel result, and send the exact preview URL and review focus to the person.    Pause
+   before `deploy/agent-merge-stage.sh` so the person can review it; merge only after approval or an explicit
    instruction to skip preview review. Ordinary non-frontend tasks retain `fix/*`, `feat/*`, or other
    appropriate prefixes and do not create Vercel previews; this includes README-only and test-only
    changes that cannot affect the deployed frontend.
@@ -55,12 +55,16 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
 3. Keep old application code compatible with the expanded schema. Destructive contract cleanup is
    a later migration after every deployed version has stopped using the old shape.
 4. Deliver the exact SHA to the serial stage ref with `./deploy/agent-merge-stage.sh`. Wait for
-   `deploy/stage`, `stage/deployed`, and `stage/degradation` to be GREEN. Promotion requires an
-   explicit operator attestation for that SHA. Then run `./deploy/agent-merge.sh` without rebasing or
-   adding a commit. `agent-merge.sh` refuses to push `master` unless `deploy/stage` is GREEN for that
-   exact SHA. A valid host-owned hotfix attestation is the only stage-independent path (`--hotfix`).
-   When `master` is already red, `./deploy/agent-merge-stage.sh --fix-red` may replace a frozen
-   unpromoted `stage` SHA; it does not skip attestation.
+   GitHub `deploy/stage` (and `stage/deployed`, published with it) to be GREEN. There is no GitHub
+   `stage/degradation` context for the client to poll; degradation is a host proof, not a merge
+   wait. Promotion requires an explicit operator attestation for that SHA
+   (`./deploy/promotion-attest.sh <sha> <actor> <reason>`). Then run `./deploy/agent-merge.sh`
+   without adding a commit. `agent-merge.sh` refuses to push `master` unless `deploy/stage` is GREEN
+   for that exact SHA. A RED GitHub `promotion/eligible` also refuses. `--hotfix` skips the client
+   stage check; it does not prove a host-owned hotfix record. Production admission still requires
+   `hotfix-eligible.json`. A `hotfix/*` name is not authorization. When `master` is already red,
+   `./deploy/agent-merge-stage.sh --fix-red` may replace a frozen unpromoted `stage` SHA only if
+   `origin/master` `deploy/watchdog` is RED; it does not skip attestation.
 5. Run the relevant local tests. Before merging a cross-component change, run the complete gate:
 
    ```bash
@@ -131,9 +135,10 @@ engine, commerce API/worker, Content Studio, Sales, OpenKeys, and their PostgreS
    `CARGO_BUILD_BUILD_DIR` override, falls back to uncached Cargo if its one-time bootstrap is
    unavailable, and accepts `SCCACHE_DISABLE=1` for an explicit uncached run.
 
-5. Push the branch and land it with `./deploy/agent-merge.sh` (add `--allow-primary-tree` when you
-   work in a plain clone rather than a worktree). That script is the only supported way to reach
-   `master`. Before the expensive gate it rejects a red target, rebases onto the latest committed
+5. Push the branch and land it with `./deploy/agent-merge-stage.sh`, then after GREEN `deploy/stage`
+   and operator attestation of that exact SHA, `./deploy/agent-merge.sh` (add `--allow-primary-tree`
+   when you work in a plain clone rather than a worktree). Those scripts are the only supported way
+   to reach `stage` and then `master`. Before the expensive gate it rejects a red target, rebases onto the latest committed
    target SHA, and reads that SHA's `deploy/watchdog` context through the GitHub API. A pending
    target may overlap its rollout with speculative gates, but the script never pushes until the
    locked target check is green. It automatically reuses the credential already configured for

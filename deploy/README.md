@@ -26,18 +26,23 @@ the redacted host cycle excerpt from check run `deploy/watchdog-log`. The full c
 ### Observe-only stage client and watchdog
 
 `agent-merge-stage.sh` uses a separate serial lock. It requires the `stage` ref to equal `master` or
-not exist, unless `--fix-red` is recovering a red `master`. It runs the ordinary production-baseline
-and exact trusted-validation gates through `agent-merge.sh --validate-only`, then moves only `stage`
-and waits for informational `deploy/stage`. It never changes `master` and does not create promotion
-admission. `agent-merge.sh` then refuses the `master` push unless `deploy/stage` is GREEN for that
-exact SHA, or `--hotfix` is given.
+not exist, unless `--fix-red` is recovering a red `master` (`origin/master` `deploy/watchdog` is
+RED). `--hotfix` is refused here; it is a master-only client override. It runs the ordinary
+production-baseline and exact trusted-validation gates through `agent-merge.sh --validate-only`,
+then moves only `stage` and waits for informational `deploy/stage`. It never changes `master` and
+does not create promotion admission. Attest (`deploy/promotion-attest.sh`) writes the host-owned
+record and publishes a GitHub `promotion/eligible` mirror. `agent-merge.sh` then refuses the
+`master` push unless `deploy/stage` is GREEN for that exact SHA, or `--hotfix` skips that client
+check. `--hotfix` does not prove a host-owned hotfix record. A RED GitHub `promotion/eligible`
+also refuses the `master` push.
 
 `apitoken-stage-watchdog.timer` polls `stage` as `deploy-stage` inside `staging.slice` and the stage
 netns. Phase 3 validates the exact SHA, rejects host-global candidate paths on the production host,
 and writes only the stage state-root. The caller-bound reporter admits only `deploy/stage`,
-`deploy/stage-*`, and `stage/*`; production contexts fail closed. Disabled in this line: production
+`deploy/stage-*`, `stage/*`, and the `promotion/eligible` mirror; production `deploy/watchdog`
+contexts fail closed. Disabled in this line: production
 infrastructure apply, production migrations, real providers, application Caddy, live external
-secrets, promotion attestation, stage sync, degradation, and production admission.
+secrets, and production admission. Attest and stage-sync run through `stage-ctl`, not the poller.
 
 ### Inspecting the outgoing validation plan
 

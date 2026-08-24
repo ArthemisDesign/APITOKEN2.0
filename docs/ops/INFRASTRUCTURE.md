@@ -155,7 +155,8 @@ keys from `/home/deploy/.ssh/authorized_keys` with `restrict,command=` so even `
 cannot escape into a shell. That session is journal and readiness inspection. It must not run
 `systemctl start|stop|restart|kill`, `deploy.sh`, `engine-bluegreen.sh`, or
 `apitoken-watchdog retry|run`. If `observe` is unreachable, stop. Do not fall back to `deploy`.
-Diagnose from GitHub `deploy/watchdog-log`. Land releases with `./deploy/agent-merge.sh`.
+Diagnose from GitHub `deploy/watchdog-log`. Land releases with `./deploy/agent-merge-stage.sh`,
+then operator attestation, then `./deploy/agent-merge.sh`.
 
 ### Co-located staging foundation
 
@@ -179,6 +180,7 @@ a candidate root transaction on the production host.
 | Public path | none; UFW public inbound is unchanged |
 | Observe-only poller | `apitoken-stage-watchdog.timer`; branch `stage`; state `/var/lib/apitoken-staging/watchdog` |
 | Informational contexts | `deploy/stage`, `deploy/stage-*`, `stage/deployed`, `stage/direct-push-dry-run` |
+| Authorizing GitHub mirror | `promotion/eligible`, published by `stage-ctl attest`; host file remains admission |
 | Phase 4 local HTTP | `10.254.32.2:3900` stage Caddy, `10.254.32.2:3901` safe sinks; no public route |
 | Phase 8 live bridge | Host `10.254.32.1:9081` → prod `127.0.0.1:8790`; stage client `10.254.32.2:9081`; fixed `/v1/messages` only |
 

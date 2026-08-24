@@ -30,7 +30,7 @@ fi
 
 # The sanctioned way to land work performs its own rebase and push; never second-guess it.
 case "$command_line" in
-  *agent-merge.sh*) exit 0 ;;
+  *agent-merge.sh*|*agent-merge-stage.sh*) exit 0 ;;
 esac
 
 deny() {
@@ -68,12 +68,17 @@ agent'"'"'s uncommitted edits. Neither git nor the other agent will warn anyone.
     *' merge'*|*' rebase'*)
       deny 'a history rewrite outside the sanctioned merge path' \
 'Landing work is a production deployment, and it is serialized for a reason. Run:
-  git push -u origin HEAD && ./deploy/agent-merge.sh
-It rebases, re-runs the full gate on the exact SHA it pushes, takes the machine-wide merge lock
-and holds it until deploy/watchdog is green.
+  git push -u origin HEAD
+  ./deploy/agent-merge-stage.sh
+Wait for GREEN deploy/stage. Ask the operator to attest this exact SHA. Then:
+  ./deploy/agent-merge.sh
+agent-merge-stage.sh rebases and moves only stage. agent-merge.sh then fast-forwards the same SHA
+to master after GREEN deploy/stage and holds the lock until deploy/watchdog is green.
 Already mid-rebase because that merge hit a conflict? Resolve and stage every conflicted path,
 then finish it without leaving the sanctioned path:
-  ./deploy/agent-merge-recover.sh --continue && ./deploy/agent-merge.sh
+  ./deploy/agent-merge-recover.sh --continue
+If HEAD still has GREEN deploy/stage, wait for attest and run ./deploy/agent-merge.sh.
+If the rebase created a new SHA, run ./deploy/agent-merge-stage.sh first.
 Or restore the branch exactly as it was before the rebase:
   ./deploy/agent-merge-recover.sh --abort' ;;
     *' worktree '*add*)
@@ -100,7 +105,14 @@ attributed to the wrong author. Stage your own paths explicitly:
     *' push'*master*|*' push'*main*)
       deny 'a direct push to the deployment branch' \
 'A push to master triggers a production deployment on the host. Use the serialized path:
+  ./deploy/agent-merge-stage.sh
+  # wait for GREEN deploy/stage and operator attest of this exact SHA
   ./deploy/agent-merge.sh' ;;
+    *' push'*refs/heads/stage*|*' push'*HEAD:stage|*' push origin stage'|*' push -u origin stage')
+      deny 'a direct push to the staging branch' \
+'A push to stage is serialized. Use:
+  ./deploy/agent-merge-stage.sh
+Never git push origin HEAD:stage or git push origin stage.' ;;
   esac
 done < <(printf '%s\n' "$command_line" | tr ';|&\n' '\n\n\n\n')
 

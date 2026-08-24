@@ -6,17 +6,18 @@ This is the operator runbook for `84.32.48.2`. Controller internals live in
 [`docs/engine/STAGE2_POSTGRES_AUTHORITY.md`](../engine/STAGE2_POSTGRES_AUTHORITY.md).
 
 Production delivery is fail-closed. First move the exact SHA to `stage` with
-`deploy/agent-merge-stage.sh`. After GREEN stage deployment/degradation and explicit operator
+`deploy/agent-merge-stage.sh`. After GREEN `deploy/stage` and explicit operator
 attestation (`deploy/promotion-attest.sh <sha> <actor> <reason>`), fast-forward that same SHA to
 `master` with `deploy/agent-merge.sh`. `agent-merge.sh` refuses that push unless GitHub
-`deploy/stage` is GREEN for the exact SHA, or `--hotfix` names the documented host-owned hotfix
-path. After a hotfix, run `deploy/stage-sync.sh --after-hotfix <sha>`;
+`deploy/stage` is GREEN for the exact SHA, or `--hotfix` skips that client check. `--hotfix` does
+not prove a host-owned hotfix record; production admission still requires `hotfix-eligible.json`.
+A `hotfix/*` name is not authorization. After a hotfix, run `deploy/stage-sync.sh --after-hotfix <sha>`;
 it invalidates stale approval before requesting exact stage convergence. The watchdog rejects
 an unattested master SHA in phase `admitting` and records `admission-rejected.sha`. Do not retry
 that SHA; land a new descendant through stage→attest or hotfix. A valid host-owned hotfix
-attestation remains usable when staging is down; a `hotfix/*` name is not authorization. When
+attestation remains usable when staging is down. When
 `master` is already red, `deploy/agent-merge-stage.sh --fix-red` may replace a frozen unpromoted
-`stage` SHA so the newer descendant can be attested.
+`stage` SHA only if `origin/master` `deploy/watchdog` is RED, so the newer descendant can be attested.
 
 Phase 8 budgeted live access uses the forced `stage-ctl` commands `live-enable CAP_NANOUSD TTL ACTOR`,
 `live-probe MODEL ACTOR`, and `live-disable ACTOR`. Enable accepts 100,000..100,000,000 nanoUSD and

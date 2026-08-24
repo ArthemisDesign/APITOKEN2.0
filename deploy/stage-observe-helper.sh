@@ -26,6 +26,8 @@ case "${words[0]:-}" in
       value=$(cat "/var/lib/apitoken-staging/watchdog/$name.sha" 2>/dev/null || true)
       [[ $value =~ ^[0-9a-f]{40}$ ]] && printf '%s=%s\n' "$name" "$value"
     done
+    eligible=$(jq -r '.commit_sha // empty' /var/lib/apitoken-staging/watchdog/promotion-eligible.json 2>/dev/null || true)
+    [[ $eligible =~ ^[0-9a-f]{40}$ ]] && printf 'eligible=%s\n' "$eligible"
     ;;
   status)
     systemctl is-active staging.slice apitoken-staging-foundation-install.service \

@@ -25,7 +25,8 @@
       "engine": "deploy/stage-engine",
       "backend": "deploy/stage-backend",
       "deployed": "stage/deployed",
-      "direct_push_dry_run": "stage/direct-push-dry-run"
+      "direct_push_dry_run": "stage/direct-push-dry-run",
+      "eligible": "promotion/eligible"
     },
     "deployment_environments": {
       "stage": "staging-environment",

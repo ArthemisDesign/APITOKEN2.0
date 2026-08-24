@@ -126,8 +126,8 @@ unique task branch and managed worktree rules still apply.
 After the frontend change is committed and locally verified, push the `preview/*` branch, wait for its
 Vercel deployment to finish, and give the person the exact preview URL plus a short list of what to
 review. Explicitly offer them the chance to inspect it before production. Do NOT run
-`deploy/agent-merge.sh` until the person approves the preview or explicitly tells you to merge without
-preview review. A failed preview is fixed with a new commit and a new deployment; it is never presented
+`deploy/agent-merge-stage.sh` or `deploy/agent-merge.sh` until the person approves the preview or
+explicitly tells you to merge without preview review. A failed preview is fixed with a new commit and a new deployment; it is never presented
 as ready. If Vercel/GitHub does not expose a URL, report that blocker honestly instead of inventing one.
 Backend-only, README-only, and test-only tasks that cannot affect the deployed frontend keep their normal
 branch prefixes and normal merge flow.
@@ -146,17 +146,18 @@ primary) re-executes the blob from `origin/master` so that catch-up still runs.
 Never SSH as `deploy`, `root`, or any other host account. Never run `systemctl start|stop|restart|kill`
 or `apitoken-watchdog retry|run` on production. The only production SSH login an agent may use is
 `observe`. Phase 7 requires the two-step delivery flow: first use `deploy/agent-merge-stage.sh`;
-after GREEN stage/degradation and explicit operator attestation, use `deploy/agent-merge.sh` for the
-same exact SHA. Never push `stage` or `master` directly. A valid hotfix attestation can bypass a down
-stage, but a branch name cannot.
+after GREEN `deploy/stage` and explicit operator attestation of that exact SHA, use
+`deploy/agent-merge.sh` for the same SHA. Never push `stage` or `master` directly. A valid
+host-owned hotfix attestation can bypass a down stage, but a branch name cannot.
 The only staging SSH login an agent may use is `observe-stage`, after the staging
 foundation has provisioned it. `observe-stage` is a forced read-only command with forwarding limited
 to the documented staging veth HTTP ports. It is not a shell and it cannot read production journals.
 The `stage-ctl` identity is forced-command-only and is used only after an explicit operator order.
 Phase 7 enables `attest` and `sync` on that identity; `emergency-stop` remains available and
 `reseed` stays fail-closed. `deploy/agent-merge.sh` refuses a `master` push without GREEN
-`deploy/stage` unless `--hotfix` names a host-owned hotfix path. Delivery and service cutovers go
-through `./deploy/agent-merge.sh` and the host watchdog only.
+`deploy/stage` unless `--hotfix` skips that client check. `--hotfix` does not prove a host-owned
+hotfix record. Delivery and service cutovers go through `./deploy/agent-merge.sh` and the host
+watchdog only.
 
 ## What counts as your work
 
@@ -384,18 +385,27 @@ and `apps/sales-api`, the `packages/contracts` schemas) change under the same di
 - The contract document (`docs/engine/CONTROL_API.md`, `docs/sales/SALES_PORTAL.md`, etc.)
   is updated IN THE SAME commit as the producer's code.
 
-## Merging into master — a single command
+## Landing on stage then master
 
 ```bash
 git push -u origin HEAD
+./deploy/agent-merge-stage.sh
+# Wait for GREEN deploy/stage. Ask the operator to attest this exact SHA:
+#   ./deploy/promotion-attest.sh <sha> <actor> <reason>
 ./deploy/agent-merge.sh
 ```
 
-Run it from your own worktree, with no arguments, a clean tree, and a configured upstream (from the primary
-clone the script will refuse; `--allow-primary-tree` is for the person only). `master` is the production trigger:
-the host deploys exactly one SHA at a time. The script runs the full gate, takes a machine merge-lock,
-rebases, re-verifies the gate on the very SHA it pushes, fast-forwards local `master` to that GitHub SHA
-without checking out a detached primary, and holds the lock until `deploy/watchdog` is green.
+Run both scripts from your own worktree, with a clean tree and a configured upstream (from the primary
+clone the scripts will refuse; `--allow-primary-tree` is for the person only). `agent-merge-stage.sh`
+moves only `stage` and waits for informational `deploy/stage`. `master` is the production trigger:
+the host deploys exactly one SHA at a time. `agent-merge.sh` refuses that push unless `deploy/stage`
+is GREEN for the exact SHA, or `--hotfix` skips the client stage check. `--hotfix` does not prove a
+host-owned hotfix record; production admission still requires `hotfix-eligible.json`. A RED GitHub
+`promotion/eligible` status also refuses the `master` push. After the push, the script holds the lock
+until `deploy/watchdog` is green.
+The script runs the full gate, takes a machine merge-lock,
+rebases, re-verifies the gate on the very SHA it pushes, and fast-forwards local `master` to that GitHub SHA
+without checking out a detached primary.
 Before the gate, and again under the lock, it reads `deploy/watchdog` itself via the
 GitHub API, reusing the credential from `git credential` (on macOS — Keychain), so `gh` and
 a separate `GITHUB_TOKEN` are not needed. The script waits out pending/transient errors and re-checks itself. The agent
@@ -417,7 +427,11 @@ worktree mid-rebase. That is expected, not damage. The git guard denies `git reb
 
 ```bash
 # resolve every conflicted path, stage it, then:
-./deploy/agent-merge-recover.sh --continue && ./deploy/agent-merge.sh
+./deploy/agent-merge-recover.sh --continue
+# if this SHA already has GREEN deploy/stage, wait for operator attest, then:
+./deploy/agent-merge.sh
+# if the rebase created a new SHA:
+git push -u origin HEAD && ./deploy/agent-merge-stage.sh
 # or give up on the attempt; the branch returns to its pre-rebase commits, nothing is lost:
 ./deploy/agent-merge-recover.sh --abort
 ```
