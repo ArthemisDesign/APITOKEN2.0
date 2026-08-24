@@ -306,8 +306,9 @@ review; structured output requires an exact reviewed format. Missing, malformed,
 `None`; explicit empty arrays may be zero. The declaration count stays measurable when a lenient
 parser accepts an unreviewed type, but the whole class bitset becomes `None` rather than a misleading
 partial set. Unknown tool kinds are never promoted to `other_reviewed`. Current reviewed uses of that
-bit are Gemini `urlContext` and an explicit Codex `tool_search` client descriptor; its later synthetic
-dynamic function name is discarded and is not counted as a second client declaration. Codex CLI
+bit are Gemini `urlContext` and an explicit Codex `tool_search` descriptor (client-executed or
+hosted); the later synthetic `__codex_client_tool_search` name is discarded and is not counted as a
+second client declaration. Codex CLI
 stock `web_search` (`external_web_access` / `search_content_types`) records the accepted client
 intent even though admission drops that hosted descriptor; other `web_search` shapes and known
 unexecutable hosted types fail closed before admission. A namespace contributes only its reviewed

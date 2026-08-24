@@ -543,8 +543,10 @@ fn openai_responses_tool_classes(tool: &Value) -> Option<Vec<ToolClass>> {
         // validated client intent, not the provider behavior after degradation. Other
         // web_search shapes fail closed as documented_limitation before admission.
         Some("web_search") => Some(vec![ToolClass::WebSearch]),
-        // This is an explicit client descriptor validated as client-executed. The synthetic
-        // function name produced later by the gateway is not separately counted or retained.
+        // Explicit `tool_search` declaration. Client-executed form (`execution:"client"`) is
+        // later rewritten to `__codex_client_tool_search`; hosted form (omitted/`server`/`hosted`)
+        // stays `type:tool_search`. Classification records the declared type, not the rewrite.
+        // The synthetic function name is not counted again.
         Some("tool_search") => Some(vec![ToolClass::OtherReviewed]),
         // A namespace is one top-level declaration, while its reviewed callable children retain
         // their actual function/custom classes. No namespace names or child names are retained.
