@@ -141,3 +141,70 @@ drops or rejects them instead of proxying an unbilled official API.
 Closing these gaps is not a router alias. It needs either a real OpenAI API-key
 plane or a separately proven hosted-tool/media producer with its own tariff and
 live evidence.
+
+## Feasibility (can close vs cannot)
+
+Three buckets. "Closeable" still requires the normal GA gate: live proof,
+authoritative usage, tariff, and a watchdog-GREEN SHA. A mock 200 is not enough.
+
+### A. Closeable on the current Codex ChatGPT OAuth plane
+
+These fail today because the gateway drops or degrades them, not because the
+public router lacks a path.
+
+| Gap | Why it is closeable | Blocker until live proof |
+|---|---|---|
+| Strict JSON Schema | Runner always sends `strict: false`. The Chat adapter already copies `strict: true` into the internal request. This is a compatibility degrade, not a missing route. | Probe the Codex `/responses` backend with `strict: true` on tools and `text.format`. If it constrains output, stop degrading. If it ignores the flag, we still cannot claim OpenAI Structured Outputs. If it 400s, this row moves to bucket C. |
+| Hosted `web_search` | Gateway comments state the provider executes search and bills per call. We drop the descriptor so stock Codex CLI (which always sends `web_search`) does not start an unmetered hosted call. Codex settlement currently hardcodes `web_search_requests: 0`. | Forward on an explicit API request, capture search usage from the stream, add a Codex search tariff. Keep dropping the stock Codex CLI cached descriptor, or every CLI turn starts a paid search. Unproven until a production home actually emits search events. |
+| Gateway-hosted `tool_search` over the request's own tools | The deferred tool list is already in the body. The gateway can search that list and return `tool_search_output` without OpenAI's registry. | This is **not** OpenAI's hosted catalog/MCP search. It is hosted from the client's point of view only if we execute it. |
+| Responses `image_generation` tool wrapping `/v1/images/*` | Image generation already exists as a separate route. An adapter can run it as a Responses hosted tool. | Still the narrow GPT Image 2 contract (one `opaque/low/auto` PNG). Not mask inpainting. |
+| Fail-closed errors instead of silent drop | Product/parser change only. | Does not add capability. It only stops the demo trap of HTTP 200 with no tool. |
+
+Affinity already pins a conversation to one home via `prompt_cache_key`. That
+raises short-cache hit rate. It is not 24-hour OpenAI KV retention.
+
+### B. Closeable only as a new producer (different wire and money)
+
+The Codex plane has no embeddings, Whisper, Python containers, or mask field.
+A new producer can expose the OpenAI-shaped route. It is a different product:
+we pay a vendor API (or run a sandbox) and resell. That is not ChatGPT quota
+arbitrage. It still needs `docs/engine/PROVIDER_ONBOARDING.md` GA.
+
+| Gap | How to close | What the client does **not** get |
+|---|---|---|
+| Embeddings | New `POST /v1/embeddings` against OpenAI API keys, Gemini embedding keys, or another embedding vendor. | Not served from ChatGPT Plus/Pro/Business OAuth. Price follows the vendor card plus our multiplier. |
+| Audio transcription | New `POST /v1/audio/transcriptions` against Whisper / gpt-4o-transcribe keys or another STT vendor. Gemini audio-in-`generateContent` is a workaround, not the Whisper contract. | Not a Codex route. Latency, language, and diarization will follow the chosen vendor. |
+| Image edits **with a mask** | OpenAI **API-key** Images API has `mask`. Native Codex image JSON has no mask field (`research/GPT_IMAGE_2_EVIDENCE.md`). | Not the current GPT Image 2 OAuth pool. Gemini reference-image edit is not an OpenAI alpha mask. A local composite of mask+image is not the model. |
+| Hosted `code_interpreter` | (1) OpenAI API-key Responses with their containers, or (2) our own sandbox that executes Python and emits `code_interpreter_call` events. | ChatGPT Codex has no container API on `/responses`. Mapping to the client's local Lark `exec` is not hosted. A sandbox is a new security domain. |
+| 24-hour prompt cache as OpenAI documents it | Only an OpenAI **API-key** plane honours `prompt_cache_retention: "24h"` / `prompt_cache_options.ttl`. | We cannot set GPU KV lifetime on ChatGPT. Echoing the field and pinning affinity is not a 24h hold. |
+| Full official hosted-tool identity | A dedicated OpenAI API-key plane (web_search, code_interpreter, file_search, 24h cache, embeddings, Whisper, mask) at OpenAI list prices plus markup. | This is a reseller, not the subscription pool. Cost advantage of ChatGPT OAuth disappears for those legs. |
+
+### C. Impossible on the current Codex wire (do not promise)
+
+These are absent from the ChatGPT Codex backend we actually call
+(`chatgpt.com/backend-api/codex`). No router alias creates them.
+
+| Gap | Why it is impossible here |
+|---|---|
+| `prompt_cache_retention: "24h"` on GPT via ChatGPT OAuth | The backend does not take this field. Cache TTL is theirs. We do not hold their KV tensors. |
+| Mask inpainting on the current GPT Image 2 OAuth pool | Official Codex image request types have no `mask`. The public route rejects the field. Live canary never proved masks. Sending a field the backend does not own will not inpaint. |
+| OpenAI Python **containers** on Codex OAuth | No container id, file mount, or `code_interpreter_call.outputs` producer on this wire. |
+| Embeddings or Whisper from a ChatGPT subscription profile | Those endpoints are not on the Codex backend. A 404 is correct. |
+| Byte-for-byte OpenAI platform hosted tools (their search index, their container image, their 24h cache policy) while still spending only ChatGPT subscription quota | Two different products. The subscription pool cannot impersonate `api.openai.com` platform services. |
+
+### Practical split for this client
+
+- **Say yes, with work:** native Responses, SSE, reasoning, `store: false` + encrypted
+  reasoning, parallel tools, `prompt_cache_key`, honest `cached_tokens` at ~0.1×,
+  narrow image generation. Optional: stop silent drops; probe `strict`; probe
+  Codex `web_search` metering; gateway-side tool_search over their tool list.
+- **Say "paid add-on, new plane":** embeddings, transcription, mask edits,
+  hosted code interpreter, 24h cache. Each is a vendor API or a sandbox, not a
+  flag on Codex.
+- **Say no:** drop-in of official OpenAI hosted tools plus 24h KV cache plus
+  mask, all billed as ChatGPT subscription usage.
+
+Recommended first live probes if we pursue the deal: (1) `strict: true` on one
+Codex home, (2) explicit `web_search` with usage capture. Those two decide
+whether bucket A is real or moves to C. Do not publish either without
+authoritative usage and a tariff.
