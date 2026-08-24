@@ -15,10 +15,18 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 LOCK=${AGENT_MERGE_STAGE_LOCK:-$HOME/.claude-api/stage-merge.lock.d}
 mkdir -p "$(dirname -- "$LOCK")"
 if ! mkdir "$LOCK" 2>/dev/null; then
-  echo 'agent-merge-stage: another serial stage batch owns the lock' >&2
-  exit 1
+  owner=$(cat -- "$LOCK/pid" 2>/dev/null || printf '')
+  if [[ -n $owner ]] && ! kill -0 "$owner" 2>/dev/null; then
+    echo "agent-merge-stage: WARNING: breaking a stale stage lock left by dead pid $owner" >&2
+    rm -rf -- "$LOCK"
+    mkdir "$LOCK"
+  else
+    echo 'agent-merge-stage: another serial stage batch owns the lock' >&2
+    exit 1
+  fi
 fi
-trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+printf '%s\n' "$$" >"$LOCK/pid"
+trap 'rm -rf -- "$LOCK"' EXIT
 
 FIX_RED=0
 for argument in "$@"; do

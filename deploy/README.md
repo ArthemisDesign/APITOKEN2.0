@@ -25,7 +25,9 @@ the redacted host cycle excerpt from check run `deploy/watchdog-log`. The full c
 
 ### Observe-only stage client and watchdog
 
-`agent-merge-stage.sh` uses a separate serial lock. It requires the `stage` ref to equal `master` or
+`agent-merge-stage.sh` uses a separate serial lock that records the holder pid. Only a dead
+pid is treated as stale; an empty leftover directory is not stolen, because an older client
+holds the lock without a pid file. It requires the `stage` ref to equal `master` or
 not exist, unless `--fix-red` is recovering a red `master` (`origin/master` `deploy/watchdog` is
 RED). `--hotfix` is refused here; it is a master-only client override. It runs the ordinary
 production-baseline and exact trusted-validation gates through `agent-merge.sh --validate-only`,

@@ -58,20 +58,27 @@ run_stage() {
   return "$status"
 }
 
-rmdir "$TEMP/stage.lock.d" 2>/dev/null || true
+rm -rf "$TEMP/stage.lock.d"
 AGENT_MERGE_STAGE_STATUS_CMD='printf success'
 output=$(run_stage) && fail "a frozen stage still moved without --fix-red: $output"
 [[ $output == *'stage is frozen at unpromoted SHA'* ]] || fail "freeze refusal missing: $output"
 
-rmdir "$TEMP/stage.lock.d" 2>/dev/null || true
+rm -rf "$TEMP/stage.lock.d"
 output=$(run_stage --fix-red) && fail "a green master still replaced frozen stage: $output"
 [[ $output == *'requires origin/master deploy/watchdog to be RED'* ]] || fail "green-master --fix-red refusal missing: $output"
 
-rmdir "$TEMP/stage.lock.d" 2>/dev/null || true
+rm -rf "$TEMP/stage.lock.d"
 output=$(run_stage --hotfix) && fail "--hotfix still moved stage: $output"
 [[ $output == *'--hotfix is a master-only override'* ]] || fail "--hotfix refusal missing: $output"
 
-rmdir "$TEMP/stage.lock.d" 2>/dev/null || true
+rm -rf "$TEMP/stage.lock.d"
+mkdir -p "$TEMP/stage.lock.d"
+printf '999999\n' >"$TEMP/stage.lock.d/pid"
+output=$(run_stage) && fail "a frozen stage still moved after a stale lock: $output"
+[[ $output == *'breaking a stale stage lock left by dead pid 999999'* ]] || fail "stale-pid break missing: $output"
+[[ $output == *'stage is frozen at unpromoted SHA'* ]] || fail "freeze refusal after stale-pid break missing: $output"
+
+rm -rf "$TEMP/stage.lock.d"
 AGENT_MERGE_STAGE_STATUS_CMD='if [[ $2 == deploy/watchdog ]]; then printf failure; else printf success; fi'
 output=$(run_stage --fix-red) || fail "a red master could not replace frozen stage: $output"
 [[ $output == *'replacing frozen unpromoted SHA'* ]] || fail "red-master --fix-red warning missing: $output"

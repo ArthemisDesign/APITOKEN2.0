@@ -13,6 +13,7 @@ grep -Fq 'requires origin/master deploy/watchdog to be RED' "$ROOT/deploy/agent-
 grep -Fq -- '--hotfix is a master-only override' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq 'stage-merge.lock.d' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq 'mkdir "$LOCK"' "$ROOT/deploy/agent-merge-stage.sh"
+grep -Fq 'breaking a stale stage lock left by dead pid' "$ROOT/deploy/agent-merge-stage.sh"
 ! grep -Fq 'flock -n 9' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq 'rev-parse --verify refs/remotes/origin/stage' "$ROOT/deploy/agent-merge-stage.sh"
 grep -Fq 'HEAD:refs/heads/stage' "$ROOT/deploy/agent-merge-stage.sh"
