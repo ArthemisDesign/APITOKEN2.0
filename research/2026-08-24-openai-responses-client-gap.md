@@ -16,11 +16,11 @@ Whisper, and mask inpainting do not exist on that wire.
 Closed slices (parser/wire only; no live ChatGPT probe of search or constrained
 decoding):
 
-- **hosted execution.** `web_search`, `code_interpreter`, and `image_generation`
-  are forwarded to ChatGPT Codex `/responses`. `web_search_call` items settle at
-  `$0.01` per call. `file_search` / `computer*` / `mcp` stay
-  `400 documented_limitation`. `prompt_cache_retention` / `prompt_cache_options`
-  stay 400. `prompt_cache_key` stays accepted.
+- **hosted execution (live Pro 2026-08-24).** `web_search` and `image_generation`
+  execute on ChatGPT Codex `/responses` (`web_search_call` / `image_generation_call`
+  items observed). `code_interpreter` is upstream `Unsupported tool type` → gateway
+  `400 documented_limitation`. Search settles at `$0.01`/call. `file_search` /
+  `computer*` / `mcp` stay 400. `prompt_cache_retention` stays 400.
 - **strict-json-schema.** Function-tool `strict` and `text.format.strict` are
   kept on the parsed request and sent upstream. They are not rewritten to false.
   Chat still copies `strict`. Extra `additionalProperties` flags on tools stay
@@ -41,10 +41,11 @@ API-key plane.
 The gateway now forwards `web_search` and bills `web_search_call` at $0.01.
 Live proof on a production subscription is the remaining gate.
 
-### 2. Hosted `code_interpreter` — forwarded; live ChatGPT proof pending
+### 2. Hosted `code_interpreter` — cannot execute on this wire
 
-The descriptor is forwarded. The gateway does not run a local Python container.
-Whether ChatGPT Codex executes it is the remaining gate.
+Live Pro probe 2026-08-24: ChatGPT Codex `/responses` returned
+`400 Unsupported tool type: code_interpreter`. The gateway fails closed with
+`400 documented_limitation`. A local Python container is a different product.
 
 ### 3. Hosted `tool_search` — forwarded, not gateway-executed
 

@@ -2453,7 +2453,7 @@ fn unknown_top_level_tool_types_are_dropped_not_rejected() {
 
 #[test]
 fn executable_hosted_tools_are_forwarded() {
-    for kind in ["code_interpreter", "image_generation"] {
+    for kind in ["image_generation"] {
         let parsed = parse_responses_request(
             &gateway(),
             json!({
@@ -2487,6 +2487,7 @@ fn hosted_call_output_items_are_kept_in_the_public_response() {
 #[test]
 fn known_hosted_tools_are_documented_limitations() {
     for kind in [
+        "code_interpreter",
         "file_search",
         "computer",
         "computer_use",

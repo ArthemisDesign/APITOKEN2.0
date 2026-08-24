@@ -884,11 +884,12 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    `__codex_client_tool_search`), is executed by the client; the gateway returns the raw call item
    and never executes it. Hosted `tool_search` (`execution` omitted, `server`, or `hosted`) stays
    `type:tool_search` in the upstream body so the Codex backend can run it; the gateway does not
-   search tools itself. Hosted `web_search`, `code_interpreter`, and `image_generation` are
-   forwarded to the ChatGPT Codex backend. `web_search_call` items (and provider
-   `server_tool_use.web_search_requests`) settle at `metering::WEB_SEARCH_NANO` ($0.01/call);
-   a declared `web_search` adds an eight-call hold. `file_search`, `computer`,
-   `computer_use`, `computer_use_preview`, and `mcp` fail closed with
+   search tools itself. Hosted `web_search` and `image_generation` are forwarded to the
+   ChatGPT Codex backend (live Pro 2026-08-24 executed both). `code_interpreter` is an
+   upstream `Unsupported tool type` and fails closed here. `web_search_call` items (and
+   provider `server_tool_use.web_search_requests`) settle at `metering::WEB_SEARCH_NANO`
+   ($0.01/call); a declared `web_search` adds an eight-call hold. `file_search`,
+   `computer`, `computer_use`, `computer_use_preview`, and `mcp` fail closed with
    `400 documented_limitation`. Unknown future types stay dropped so the next Codex CLI
    release does not brick. Inside a namespace, `web_search` and every non-function/custom
    child still fail closed. Present non-null `prompt_cache_retention` /

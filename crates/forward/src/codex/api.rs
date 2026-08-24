@@ -1774,7 +1774,7 @@ fn parse_dynamic_tools(
                 callable_count += 1;
                 dynamic.push(parsed);
             }
-            Some(kind @ ("web_search" | "code_interpreter" | "image_generation")) => {
+            Some(kind @ ("web_search" | "image_generation")) => {
                 // ChatGPT Codex executes these hosted tools on the subscription wire. Forward the
                 // descriptor so the backend can run them; settlement bills web_search_call items
                 // at the official $0.01/call. Duplicate hosted types are rejected because the
@@ -1793,7 +1793,8 @@ fn parse_dynamic_tools(
                 dynamic.push(hosted_tool_descriptor(object, kind));
             }
             Some(
-                kind @ ("file_search"
+                kind @ ("code_interpreter"
+                | "file_search"
                 | "computer"
                 | "computer_use"
                 | "computer_use_preview"
@@ -1844,10 +1845,12 @@ fn hosted_search_reserve_nano(tools: &[Value]) -> i128 {
 }
 
 fn hosted_tool_documented_limitation(kind: &str, tool_param: &str) -> ApiError {
-    ApiError::documented_limitation(
-        format!("Hosted {kind} is not executed on this plane."),
-        Some(format!("{tool_param}.type")),
-    )
+    let message = if kind == "code_interpreter" {
+        "Hosted code_interpreter is not supported on the ChatGPT Codex subscription wire (upstream rejects the tool type).".to_string()
+    } else {
+        format!("Hosted {kind} is not executed on this plane.")
+    };
+    ApiError::documented_limitation(message, Some(format!("{tool_param}.type")))
 }
 
 fn reject_unhonoured_prompt_cache_fields(object: &Map<String, Value>) -> Result<(), ApiError> {
@@ -2714,8 +2717,8 @@ fn normalize_output_item_with_options(
                     Some(json!({
                         "type": "output_text",
                         "text": text,
-                        "annotations": [],
-                        "logprobs": []
+                        "annotations": part.get("annotations").cloned().unwrap_or(json!([])),
+                        "logprobs": part.get("logprobs").cloned().unwrap_or(json!([]))
                     }))
                 })
                 .collect::<Vec<_>>();

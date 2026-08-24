@@ -211,7 +211,7 @@ fn upstream_tool(tool: &Value) -> Option<Value> {
         })),
         Some("custom") => Some(tool.clone()),
         Some("tool_search") => Some(tool.clone()),
-        Some("web_search" | "code_interpreter" | "image_generation") => Some(tool.clone()),
+        Some("web_search" | "image_generation") => Some(tool.clone()),
         Some("namespace") => Some(json!({
             "type": "namespace",
             "name": tool.get("name").cloned().unwrap_or(Value::Null),
@@ -1094,11 +1094,10 @@ mod tests {
     }
 
     #[test]
-    fn hosted_web_search_and_code_interpreter_reach_the_upstream_body() {
+    fn hosted_web_search_and_image_generation_reach_the_upstream_body() {
         let mut request = turn_request(test_model());
         request.dynamic_tools = vec![
             json!({"type": "web_search"}),
-            json!({"type": "code_interpreter", "container": {"type": "auto"}}),
             json!({"type": "image_generation"}),
         ];
         let body = build_responses_body(&request);
@@ -1108,10 +1107,7 @@ mod tests {
             .iter()
             .map(|tool| tool["type"].as_str().unwrap())
             .collect();
-        assert_eq!(
-            types,
-            ["web_search", "code_interpreter", "image_generation"]
-        );
+        assert_eq!(types, ["web_search", "image_generation"]);
     }
 
     #[test]

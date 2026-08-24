@@ -338,11 +338,12 @@ without executing them on the gateway. `tool_search` with `execution:"client"` i
 rewritten to `__codex_client_tool_search`; hosted `tool_search` (`execution` omitted,
 `server`, or `hosted`) is forwarded as `type:tool_search` and is not executed locally.
 Function-tool `strict` and json_schema `text.format.strict` are forwarded to the Codex
-upstream body; they are not rewritten to false. Hosted `web_search`, `code_interpreter`,
-and `image_generation` are forwarded to the ChatGPT Codex backend and executed there.
-`web_search_call` items settle at `$0.01` per call. `file_search`, `computer`,
-`computer_use`, `computer_use_preview`, and `mcp` fail closed with
-`400 documented_limitation`. A `web_search` nested inside a namespace still fails
+upstream body; they are not rewritten to false. Hosted `web_search` and
+`image_generation` are forwarded to the ChatGPT Codex backend (live Pro 2026-08-24:
+search and image_generation_call executed). `code_interpreter` is rejected upstream
+(`Unsupported tool type`) so the gateway fails closed. `web_search_call` items settle
+at `$0.01` per call. `file_search`, `computer`, `computer_use`, `computer_use_preview`,
+and `mcp` fail closed with `400 documented_limitation`. A `web_search` nested inside a namespace still fails
 closed. Unknown future tool types stay dropped so the next Codex CLI release does
 not brick. Present non-null `prompt_cache_retention` / `prompt_cache_options` also
 fail closed: 24-hour KV retention cannot be honoured on ChatGPT OAuth;
