@@ -113,8 +113,12 @@ A red status description is the bounded fail-closed reason, not a bash line numb
 parallel lanes. Payload-canary failures start with `payload-canary:` plus content-free
 `status_ok`/`statuses`, `load-driver missing`, or `oom`/`spool`/`headroom`. Other failures prefer a
 concrete transcript marker (`error: could not compile`, `No such file or directory`, a `wd_die`
-line) over a generic `lane failed (exit N)` wrapper. Bodies, credentials, and DSNs never appear
-there.
+line) over a generic `lane failed (exit N)` wrapper. Post-admission verification runs in a subshell
+so rollback can run before fail-closed; the wrappers `selected final production verification failed
+after component admission` and `failed verification after cutover` are generic in the same way.
+The 140-character description then prefers the inner lane `wd_die` from the cycle transcript
+(panel, routing, monitoring, Codex, Gemini, KIMI, or commerce ready). Bodies, credentials, and DSNs
+never appear there.
 
 Every quarantined SHA also gets a GitHub check run named `deploy/watchdog-log`: a redacted excerpt
 of that cycle's watchdog transcript (at most 24 KiB, last 4000 lines, failure markers plus a short

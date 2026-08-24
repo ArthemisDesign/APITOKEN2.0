@@ -126,6 +126,7 @@ document, update this index.
 - [2026-08-23-staging-injected-fault-drill.md](audits/2026-08-23-staging-injected-fault-drill.md) — Phase 6 staging degradation fault drill and recovery evidence.
 - [2026-08-23-staging-hotfix-drill.md](audits/2026-08-23-staging-hotfix-drill.md) — Phase 6 offline hotfix attestation and invalidation drill.
 - [2026-08-23-UNATTESTED-MASTER-QUARANTINE.md](audits/2026-08-23-UNATTESTED-MASTER-QUARANTINE.md) — Phase 7 unattested `master` SHA `66c7dd2f` quarantined in fetching; merge-client `deploy/stage` gate and admitting-phase diagnostic.
+- [2026-08-24-FINAL-VERIFICATION-STATUS.md](audits/2026-08-24-FINAL-VERIFICATION-STATUS.md) — SHA `6ef38441` engine GREEN then final-verification RED; GitHub headline kept the subshell wrapper; inner lane `wd_die` now wins.
 
 ## Next to the code (do not move here)
 

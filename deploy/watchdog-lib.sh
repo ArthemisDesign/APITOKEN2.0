@@ -41,25 +41,50 @@ wd_payload_canary_reason() {
   printf '%s\n' "$reason"
 }
 
-# Wrapper messages that hide the inner compiler/controller cause. A transcript marker wins over these.
+# Wrapper messages that hide the inner compiler/controller/verification cause. A transcript
+# marker wins over these. Post-admission verification runs in a subshell so rollback can run
+# before fail-closed; those wrappers must not become the GitHub headline.
 wd_error_is_generic() {
   local msg=${1:-}
-  [[ $msg == *'failed (exit '* || $msg == *'lanes failed'* || $msg == *'controller failed'* ]]
+  [[ $msg == *'failed (exit '* \
+      || $msg == *'lanes failed'* \
+      || $msg == *'controller failed'* \
+      || $msg == *'selected final production verification failed after component admission'* \
+      || $msg == *'failed verification after cutover'* ]]
 }
 
 # First/last known failure marker from a private transcript. Prefer a concrete Rust cause over
-# Cargo's trailing rerun hint; operational markers remain last-wins. Only the last 4000 lines are
+# Cargo's trailing rerun hint; operational markers remain last-wins except when the last line is
+# a generic wrapper (then the last specific inner wd_die wins). Only the last 4000 lines are
 # scanned so a huge cargo/pnpm log cannot stall fail-closed reporting.
 wd_failure_marker_line() {
-  local log_file=$1 window detail=''
+  local log_file=$1 window detail='' line body last_any='' last_specific=''
   [[ -f $log_file && ! -L $log_file ]] || return 0
   window=$(tail -n 4000 "$log_file" 2>/dev/null || true)
   [[ -n $window ]] || return 0
   detail=$(printf '%s\n' "$window" | grep -E 'panicked at|error\[E[0-9]+\]|Connection refused|No such file or directory' \
     | head -n 1 || true)
-  [[ -n $detail ]] || detail=$(printf '%s\n' "$window" | grep -E \
-    '\[watchdog\] ERROR:|ERR_PNPM|ELIFECYCLE|test lane\(s\) failed|migration failed|candidate lane failed|test result: FAILED|error: test failed|error: could not compile|payload-canary:|Job for .+\.service failed|AssertionError' \
-    | tail -n 1 || true)
+  if [[ -z $detail ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      last_any=$line
+      body=$line
+      if [[ $body == '[watchdog] ERROR: '* ]]; then
+        body=${body#'[watchdog] ERROR: '}
+      fi
+      if wd_error_is_generic "$body"; then
+        continue
+      fi
+      last_specific=$line
+    done < <(printf '%s\n' "$window" | grep -E \
+      '\[watchdog\] ERROR:|ERR_PNPM|ELIFECYCLE|test lane\(s\) failed|migration failed|candidate lane failed|test result: FAILED|error: test failed|error: could not compile|payload-canary:|Job for .+\.service failed|AssertionError' \
+      || true)
+    if [[ -n $last_specific ]]; then
+      detail=$last_specific
+    else
+      detail=$last_any
+    fi
+  fi
   detail=$(wd_redact_public_detail "$detail")
   detail=$(printf '%s' "$detail" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')
   printf '%s' "$detail"

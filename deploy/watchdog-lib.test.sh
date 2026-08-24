@@ -111,6 +111,46 @@ empty_diagnostic=$(wd_validation_failure_summary "$TEMP/missing.log" 7 shadow-va
     || wd_die "failure text is not mode 0600: $text_mode"
 )
 
+# Post-admission verification runs in a subshell so rollback can run before fail-closed. The
+# outer wd_die is a wrapper: the GitHub headline must keep the inner lane wd_die. SHA
+# 6ef38441116571d46c2ee95e4c903bed43687177 published only the wrapper (2026-08-24).
+(
+  desc_sha=$(printf 'c%.0s' {1..40})
+  CANDIDATE_SHA=$desc_sha
+  WD_FAILURE_DIR=$TEMP/failures-verify
+  mkdir -p "$WD_FAILURE_DIR"
+  WD_CYCLE_LOG=$WD_FAILURE_DIR/$desc_sha.cycle.log
+  WD_LAST_ERROR='selected final production verification failed after component admission'
+  printf '%s\n' \
+    '[watchdog] engine deadbeef passed final production verification' \
+    '[watchdog] ERROR: Codex provider is enabled but has no live authenticated app-server' \
+    '[watchdog] ERROR: final verification lanes failed (panel=0 routing=0 monitoring=0 codex=1 gemini=0 kimi=0)' \
+    '[watchdog] WARNING: engine verification failed after traffic was committed; rolling back' \
+    >"$WD_CYCLE_LOG"
+  verify_desc=$(wd_github_failure_description verifying 1)
+  [[ $verify_desc == *'Codex provider is enabled but has no live authenticated app-server'* ]] \
+    || wd_die "inner verification lane error lost to the admission wrapper: $verify_desc"
+  [[ $verify_desc != *'selected final production verification failed'* ]] \
+    || wd_die "generic post-admission wrapper still won the GitHub description: $verify_desc"
+  [[ $verify_desc != *'lanes failed'* ]] \
+    || wd_die "generic lanes-failed wrapper still won the GitHub description: $verify_desc"
+  WD_LAST_ERROR='commerce API, worker, or Content Studio failed verification after cutover'
+  printf '%s\n' \
+    '[watchdog] ERROR: commerce worker is not ready on the admitted slot' \
+    '[watchdog] ERROR: commerce API, worker, or Content Studio failed verification after cutover' \
+    >"$WD_CYCLE_LOG"
+  backend_desc=$(wd_github_failure_description deploying-backend 1)
+  [[ $backend_desc == *'commerce worker is not ready on the admitted slot'* ]] \
+    || wd_die "inner backend verification error lost to the cutover wrapper: $backend_desc"
+  [[ $backend_desc != *'failed verification after cutover'* ]] \
+    || wd_die "generic backend cutover wrapper still won the GitHub description: $backend_desc"
+)
+grep -Fq 'selected final production verification failed after component admission' \
+  "$ROOT/deploy/watchdog-lib.sh" \
+  || wd_die 'wd_error_is_generic no longer classifies the post-admission verification wrapper'
+grep -Fq 'failed verification after cutover' "$ROOT/deploy/watchdog-lib.sh" \
+  || wd_die 'wd_error_is_generic no longer classifies the backend cutover verification wrapper'
+
 # A restrictive fetch umask must not strand the shared source history from the isolated reader.
 # Extract the production functions so this exercises the same normalization and CI read check that
 # the watchdog uses, while the test itself runs as the isolated account in the trusted host gate.

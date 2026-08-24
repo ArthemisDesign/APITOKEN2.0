@@ -20,7 +20,9 @@ It then takes the machine merge-lock, rebases onto the latest
 GitHub SHA (merge `--ff-only` in a clean `master` checkout, otherwise only the ref), and holds the lock until the
 host reports a green `deploy/watchdog` on that SHA. A red SHA is never retried: fix forward
 with a new commit on a new branch. The red error includes the 140-character status headline and
-the redacted host cycle excerpt from check run `deploy/watchdog-log`. The full contributor workflow is in
+the redacted host cycle excerpt from check run `deploy/watchdog-log`. A post-admission
+verification wrapper is generic; the headline prefers the inner lane `wd_die` from the
+cycle transcript. The full contributor workflow is in
 [`../CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ### Observe-only stage client and watchdog
