@@ -7,7 +7,7 @@ META=$STATE/stage-live.json
 KEY=$STATE/stage-live.key
 exec 8>/run/lock/apitoken-stage-live.lock; flock -n 8 || { echo 'stage-live-control: locked' >&2; exit 1; }
 # shellcheck disable=SC1091
-source /etc/apitoken/server.env
+source /srv/claude-api/data/server.env
 : "${CLAUDE_API_CONTROL_KEY:?production control key missing}"
 control_curl() { curl -fsS -m 15 -K - "$@" <<EOF
 header = "x-api-key: $CLAUDE_API_CONTROL_KEY"

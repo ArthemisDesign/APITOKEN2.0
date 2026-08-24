@@ -1897,7 +1897,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: owner selected §5.3.1 o
 Next: repair stage-ctl sudoers syntax and both installed policy copies.
 
 ### 2026-08-24 — Phase 8 stage-ctl sudoers repair v2
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `92e0cdf7f3d745cab53207d543b9fea153837226`   watchdog: GREEN
 Result: Sudoers parses `:` inside the model argv glob as syntax. Use two broad argv globs at the
 sudoers layer; the fixed root-owned helper still enforces the strict model/actor regex and exact
 argument count before action. The invalid installed policy also caused every sudo to print parser
@@ -1907,7 +1907,17 @@ Checks actually run: disposable Ubuntu `visudo -cf`; `bash deploy/staging-phase8
 `bash deploy/staging-foundation.test.sh`; `./deploy/host-image-gate.sh`; live `visudo -c`; live
 `sudo -u apitoken-ci git ... cat-file --batch-all-objects`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED installer acceptance.
-Next: merge on GREEN, enable a cents-scale key, run one minimal probe, disable, and close Phase 8.
+Next: correct the production control-key file path used by the root controller.
+
+### 2026-08-24 — Phase 8 control-key path repair
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The live controller correctly runs as root but sourced the nonexistent commerce path
+`/etc/apitoken/server.env`. Use the documented engine path `/srv/claude-api/data/server.env`. The
+Control key remains root-only and never enters the stage key file, unit environment, logs, or response.
+Checks actually run: `bash deploy/staging-phase8.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`git diff --check`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after the first no-spend enable attempt.
+Next: stage, attest, promote, enable a cents-scale key, run one minimal probe, disable, and close Phase 8.
 
 ---
 

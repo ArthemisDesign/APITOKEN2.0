@@ -13,6 +13,7 @@ grep -Fq "conn.request('POST','/v1/messages'" "$ROOT/deploy/stage-live-host-prox
 ! grep -Eq 'api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com' "$ROOT/deploy/stage-live-proxy.py" "$ROOT/deploy/stage-live-host-proxy.py"
 grep -Fq 'cap >= 100000 && cap <= 100000000' "$ROOT/deploy/stage-live-control.sh"
 grep -Fq 'spend_limit_nano' "$ROOT/deploy/stage-live-control.sh"
+grep -Fq 'source /srv/claude-api/data/server.env' "$ROOT/deploy/stage-live-control.sh"
 grep -Fq 'expires_ts' "$ROOT/deploy/stage-live-control.sh"
 grep -Fq 'probe already consumed' "$ROOT/deploy/stage-live-control.sh"
 grep -Fq "rm -f -- /etc/apitoken-staging/stage-live.enabled" "$ROOT/deploy/stage-live-control.sh"
