@@ -42,9 +42,10 @@ pub(super) const MAX_INSTRUCTIONS_BYTES: usize = 16 * 1024 * 1024;
 /// ever saw them.
 const MAX_TOOLS: usize = 1024;
 const MAX_CUSTOM_TOOL_GRAMMAR_BYTES: usize = 4 * 1024 * 1024;
-/// Codex 0.146 exposes client-side deferred tool discovery as a Responses-native `tool_search`
-/// tool. The pinned 0.145 upstream client does not know that wire type, so the gateway presents an
-/// equivalent private dynamic function to the model and translates calls/results at the boundary.
+/// Codex CLI client-executed deferred tool discovery (`tool_search` with `execution:"client"`).
+/// The gateway presents an equivalent private dynamic function to the model and translates
+/// calls/results at the boundary. Hosted `tool_search` (`execution` omitted, `server`, or
+/// `hosted`) keeps `type:tool_search` and is not rewritten to this name.
 const TOOL_SEARCH_DYNAMIC_NAME: &str = "__codex_client_tool_search";
 /// Serialized-body bytes per input token. Used both by the public `input_tokens` estimate and by
 /// the admission reserve so the two never disagree.
@@ -76,6 +77,24 @@ impl ApiError {
             code: None,
             retry_after: None,
             reason: "invalid_request",
+        }
+    }
+
+    /// Protocol capability that exists on the OpenAI surface but this ChatGPT OAuth plane
+    /// cannot honour. Matches the Anthropic/Gemini adapter envelope: 400, kind
+    /// `invalid_request_error`, code `documented_limitation`.
+    pub(super) fn documented_limitation(
+        message: impl Into<String>,
+        param: impl Into<Option<String>>,
+    ) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+            kind: "invalid_request_error",
+            param: param.into(),
+            code: Some("documented_limitation"),
+            retry_after: None,
+            reason: "documented_limitation",
         }
     }
 
@@ -289,6 +308,8 @@ pub(super) struct ParsedResponsesRequest {
     reasoning_summary: Option<String>,
     reasoning_context: Option<String>,
     output_schema: Option<Value>,
+    /// Client `text.format.strict` for `json_schema`. Default false when absent or not json_schema.
+    json_schema_strict: bool,
     verbosity: Option<String>,
     text: Value,
     original_tools: Vec<Value>,
@@ -1232,6 +1253,7 @@ pub(super) async fn prepare_turn(
         reasoning_summary: request.reasoning_summary.clone(),
         reasoning_context: request.reasoning_context.clone(),
         output_schema: request.output_schema.clone(),
+        json_schema_strict: request.json_schema_strict,
         verbosity: request.verbosity.clone(),
         attempts: None,
     };
@@ -1253,6 +1275,8 @@ pub(super) fn parse_responses_request(
     // SDK compatibility: parameters the transport cannot honor (sampling controls, token caps,
     // truncation, background mode, future fields, …) are accepted and ignored rather than
     // rejected, so stock SDKs and agent terminals never fail on parameters they send by default.
+    // Hosted tools we cannot execute and 24-hour prompt-cache retention are the exception:
+    // silently succeeding would claim a billed/retained capability this plane does not have.
     let requested_model_id = required_string(object, "model")?;
     // Universal router dispatch deliberately preserves the request body byte-for-byte. Each
     // provider plane therefore owns resolution of its public namespace before admission; this is
@@ -1314,6 +1338,7 @@ pub(super) fn parse_responses_request(
     // and the client keeps seeing its own value echoed in the response.
     let prompt_cache_key =
         optional_string(object, "prompt_cache_key")?.filter(|key| !key.trim().is_empty());
+    reject_unhonoured_prompt_cache_fields(object)?;
     // `client_metadata` and `safety_identifier` are the caller's own diagnostic fields. The
     // transport rebuilds `client_metadata` from OUR wire identity and the public response pins
     // `safety_identifier` to null, so neither one can leave the gateway. Validating a discarded
@@ -1323,7 +1348,7 @@ pub(super) fn parse_responses_request(
     let service_tier = parse_service_tier(object.get("service_tier"), &public_model);
     let (reasoning_effort, reasoning_summary, reasoning_context) =
         parse_reasoning(object.get("reasoning"), &public_model)?;
-    let (text, output_schema, verbosity) = parse_text(object.get("text"))?;
+    let (text, output_schema, verbosity, json_schema_strict) = parse_text(object.get("text"))?;
     let tool_choice = object
         .get("tool_choice")
         .cloned()
@@ -1403,6 +1428,7 @@ pub(super) fn parse_responses_request(
         reasoning_summary,
         reasoning_context,
         output_schema,
+        json_schema_strict,
         verbosity,
         text,
         original_tools,
@@ -1487,9 +1513,11 @@ fn parse_reasoning(
     Ok((effort, summary, context))
 }
 
-fn parse_text(value: Option<&Value>) -> Result<(Value, Option<Value>, Option<String>), ApiError> {
+fn parse_text(
+    value: Option<&Value>,
+) -> Result<(Value, Option<Value>, Option<String>, bool), ApiError> {
     let Some(value) = value.filter(|value| !value.is_null()) else {
-        return Ok((json!({"format": {"type": "text"}}), None, None));
+        return Ok((json!({"format": {"type": "text"}}), None, None, false));
     };
     let object = value
         .as_object()
@@ -1532,9 +1560,19 @@ fn parse_text(value: Option<&Value>) -> Result<(Value, Option<Value>, Option<Str
             ))
         }
     };
+    let json_schema_strict = if kind == "json_schema" {
+        optional_strict_flag(format_object, "text.format.strict")?
+    } else {
+        false
+    };
     let mut normalized = object.clone();
     normalized.insert("format".to_string(), format);
-    Ok((Value::Object(normalized), schema, verbosity))
+    Ok((
+        Value::Object(normalized),
+        schema,
+        verbosity,
+        json_schema_strict,
+    ))
 }
 
 fn extract_additional_tools(
@@ -1735,19 +1773,34 @@ fn parse_dynamic_tools(
                 callable_count += 1;
                 dynamic.push(parsed);
             }
-            // Hosted `web_search` is server-executed and billed per call by the provider, so this
-            // gateway cannot meter it and never forwards it. Codex CLI sends the descriptor by
-            // default (mode `cached`), and rejecting the list made every default Codex config
-            // unusable on the models that carry it. Accept it as a declaration we cannot honor —
-            // the same leniency this endpoint already applies to service_tier, tool_choice and
-            // parallel_tool_calls — and drop it: the model simply gets no web search tool.
-            //
-            // Every other unknown tool type takes the same route. A descriptor this gateway does
-            // not understand is never forwarded, so it can neither run nor bill; failing the whole
-            // turn over it only breaks the caller on the next client release that adds a type,
-            // which is precisely how the stock `web_search` descriptor once bricked every default
-            // config. The turn proceeds with the tools we do understand. Namespace children stay
-            // strict on purpose: there the type decides whether a member is client-executed.
+            Some("web_search") => {
+                // Codex CLI ships web search in every stock config (mode `cached`) as a
+                // descriptor with `external_web_access` or `search_content_types`. Accept that
+                // shape and drop it — never forward an unmetered hosted search. Any other
+                // `web_search` object is an API hosted-search request this plane cannot meter.
+                if !is_codex_cli_web_search(object) {
+                    return Err(ApiError::documented_limitation(
+                        "Hosted web_search is not forwarded because it cannot be metered on this plane.",
+                        Some(format!("{tool_param}.type")),
+                    ));
+                }
+            }
+            Some(
+                kind @ ("code_interpreter"
+                | "file_search"
+                | "computer"
+                | "computer_use"
+                | "computer_use_preview"
+                | "image_generation"
+                | "mcp"),
+            ) => {
+                return Err(hosted_tool_documented_limitation(kind, &tool_param));
+            }
+            // Unknown future tool types are dropped, not rejected: a descriptor this gateway
+            // does not understand is never forwarded, so it can neither run nor bill. Failing
+            // the turn would brick the next Codex CLI release that adds a type. Namespace
+            // children stay fail-closed: there the type decides whether a member is
+            // client-executed.
             _ => {}
         }
         if callable_count > MAX_TOOLS {
@@ -1760,10 +1813,37 @@ fn parse_dynamic_tools(
     Ok(dynamic)
 }
 
+fn is_codex_cli_web_search(object: &Map<String, Value>) -> bool {
+    object.contains_key("external_web_access") || object.contains_key("search_content_types")
+}
+
+fn hosted_tool_documented_limitation(kind: &str, tool_param: &str) -> ApiError {
+    let message = if kind == "image_generation" {
+        "Hosted image_generation is not executed on this plane. Use POST /v1/images/generations or POST /v1/images/edits.".to_string()
+    } else {
+        format!("Hosted {kind} is not executed on this plane.")
+    };
+    ApiError::documented_limitation(message, Some(format!("{tool_param}.type")))
+}
+
+fn reject_unhonoured_prompt_cache_fields(object: &Map<String, Value>) -> Result<(), ApiError> {
+    for field in ["prompt_cache_retention", "prompt_cache_options"] {
+        if object.get(field).is_some_and(|value| !value.is_null()) {
+            return Err(ApiError::documented_limitation(
+                format!(
+                    "{field} cannot be honoured; 24-hour KV cache retention is not available on this plane."
+                ),
+                Some(field.to_string()),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn parse_additional_function(object: &Map<String, Value>, param: &str) -> Result<Value, ApiError> {
-    // Unknown descriptor fields are ignored and `strict` is degraded rather than rejected, exactly
-    // as on the top-level list: the same tool must not fail on the gpt-5.6 family (which carries
-    // client tools in `additional_tools`) while it is accepted on every other model.
+    // Unknown descriptor fields are ignored; `strict` is a boolean kept on the dynamic tool
+    // (default false) so the gpt-5.6 additional_tools list and the top-level list reach the
+    // same verdict for the same descriptor.
     let name = required_string(object, "name")?;
     validate_dynamic_tool_identifier(name, &format!("{param}.name"), 128)?;
     let description = optional_tool_description(object, &format!("{param}.description"))?;
@@ -1777,6 +1857,7 @@ fn parse_additional_function(object: &Map<String, Value>, param: &str) -> Result
             Some(format!("{param}.parameters")),
         ));
     }
+    let strict = optional_strict_flag(object, &format!("{param}.strict"))?;
     let defer_loading = match object.get("defer_loading") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(value)) => *value,
@@ -1792,7 +1873,8 @@ fn parse_additional_function(object: &Map<String, Value>, param: &str) -> Result
         "name": name,
         "description": description,
         "inputSchema": parameters,
-        "deferLoading": defer_loading
+        "deferLoading": defer_loading,
+        "strict": strict
     }))
 }
 
@@ -1800,12 +1882,16 @@ fn parse_additional_tool_search(
     object: &Map<String, Value>,
     param: &str,
 ) -> Result<Value, ApiError> {
-    if object.get("execution").and_then(Value::as_str) != Some("client") {
-        return Err(ApiError::invalid(
-            "tool_search.execution must be \"client\".",
-            Some(format!("{param}.execution")),
-        ));
-    }
+    let execution = match object.get("execution") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.as_str()),
+        Some(_) => {
+            return Err(ApiError::invalid(
+                "tool_search.execution must be a string.",
+                Some(format!("{param}.execution")),
+            ))
+        }
+    };
     let description = optional_tool_description(object, &format!("{param}.description"))?;
     let parameters = object
         .get("parameters")
@@ -1817,13 +1903,39 @@ fn parse_additional_tool_search(
             Some(format!("{param}.parameters")),
         ));
     }
-    Ok(json!({
-        "type": "function",
-        "name": TOOL_SEARCH_DYNAMIC_NAME,
+    // Codex CLI deferred discovery is the client-executed form. Anything else is the OpenAI
+    // hosted descriptor and must keep `type:tool_search` so the Codex backend can run it.
+    if execution == Some("client") {
+        return Ok(json!({
+            "type": "function",
+            "name": TOOL_SEARCH_DYNAMIC_NAME,
+            "description": description,
+            "inputSchema": parameters,
+            "deferLoading": false
+        }));
+    }
+    let mut hosted = json!({
+        "type": "tool_search",
         "description": description,
-        "inputSchema": parameters,
-        "deferLoading": false
-    }))
+        "parameters": parameters,
+    });
+    match object.get("name") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(name)) => {
+            validate_dynamic_tool_identifier(name, &format!("{param}.name"), 128)?;
+            hosted["name"] = Value::String(name.clone());
+        }
+        Some(_) => {
+            return Err(ApiError::invalid(
+                "tool_search name must be a string.",
+                Some(format!("{param}.name")),
+            ))
+        }
+    }
+    if let Some(execution) = execution {
+        hosted["execution"] = Value::String(execution.to_string());
+    }
+    Ok(hosted)
 }
 
 fn parse_additional_custom(object: &Map<String, Value>, param: &str) -> Result<Value, ApiError> {
@@ -1881,6 +1993,17 @@ fn optional_tool_description(object: &Map<String, Value>, param: &str) -> Result
     }
 }
 
+fn optional_strict_flag(object: &Map<String, Value>, param: &str) -> Result<bool, ApiError> {
+    match object.get("strict") {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(ApiError::invalid(
+            "strict must be a boolean.",
+            Some(param.to_string()),
+        )),
+    }
+}
+
 fn validate_dynamic_tool_identifier(
     name: &str,
     param: &str,
@@ -1922,8 +2045,8 @@ fn parse_responses_tools(value: Option<&Value>) -> Result<(Vec<Value>, Vec<Value
 }
 
 fn parse_top_level_function(object: &Map<String, Value>, param: &str) -> Result<Value, ApiError> {
-    // Extra tool fields (strict, additionalProperties flags, future additions) are ignored;
-    // strict=true silently degrades to non-strict rather than failing the request.
+    // Extra tool fields (additionalProperties flags, future additions) are ignored. `strict` is
+    // a boolean kept on the dynamic tool (default false) and forwarded upstream as-is.
     let name = required_string(object, "name")?;
     validate_tool_name(name, &format!("{param}.name"))?;
     let description = object
@@ -1940,12 +2063,14 @@ fn parse_top_level_function(object: &Map<String, Value>, param: &str) -> Result<
             Some(format!("{param}.parameters")),
         ));
     }
+    let strict = optional_strict_flag(object, &format!("{param}.strict"))?;
     Ok(json!({
         "type": "function",
         "name": name,
         "description": description,
         "inputSchema": parameters,
-        "deferLoading": false
+        "deferLoading": false,
+        "strict": strict
     }))
 }
 

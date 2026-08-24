@@ -538,8 +538,10 @@ fn openai_responses_tool_classes(tool: &Value) -> Option<Vec<ToolClass>> {
     match tool.get("type").and_then(Value::as_str) {
         Some("function") => Some(vec![ToolClass::CustomFunction]),
         Some("custom") => Some(vec![ToolClass::CustomTool]),
-        // The native parser accepts and then drops hosted web_search. This records validated
-        // client intent, not the provider behavior after degradation.
+        // The native parser accepts the Codex CLI stock web_search descriptor
+        // (`external_web_access` / `search_content_types`) and then drops it. This records
+        // validated client intent, not the provider behavior after degradation. Other
+        // web_search shapes fail closed as documented_limitation before admission.
         Some("web_search") => Some(vec![ToolClass::WebSearch]),
         // This is an explicit client descriptor validated as client-executed. The synthetic
         // function name produced later by the gateway is not separately counted or retained.

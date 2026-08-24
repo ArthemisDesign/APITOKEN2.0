@@ -11,73 +11,72 @@ OpenAI surfaces. Our OpenAI plane is a ChatGPT Codex OAuth subscription pool, no
 `api.openai.com`. Hosted platform tools, 24h prompt-cache retention, embeddings,
 Whisper, and mask inpainting do not exist on that wire.
 
-## Gaps (the client asked for these; we do not deliver them)
+## Status after the RN Codex-plane fixes
 
-### 1. Hosted `web_search` inside Responses
+Closed slices (parser/wire only; no live ChatGPT probe of search or constrained
+decoding):
 
-The client needs a server-executed web search tool on `POST /v1/responses`.
+- **fail-closed-hosted-tools.** `400 documented_limitation` for hosted
+  `code_interpreter`, `file_search`, `computer`, `computer_use`,
+  `computer_use_preview`, `image_generation` (message names
+  `/v1/images/generations` and `/v1/images/edits`), `mcp`, and non-CLI
+  `web_search`. Codex CLI stock `web_search` (`external_web_access` /
+  `search_content_types`) is still accepted and dropped, never forwarded.
+  Unknown future tool types are still dropped. Namespace children stay
+  function/custom only. Present non-null `prompt_cache_retention` /
+  `prompt_cache_options` fail closed; `prompt_cache_key` stays accepted.
+  `parallel_tool_calls=false` is still accepted.
+- **strict-json-schema.** Function-tool `strict` and `text.format.strict` are
+  kept on the parsed request and sent upstream. They are not rewritten to false.
+  Chat still copies `strict`. Extra `additionalProperties` flags on tools stay
+  ignored.
+- **hosted-tool-search.** Hosted `tool_search` (`execution` omitted/`server`/
+  `hosted`) is forwarded as `type:tool_search`. Client `execution:"client"` still
+  rewrites to `__codex_client_tool_search`. The gateway does not search tools
+  itself.
 
-Our gateway never forwards hosted `web_search`. The descriptor is accepted and
-dropped so stock Codex CLI configs do not 400. The model receives no search tool.
-A nested `web_search` inside a namespace fails closed.
+Still not delivered (bucket B/C): embeddings, transcription, mask inpainting,
+code_interpreter execution, 24h KV cache, metered hosted web_search, an OpenAI
+API-key plane.
 
-A client that sends `tools: [{ "type": "web_search" }]` gets HTTP 200 and no
-search. That is not OpenAI hosted search.
+## Remaining gaps
 
-Code: `crates/forward/src/codex/api.rs` (`hosted_web_search_is_accepted_and_never_forwarded`).
+### 1. Hosted `web_search` execution (partial)
 
-### 2. Hosted `code_interpreter` inside Responses
+API `tools: [{ "type": "web_search" }]` now gets `400 documented_limitation`
+instead of a silent 200. Codex CLI stock search is still dropped. The model
+still does not run search. Metered forwarding needs a live probe and a tariff.
 
-No `code_interpreter` parser, container, file mount, or Python execution exists
-in the repository. The type is an unknown hosted descriptor: accepted and dropped,
-same as `web_search`. The model never runs code on our side.
+### 2. Hosted `code_interpreter` execution
 
-OpenAI `include: ["code_interpreter_call.outputs"]` is ignored (unknown `include`
-values are ignored; only `reasoning.encrypted_content` is honoured).
+The type now fails closed. There is still no container, file mount, or Python
+execution. `include: ["code_interpreter_call.outputs"]` is still ignored.
 
-### 3. Hosted `tool_search` (OpenAI platform form)
+### 3. Hosted `tool_search` — forwarded, not gateway-executed
 
-The client named hosted tool search inside Responses.
+Hosted descriptors now reach the Codex backend as `type:tool_search`. This
+gateway does not search the request's tool list itself. Whether ChatGPT executes
+the hosted form is unproven live.
 
-What we have is Codex CLI **client-executed** `tool_search` only
-(`execution` must be `"client"`). The gateway rewrites it to a local function
-`__codex_client_tool_search` and returns the call to the client. The client must
-search its own tool list and send `tool_search_output`.
+### 4. Strict JSON Schema — forwarded, not live-proven
 
-OpenAI hosted `tool_search` (server-side deferred discovery, execution other than
-`"client"`) is rejected: `tool_search.execution must be "client"`.
-
-This is not the hosted tool the client described.
-
-### 4. Strict JSON Schema (`strict: true`)
-
-The client needs Responses structured outputs with `strict` JSON Schema.
-
-On the Codex plane `strict: true` is silently degraded to `strict: false`. Extra
-tool fields including `additionalProperties` flags are ignored. Upstream
-`text.format` for `json_schema` is always sent with `"strict": false`.
-
-The request succeeds. Schema is not enforced as OpenAI Structured Outputs strict
-mode.
-
-Code: `parse_top_level_function`, `parse_additional_function`,
-`upstream_tool` in `crates/forward/src/codex/{api,runner}.rs`;
-test `strict_function_tools_are_silently_downgraded`.
+`strict: true` is no longer rewritten to false. Whether the ChatGPT backend
+actually constrains output is unproven. Extra `additionalProperties` flags on
+tools are still ignored.
 
 ### 5. Prompt cache 24-hour retention
 
 The client needs `prompt_cache_key` **and** 24-hour hold.
 
 We accept `prompt_cache_key` (echoed in the public response; upstream key is
-bounded to 64 bytes / hashed). We do **not** parse or honour:
+bounded to 64 bytes / hashed). Present non-null `prompt_cache_retention` and
+`prompt_cache_options` now fail closed with `400 documented_limitation` on that
+field: this plane cannot honour 24-hour KV retention, and a silent 200 would
+claim it did. Null/omitted values stay accepted.
 
-- `prompt_cache_retention: "24h"` (OpenAI older control; ignored as an unknown
-  top-level field on native Codex Responses)
-- `prompt_cache_options.ttl` (OpenAI GPT-5.6+ minimum lifetime; absent)
-
-Cache lifetime is whatever the ChatGPT Codex backend keeps (typical OpenAI
-in-memory window is minutes, not a guaranteed 24h). We cannot promise or meter a
-24h retention policy.
+Cache lifetime is still whatever the ChatGPT Codex backend keeps (typical OpenAI
+in-memory window is minutes, not a guaranteed 24h). A 400 is honest. It is not a
+24h hold.
 
 Covered parts of the same ask (not gaps): `usage.input_tokens_details.cached_tokens`
 is copied from authoritative upstream usage; cached input is billed at the official
@@ -117,18 +116,16 @@ the full OpenAI Images/Responses image tool. Image models sent to
 
 ## Silent-success traps (worse than a 400)
 
-These requests look successful and do not do what OpenAI does:
-
-| Client sends | What happens here |
+| Client sends | After RN fixes |
 |---|---|
-| `tools: [{type:"web_search"}]` | Descriptor dropped; no search |
-| `tools: [{type:"code_interpreter"}]` | Descriptor dropped; no Python |
-| `tools[].strict: true` or `text.format.strict: true` | Forced `strict: false` |
-| `prompt_cache_retention: "24h"` | Ignored; no 24h hold |
-| `parallel_tool_calls: false` | Ignored; transport always runs parallel |
-| `tool_choice: "required"` / named tool | Degraded to `"auto"` |
-
-`tool_search` without `execution: "client"` is the exception: it 400s.
+| `tools: [{type:"web_search"}]` (API shape) | `400 documented_limitation` |
+| Codex CLI `web_search` (`external_web_access` / `search_content_types`) | Still dropped, not forwarded (CLI compat) |
+| `tools: [{type:"code_interpreter"}]` (and file_search/computer/mcp/image_generation) | `400 documented_limitation` |
+| `tools[].strict: true` or `text.format.strict: true` | Forwarded upstream |
+| `prompt_cache_retention: "24h"` / `prompt_cache_options` | `400 documented_limitation` |
+| `parallel_tool_calls: false` | Still ignored; transport always runs parallel |
+| `tool_choice: "required"` / named tool | Still degraded to `"auto"` |
+| Hosted `tool_search` | Forwarded as `type:tool_search` |
 
 ## Architectural cause
 
@@ -149,16 +146,17 @@ authoritative usage, tariff, and a watchdog-GREEN SHA. A mock 200 is not enough.
 
 ### A. Closeable on the current Codex ChatGPT OAuth plane
 
-These fail today because the gateway drops or degrades them, not because the
-public router lacks a path.
+Parser/wire rows below that the RN closed are marked **implemented**. Remaining
+rows still need a live probe, a tariff, or more product work. A mock 200 is not
+enough.
 
-| Gap | Why it is closeable | Blocker until live proof |
+| Gap | Status | Remaining blocker |
 |---|---|---|
-| Strict JSON Schema | Runner always sends `strict: false`. The Chat adapter already copies `strict: true` into the internal request. This is a compatibility degrade, not a missing route. | Probe the Codex `/responses` backend with `strict: true` on tools and `text.format`. If it constrains output, stop degrading. If it ignores the flag, we still cannot claim OpenAI Structured Outputs. If it 400s, this row moves to bucket C. |
-| Hosted `web_search` | Gateway comments state the provider executes search and bills per call. We drop the descriptor so stock Codex CLI (which always sends `web_search`) does not start an unmetered hosted call. Codex settlement currently hardcodes `web_search_requests: 0`. | Forward on an explicit API request, capture search usage from the stream, add a Codex search tariff. Keep dropping the stock Codex CLI cached descriptor, or every CLI turn starts a paid search. Unproven until a production home actually emits search events. |
-| Gateway-hosted `tool_search` over the request's own tools | The deferred tool list is already in the body. The gateway can search that list and return `tool_search_output` without OpenAI's registry. | This is **not** OpenAI's hosted catalog/MCP search. It is hosted from the client's point of view only if we execute it. |
-| Responses `image_generation` tool wrapping `/v1/images/*` | Image generation already exists as a separate route. An adapter can run it as a Responses hosted tool. | Still the narrow GPT Image 2 contract (one `opaque/low/auto` PNG). Not mask inpainting. |
-| Fail-closed errors instead of silent drop | Product/parser change only. | Does not add capability. It only stops the demo trap of HTTP 200 with no tool. |
+| Strict JSON Schema | **Implemented** on this branch: `tools[].strict` and `text.format.strict` are forwarded, not rewritten to false. | Probe the Codex `/responses` backend with `strict: true`. If it constrains output, we can claim Structured Outputs. If it ignores the flag, we still cannot. If it 400s, this row moves to bucket C. |
+| Hosted `web_search` | **Partial.** API `web_search` is `400 documented_limitation`. Codex CLI stock descriptor is still dropped, never forwarded. Settlement still hardcodes `web_search_requests: 0`. | Forward on an explicit API request, capture search usage, add a Codex search tariff. Keep dropping the stock Codex CLI cached descriptor, or every CLI turn starts a paid search. |
+| Hosted `tool_search` | **Implemented** on this branch for the descriptor: omitted/`server`/`hosted` is forwarded as `type:tool_search`. Client `execution:"client"` still rewrites. The gateway does not search the tool list itself. | Live proof that ChatGPT executes the hosted form. Gateway-side search over the request's own tools is a different product and is **not** OpenAI catalog/MCP search. |
+| Responses `image_generation` tool wrapping `/v1/images/*` | Type now fails closed and names the image routes. No Responses hosted-tool adapter. | Still the narrow GPT Image 2 contract (one `opaque/low/auto` PNG). Not mask inpainting. |
+| Fail-closed errors instead of silent drop | **Implemented** on this branch for known unexecutable hosted types and 24h cache fields. Unknown future types stay dropped. | Does not add capability. |
 
 Affinity already pins a conversation to one home via `prompt_cache_key`. That
 raises short-cache hit rate. It is not 24-hour OpenAI KV retention.

@@ -307,10 +307,11 @@ review; structured output requires an exact reviewed format. Missing, malformed,
 parser accepts an unreviewed type, but the whole class bitset becomes `None` rather than a misleading
 partial set. Unknown tool kinds are never promoted to `other_reviewed`. Current reviewed uses of that
 bit are Gemini `urlContext` and an explicit Codex `tool_search` client descriptor; its later synthetic
-dynamic function name is discarded and is not counted as a second client declaration. Codex
-`web_search` records the accepted client intent even though admission drops that hosted descriptor,
-and a namespace contributes only its reviewed function/custom child classes while remaining one
-top-level count. Native Responses selects a single validated `input.additional_tools.tools` list when
+dynamic function name is discarded and is not counted as a second client declaration. Codex CLI
+stock `web_search` (`external_web_access` / `search_content_types`) records the accepted client
+intent even though admission drops that hosted descriptor; other `web_search` shapes and known
+unexecutable hosted types fail closed before admission. A namespace contributes only its reviewed
+function/custom child classes while remaining one top-level count. Native Responses selects a single validated `input.additional_tools.tools` list when
 present (including beside an explicit empty top-level list); it is classified once and the later
 synthetic dynamic functions are never counted. The classifier stores no content, names, schemas, arguments, results, MCP labels,
 raw JSON, headers, metadata or other arbitrary strings; its fields are private, `Debug` is redacted and it has no
@@ -875,11 +876,25 @@ the slot has a single owner. The breaker is fed at most once per request (anti-D
    Lark custom, `namespace` and `tool_search` forms through one bounded parser; a namespace groups
    function AND custom children (Codex CLI 0.147 moved its Lark `exec` inside the `functions`
    namespace) and is rebuilt into the upstream body as a group — dropping it would leave the model
-   with no callable tool at all. A custom/tool-search call is executed by the
-   client, the gateway returns the raw call item and never executes it. Hosted `web_search` never
-   becomes a free client tool: in a tool list it is accepted as an undeliverable declaration and
-   dropped (Codex ships mode `cached` by default, so rejecting it made stock configs unusable),
-   inside a namespace it still fails closed. It is never forwarded upstream in either case.
+   with no callable tool at all. Function-tool `strict` stays on the dynamic tool JSON (default
+   false) and `upstream_tool` copies it into `tools[].strict`; `text.format.strict` on json_schema
+   is stored on the parsed request and sent as `text.format.strict`, not hardcoded false. A custom
+   call, and a client-executed `tool_search` call (`execution:"client"`, rewritten to
+   `__codex_client_tool_search`), is executed by the client; the gateway returns the raw call item
+   and never executes it. Hosted `tool_search` (`execution` omitted, `server`, or `hosted`) stays
+   `type:tool_search` in the upstream body so the Codex backend can run it; the gateway does not
+   search tools itself. Hosted `web_search` never becomes a free client tool: the Codex CLI stock
+   descriptor (`external_web_access` / `search_content_types`, mode `cached`) is accepted and
+   dropped so stock configs stay usable; any other `web_search` shape is an API hosted-search
+   request and fails closed with `400 documented_limitation` because it cannot be metered. Known
+   hosted types this plane cannot execute (`code_interpreter`, `file_search`, `computer`,
+   `computer_use`, `computer_use_preview`, `image_generation`, `mcp`) fail closed the same way at
+   top level (`image_generation` names `POST /v1/images/generations` and `POST /v1/images/edits`).
+   Unknown future types stay dropped so the next Codex CLI release does not brick. Inside a
+   namespace, `web_search` and every non-function/custom child still fail closed. None of these
+   hosted types except hosted `tool_search` is forwarded. Present non-null
+   `prompt_cache_retention` / `prompt_cache_options` are `400 documented_limitation` on that
+   field (24h KV retention cannot be honoured on ChatGPT OAuth); `prompt_cache_key` stays accepted.
 4. **Provider windows — from `/wham/usage` and live headers/SSE `codex.rate_limits`.**
    A snapshot is accepted only with real duration+reset; a stale one never rejects and never wins a
    tie-break; one that never arrived equals a fresh one. The `/wham/usage` schema and header names

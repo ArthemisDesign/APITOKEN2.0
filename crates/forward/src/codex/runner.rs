@@ -103,7 +103,8 @@ pub(crate) struct CodexTurnRequest {
     pub injected_items: Vec<Value>,
     /// New user input parts: `{"type": "text", "text"}` and `{"type": "image", "url"}`.
     pub turn_input: Vec<Value>,
-    /// Canonical dynamic-tool specs (`function` with `inputSchema`, `custom` with Lark grammar).
+    /// Canonical dynamic-tool specs (`function` with `inputSchema`, `custom` with Lark grammar,
+    /// hosted `tool_search`, namespaces).
     pub dynamic_tools: Vec<Value>,
     /// The client-requested Responses parallel-tools control. The native adapter preserves it.
     pub parallel_tool_calls: bool,
@@ -114,6 +115,8 @@ pub(crate) struct CodexTurnRequest {
     /// Reviewed Responses reasoning context. Unknown future values remain absent.
     pub reasoning_context: Option<String>,
     pub output_schema: Option<Value>,
+    /// Client `text.format.strict` for `json_schema`. Default false when the client omitted it.
+    pub json_schema_strict: bool,
     pub verbosity: Option<String>,
     /// Present only after PostgreSQL admitted a request fact; shared by every actual submission.
     pub attempts: Option<CodexAttemptObserver>,
@@ -185,9 +188,11 @@ pub(crate) fn bounded_cache_key(key: &str) -> String {
 /// Translate one parsed dynamic tool back into the public Responses descriptor the backend takes.
 ///
 /// Function tools carry the internal app-server spelling (`inputSchema`) and are rebuilt; custom
-/// (Lark grammar) tools already hold the public shape. A namespace is rebuilt recursively — the
-/// official client puts client-executed function AND custom tools inside it (Codex CLI 0.147 moved
-/// `exec` there), and dropping the group would leave the model with no tools at all.
+/// (Lark grammar) tools already hold the public shape. Hosted `tool_search` is cloned as-is so the
+/// Codex backend can execute it; this gateway does not run a search loop. A namespace is rebuilt
+/// recursively — the official client puts client-executed function AND custom tools inside it
+/// (Codex CLI 0.147 moved `exec` there), and dropping the group would leave the model with no
+/// tools at all.
 fn upstream_tool(tool: &Value) -> Option<Value> {
     match tool.get("type").and_then(Value::as_str) {
         Some("function") => Some(json!({
@@ -195,9 +200,10 @@ fn upstream_tool(tool: &Value) -> Option<Value> {
             "name": tool.get("name").cloned().unwrap_or(Value::Null),
             "description": tool.get("description").cloned().unwrap_or(Value::Null),
             "parameters": tool.get("inputSchema").cloned().unwrap_or(json!({"type": "object"})),
-            "strict": false,
+            "strict": tool.get("strict").and_then(Value::as_bool).unwrap_or(false),
         })),
         Some("custom") => Some(tool.clone()),
+        Some("tool_search") => Some(tool.clone()),
         Some("namespace") => Some(json!({
             "type": "namespace",
             "name": tool.get("name").cloned().unwrap_or(Value::Null),
@@ -291,7 +297,7 @@ pub(crate) fn build_responses_body(request: &CodexTurnRequest) -> Value {
         text["format"] = if schema == &json!({"type": "object", "additionalProperties": true}) {
             json!({"type": "json_object"})
         } else {
-            json!({"type": "json_schema", "name": "response_format", "schema": schema, "strict": false})
+            json!({"type": "json_schema", "name": "response_format", "schema": schema, "strict": request.json_schema_strict})
         };
     }
     if let Some(verbosity) = &request.verbosity {
@@ -947,6 +953,7 @@ mod tests {
             reasoning_summary: Some("auto".to_string()),
             reasoning_context: Some("all_turns".to_string()),
             output_schema: None,
+            json_schema_strict: false,
             verbosity: None,
             attempts: None,
         }
@@ -1046,6 +1053,25 @@ mod tests {
     }
 
     #[test]
+    fn hosted_tool_search_reaches_the_upstream_body() {
+        let mut request = turn_request(test_model());
+        request.dynamic_tools = vec![json!({
+            "type": "tool_search",
+            "description": "Search available tools",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"]
+            }
+        })];
+        let body = build_responses_body(&request);
+        assert_eq!(body["tools"][0]["type"], "tool_search");
+        assert_eq!(body["tools"][0]["description"], "Search available tools");
+        assert_eq!(body["tools"][0]["parameters"]["required"], json!(["query"]));
+        assert!(body["tools"][0].get("inputSchema").is_none());
+    }
+
+    #[test]
     fn body_replays_history_and_images_verbatim() {
         let mut request = turn_request(test_model());
         request.injected_items = vec![json!({"type": "message", "role": "user", "content": [
@@ -1089,6 +1115,20 @@ mod tests {
             body["text"]["format"]["schema"]["properties"]["a"]["type"],
             "string"
         );
+
+        request.json_schema_strict = true;
+        let body = build_responses_body(&request);
+        assert_eq!(body["text"]["format"]["type"], "json_schema");
+        assert_eq!(body["text"]["format"]["strict"], true);
+    }
+
+    #[test]
+    fn function_tool_strict_true_reaches_the_upstream_body() {
+        let mut request = turn_request(test_model());
+        request.dynamic_tools[0]["strict"] = json!(true);
+        let body = build_responses_body(&request);
+        assert_eq!(body["tools"][0]["name"], "get_weather");
+        assert_eq!(body["tools"][0]["strict"], true);
     }
 
     #[test]

@@ -22,9 +22,9 @@ Public contract (unchanged from the app-server era):
 Everything else on the OpenAI hostname returns an OpenAI-shaped `404`; nothing is ever forwarded
 to Anthropic from it. The unified router (`router.apitoken.sale`) proxies both image routes to this
 plane as a native OpenAI lane. The lenient SDK-compatibility rules (ignored sampling/store/unknown
-fields, degraded forced `tool_choice`/`strict`, client-side `stop`/`max_tokens` enforcement,
-reasoning summaries as `reasoning_content`, heartbeat SSE every 15 s, `x-ratelimit-*` headers on
-non-stream responses) are unchanged.
+fields, degraded forced `tool_choice`, forwarded function-tool and json_schema `strict`,
+client-side `stop`/`max_tokens` enforcement, reasoning summaries as `reasoning_content`,
+heartbeat SSE every 15 s, `x-ratelimit-*` headers on non-stream responses) are unchanged.
 
 Model resources carry a reviewed positive Unix-seconds `created` release date and an expand-only
 `apitoken` metadata object for unified discovery. Release dates come from the OpenAI changelog and
@@ -161,21 +161,33 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
 
 - **Wire.** One `POST {base}/responses` per turn: Responses body with explicit base
   instructions (`""` when the client supplied none), replayed history, new input and client
-  tools. Codex 0.146 emits function, Lark custom, `namespace` and client-executed `tool_search`
+  tools. Codex 0.146 emits function, Lark custom, `namespace` and `tool_search`
   definitions in top-level `tools` (or, for the gpt-5.6 family, in the legacy `additional_tools`
   item); 0.147 keeps the same vocabulary but groups the local tools — including the Lark `exec` —
   inside a `functions` namespace, so a namespace child may be function or custom. The public
   parser accepts the same bounded forms from both lists, translates them to one internal
-  dynamic-tool vocabulary and rebuilds namespaces as groups in the upstream body. Hosted
-  `web_search` is server-executed and billed per call, so it is never forwarded: Codex sends the
-  descriptor in every stock config (mode `cached`), so a tool list carrying it is accepted and the
-  entry dropped, while a `web_search` nested inside a namespace still fails closed. The model
-  simply gets no web search tool. Any other unknown tool type in either list is dropped the same
-  way: an undelivered descriptor can neither run nor bill, so failing the turn over it would only
-  break callers on the next client release that adds a type. Both lists reach the same verdict for
-  the same descriptor — unknown descriptor fields ignored, `strict` degraded rather than rejected,
-  identifiers bounded at 128 bytes of letters/digits/underscore/hyphen/dot — so a tool is never
-  accepted on one model family and rejected on another. The 1024-tool ceiling is a sanity bound on
+  dynamic-tool vocabulary and rebuilds namespaces as groups in the upstream body.
+  `tool_search` with `execution:"client"` is rewritten to the private function
+  `__codex_client_tool_search` for Codex CLI deferred discovery; hosted `tool_search`
+  (`execution` omitted, `server`, or `hosted`) stays `type:tool_search` and is forwarded
+  to the Codex backend. The gateway does not run a search loop and does not invent an MCP
+  registry. Hosted `web_search` is server-executed and billed per call, so it is never
+  forwarded. The Codex CLI stock descriptor (mode `cached`, fields `external_web_access` /
+  `search_content_types`) is accepted and dropped; any other `web_search` shape is an API
+  hosted-search request and fails closed with `400 documented_limitation` because this plane
+  cannot meter it. A `web_search` nested inside a namespace still fails closed. Known hosted
+  types this plane cannot execute (`code_interpreter`, `file_search`, `computer`,
+  `computer_use`, `computer_use_preview`, `image_generation`, `mcp`) fail closed the same way
+  at top level — not as a silent drop. `image_generation` names `POST /v1/images/generations`
+  and `POST /v1/images/edits`. Unknown future tool types in either list stay dropped: an
+  undelivered descriptor can neither run nor bill, so failing the turn over it would only
+  break callers on the next client release that adds a type. Both lists reach the same verdict
+  for the same descriptor — unknown descriptor fields ignored, function-tool `strict` kept and
+  forwarded (default false), identifiers bounded at 128 bytes of letters/digits/underscore/hyphen/dot
+  — so a tool is never accepted on one model family and rejected on another. `text.format.strict` on
+  json_schema is likewise forwarded, not rewritten to false. Present non-null
+  `prompt_cache_retention` / `prompt_cache_options` fail closed; `prompt_cache_key` stays
+  accepted. The 1024-tool ceiling is a sanity bound on
   a pathological body, not a model of the provider's own limit: the 256 MiB body cap bounds parsing
   work and the backend stays the authority. `crates/api-limits` records that public OpenAI text cap;
   Codex `@` pins 256 MiB with 8 MiB disk spill. Internal transport admits a 384 MiB JSONL/SSE
@@ -216,7 +228,9 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   covers every caller field the gateway discards: `safety_identifier` is pinned to null in the
   public response, and `prompt_cache_key` is normalized by `bounded_cache_key` (hashed when longer
   than the backend's 64 bytes or carrying control characters), so neither can fail a turn on its
-  shape. Headers carry the pinned client
+  shape. `prompt_cache_retention` and `prompt_cache_options` are not discarded: a present non-null
+  value is `400 documented_limitation` on that field, because 24-hour KV retention cannot be
+  honoured on ChatGPT OAuth. Headers carry the pinned client
   identity (`originator: codex_cli_rs`, UA and `version` pinned to `CODEX_CLI_VERSION`,
   `ChatGPT-Account-ID` from the envelope) plus stable opaque installation/session/thread/window
   metadata and a per-turn id. Root session and thread ids are equal, as in the official 0.146

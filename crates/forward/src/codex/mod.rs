@@ -2674,6 +2674,7 @@ mod calibration_integration_tests {
             reasoning_summary: None,
             reasoning_context: None,
             output_schema: None,
+            json_schema_strict: false,
             verbosity: None,
             attempts: None,
         }

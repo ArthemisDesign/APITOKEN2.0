@@ -2,6 +2,7 @@ use super::*;
 use crate::affinity::AffinityStore;
 use crate::billing::AsyncBilling;
 use crate::breaker::Breaker;
+use crate::codex::runner::build_responses_body;
 use crate::codex::{CodexConfig, CodexPrices};
 use crate::config::ProxyConfig;
 use crate::metrics::Metrics;
@@ -84,6 +85,7 @@ fn drop_unencrypted_reasoning_is_a_noop_without_reasoning_items() {
 fn all_public_errors() -> Vec<ApiError> {
     let mut errors = vec![
         ApiError::invalid("test", None::<String>),
+        ApiError::documented_limitation("test", None::<String>),
         ApiError::not_found("test", None::<String>),
         ApiError::unavailable(),
         ApiError::rate_limited(),
@@ -1889,6 +1891,7 @@ fn function_tools_translate_to_dynamic_tool_schema() {
         parsed.dynamic_tools[0]["inputSchema"]["required"],
         json!(["city"])
     );
+    assert_eq!(parsed.dynamic_tools[0]["strict"], false);
 }
 
 #[test]
@@ -1967,6 +1970,100 @@ fn codex_0146_top_level_tools_translate_current_client_forms() {
     assert_eq!(parsed.dynamic_tools[4]["name"], TOOL_SEARCH_DYNAMIC_NAME);
     assert_eq!(
         parsed.dynamic_tools[4]["inputSchema"]["required"],
+        json!(["query"])
+    );
+}
+
+#[test]
+fn hosted_tool_search_without_client_execution_stays_type_tool_search() {
+    for execution in [None, Some("server"), Some("hosted")] {
+        let mut tool = json!({
+            "type": "tool_search",
+            "description": "Search available tools",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"]
+            }
+        });
+        if let Some(value) = execution {
+            tool["execution"] = json!(value);
+        }
+        let parsed = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": "Find a calendar tool.",
+                "tools": [tool]
+            }),
+        )
+        .unwrap_or_else(|error| {
+            panic!("hosted tool_search execution={execution:?} must parse: {error:?}")
+        });
+        assert_eq!(parsed.dynamic_tools.len(), 1);
+        assert_eq!(parsed.dynamic_tools[0]["type"], "tool_search");
+        assert_eq!(
+            parsed.dynamic_tools[0]["description"],
+            "Search available tools"
+        );
+        assert_eq!(
+            parsed.dynamic_tools[0]["parameters"]["required"],
+            json!(["query"])
+        );
+        match execution {
+            None => assert!(parsed.dynamic_tools[0].get("execution").is_none()),
+            Some(value) => assert_eq!(parsed.dynamic_tools[0]["execution"], value),
+        }
+        assert_ne!(
+            parsed.dynamic_tools[0].get("name").and_then(Value::as_str),
+            Some(TOOL_SEARCH_DYNAMIC_NAME)
+        );
+    }
+
+    let additional = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": [{
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [{"type": "tool_search"}]
+            }, {
+                "role": "user",
+                "content": "Find a calendar tool."
+            }]
+        }),
+    )
+    .expect("hosted tool_search in additional_tools must parse");
+    assert_eq!(additional.dynamic_tools.len(), 1);
+    assert_eq!(additional.dynamic_tools[0]["type"], "tool_search");
+}
+
+#[test]
+fn client_tool_search_still_rewrites_to_private_function() {
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "Find a calendar tool.",
+            "tools": [{
+                "type": "tool_search",
+                "execution": "client",
+                "description": "Search available tools",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"]
+                }
+            }]
+        }),
+    )
+    .expect("client-executed tool_search must keep today's rewrite");
+    assert_eq!(parsed.dynamic_tools.len(), 1);
+    assert_eq!(parsed.dynamic_tools[0]["type"], "function");
+    assert_eq!(parsed.dynamic_tools[0]["name"], TOOL_SEARCH_DYNAMIC_NAME);
+    assert_eq!(
+        parsed.dynamic_tools[0]["inputSchema"]["required"],
         json!(["query"])
     );
 }
@@ -2194,11 +2291,18 @@ fn namespaced_hosted_tools_still_fail_closed() {
     assert_eq!(error.param.as_deref(), Some("tools.0.tools.0.type"));
 }
 
+fn assert_documented_limitation(error: &ApiError, param: &str) {
+    assert_eq!(error.status, StatusCode::BAD_REQUEST);
+    assert_eq!(error.kind, "invalid_request_error");
+    assert_eq!(error.code, Some("documented_limitation"));
+    assert_eq!(error.param.as_deref(), Some(param));
+}
+
 #[test]
 fn hosted_web_search_is_accepted_and_never_forwarded() {
-    // Codex CLI ships web search in mode `cached` by default, so the descriptor is present in
-    // every stock config. Rejecting the list made the models that carry it unusable; the tool is
-    // accepted as undeliverable and dropped, never proxied as an unmetered hosted call.
+    // Codex CLI stock shape only: `external_web_access` / `search_content_types`. That
+    // descriptor is present in every default config (mode `cached`). Rejecting it made those
+    // models unusable; accept the declaration, drop it, never forward an unmetered hosted call.
     let parsed = parse_responses_request(
         &gateway(),
         json!({
@@ -2285,8 +2389,8 @@ fn discarded_caller_identity_fields_never_fail_a_turn() {
 }
 
 /// The `additional_tools` list (the gpt-5.6 family's channel for client tools) must reach the same
-/// verdict as the top-level list for the same descriptor: unknown fields ignored, `strict` degraded
-/// rather than rejected, dotted MCP-style names accepted.
+/// verdict as the top-level list for the same descriptor: unknown fields ignored, dotted MCP-style
+/// names accepted, `strict` kept rather than stripped.
 #[test]
 fn additional_tools_match_top_level_tool_leniency() {
     let parsed = parse_responses_request(
@@ -2311,15 +2415,19 @@ fn additional_tools_match_top_level_tool_leniency() {
         }),
     )
     .unwrap();
-    assert!(parsed
+    let tool = parsed
         .dynamic_tools
         .iter()
-        .any(|tool| tool["name"] == "docs.search"));
+        .find(|tool| tool["name"] == "docs.search")
+        .expect("dotted MCP-style names must be accepted");
+    assert_eq!(tool["strict"], true);
+    assert!(tool.get("cache_control").is_none());
 }
 
-/// An unknown tool type is dropped like the hosted `web_search` descriptor instead of failing the
-/// turn: it is never forwarded, so it can neither run nor bill, and the tools we do understand
-/// still reach the model. Namespace children keep failing closed (asserted separately).
+/// An unknown future tool type is dropped instead of failing the turn: it is never forwarded,
+/// so it can neither run nor bill, and the tools we do understand still reach the model.
+/// Known hosted types that this plane cannot execute fail closed separately. Namespace
+/// children keep failing closed (asserted separately).
 #[test]
 fn unknown_top_level_tool_types_are_dropped_not_rejected() {
     let parsed = parse_responses_request(
@@ -2340,6 +2448,116 @@ fn unknown_top_level_tool_types_are_dropped_not_rejected() {
     .unwrap();
     assert_eq!(parsed.dynamic_tools.len(), 1);
     assert_eq!(parsed.dynamic_tools[0]["name"], "get_weather");
+}
+
+#[test]
+fn known_hosted_tools_are_documented_limitations() {
+    for kind in [
+        "code_interpreter",
+        "file_search",
+        "computer",
+        "computer_use",
+        "computer_use_preview",
+        "image_generation",
+        "mcp",
+    ] {
+        let error = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": "hi",
+                "tools": [{"type": kind}]
+            }),
+        )
+        .unwrap_err();
+        assert_documented_limitation(&error, "tools.0.type");
+        assert!(
+            error.message.contains(kind),
+            "documented_limitation for {kind} must name the type, got {:?}",
+            error.message
+        );
+        if kind == "image_generation" {
+            assert!(
+                error.message.contains("POST /v1/images/generations"),
+                "image_generation must name POST /v1/images/generations, got {:?}",
+                error.message
+            );
+            assert!(
+                error.message.contains("/v1/images/edits"),
+                "image_generation must name /v1/images/edits, got {:?}",
+                error.message
+            );
+        }
+    }
+}
+
+#[test]
+fn api_hosted_web_search_is_documented_limitation() {
+    let error = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "weather?",
+            "tools": [{"type": "web_search"}]
+        }),
+    )
+    .unwrap_err();
+    assert_documented_limitation(&error, "tools.0.type");
+    assert!(error.message.contains("web_search"));
+    assert!(error.message.contains("metered"));
+
+    let with_filters = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "weather?",
+            "tools": [{
+                "type": "web_search",
+                "filters": {"allowed_domains": ["example.com"]}
+            }]
+        }),
+    )
+    .unwrap_err();
+    assert_documented_limitation(&with_filters, "tools.0.type");
+}
+
+#[test]
+fn prompt_cache_retention_is_documented_limitation() {
+    let error = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "hi",
+            "prompt_cache_retention": "24h"
+        }),
+    )
+    .unwrap_err();
+    assert_documented_limitation(&error, "prompt_cache_retention");
+    assert!(error.message.contains("prompt_cache_retention"));
+
+    let options = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "hi",
+            "prompt_cache_options": {"retention": "24h"}
+        }),
+    )
+    .unwrap_err();
+    assert_documented_limitation(&options, "prompt_cache_options");
+
+    let ignored = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "hi",
+            "prompt_cache_retention": null,
+            "prompt_cache_options": null,
+            "prompt_cache_key": "session-123"
+        }),
+    )
+    .unwrap();
+    assert_eq!(ignored.prompt_cache_key.as_deref(), Some("session-123"));
 }
 
 /// A history item type the gateway has no translation for is forwarded verbatim instead of failing
@@ -2375,8 +2593,29 @@ fn unknown_input_item_types_pass_through_verbatim() {
     assert_eq!(untyped.param.as_deref(), Some("input.0.type"));
 }
 
+fn upstream_body_from_parsed(parsed: &ParsedResponsesRequest) -> Value {
+    crate::codex::runner::build_responses_body(&crate::codex::CodexTurnRequest {
+        model: parsed.public_model.clone(),
+        prompt_cache_key: None,
+        base_instructions: parsed.instructions.clone(),
+        developer_instructions: None,
+        injected_items: Vec::new(),
+        turn_input: parsed.input.turn_input.clone(),
+        dynamic_tools: parsed.dynamic_tools.clone(),
+        parallel_tool_calls: parsed.parallel_tool_calls,
+        service_tier: parsed.service_tier.clone(),
+        reasoning_effort: parsed.reasoning_effort.clone(),
+        reasoning_summary: parsed.reasoning_summary.clone(),
+        reasoning_context: parsed.reasoning_context.clone(),
+        output_schema: parsed.output_schema.clone(),
+        json_schema_strict: parsed.json_schema_strict,
+        verbosity: parsed.verbosity.clone(),
+        attempts: None,
+    })
+}
+
 #[test]
-fn strict_function_tools_are_silently_downgraded() {
+fn strict_function_tools_are_preserved_on_the_dynamic_tool_and_upstream_body() {
     let parsed = parse_responses_request(
         &gateway(),
         json!({
@@ -2390,10 +2629,41 @@ fn strict_function_tools_are_silently_downgraded() {
             }]
         }),
     )
-    .expect("strict=true must downgrade to a non-strict dynamic tool");
+    .expect("strict=true must be kept on the dynamic tool");
     assert_eq!(parsed.dynamic_tools.len(), 1);
     assert_eq!(parsed.dynamic_tools[0]["name"], "get_weather");
-    assert!(parsed.dynamic_tools[0].get("strict").is_none());
+    assert_eq!(parsed.dynamic_tools[0]["strict"], true);
+    let body = upstream_body_from_parsed(&parsed);
+    assert_eq!(body["tools"][0]["name"], "get_weather");
+    assert_eq!(body["tools"][0]["strict"], true);
+}
+
+#[test]
+fn json_schema_text_format_strict_true_is_forwarded_upstream() {
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "weather?",
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "answer",
+                    "strict": true,
+                    "schema": {"type": "object", "properties": {"city": {"type": "string"}}}
+                }
+            }
+        }),
+    )
+    .expect("text.format.strict=true must parse");
+    assert!(parsed.json_schema_strict);
+    let body = upstream_body_from_parsed(&parsed);
+    assert_eq!(body["text"]["format"]["type"], "json_schema");
+    assert_eq!(body["text"]["format"]["strict"], true);
+    assert_eq!(
+        body["text"]["format"]["schema"]["properties"]["city"]["type"],
+        "string"
+    );
 }
 
 #[test]
@@ -2635,6 +2905,39 @@ async fn codex_tool_search_history_roundtrips_through_pinned_client() {
     assert_eq!(
         prepared.full_history_prefix[1]["type"],
         "tool_search_output"
+    );
+}
+
+#[tokio::test]
+async fn hosted_tool_search_reaches_upstream_body_as_type_tool_search() {
+    let parsed = parse_responses_request(
+        &gateway(),
+        json!({
+            "model": "gpt-5.6",
+            "input": "Find a calendar tool.",
+            "tools": [{
+                "type": "tool_search",
+                "description": "Search available tools",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"]
+                }
+            }]
+        }),
+    )
+    .expect("hosted tool_search without execution:client must parse");
+    assert_eq!(parsed.dynamic_tools[0]["type"], "tool_search");
+
+    let prepared = prepare_turn(&gateway(), "tenant", parsed).await.unwrap();
+    let body = build_responses_body(&prepared.turn);
+    assert_eq!(body["tools"].as_array().map(Vec::len), Some(1));
+    assert_eq!(body["tools"][0]["type"], "tool_search");
+    assert_eq!(body["tools"][0]["description"], "Search available tools");
+    assert_eq!(body["tools"][0]["parameters"]["required"], json!(["query"]));
+    assert_ne!(
+        body["tools"][0].get("name").and_then(Value::as_str),
+        Some(TOOL_SEARCH_DYNAMIC_NAME)
     );
 }
 
