@@ -24,6 +24,22 @@ postgres_ready() {
   compose exec -T commerce-postgres pg_isready -U "$LOCAL_USER" -d commerce >/dev/null 2>&1
 }
 
+listening_postgres_container() {
+  docker ps --filter publish=5433 --format '{{.ID}}' | head -n1
+}
+
+tcp_postgres_ready() {
+  local container=$1
+  [[ -n $container ]] || return 1
+  docker exec -i "$container" pg_isready -U "$LOCAL_USER" -d commerce >/dev/null 2>&1
+}
+
+psql_on() {
+  local container=$1
+  shift
+  docker exec -i "$container" psql -U "$LOCAL_USER" "$@"
+}
+
 wait_for_postgres() {
   local _
   for _ in $(seq 1 30); do
@@ -34,30 +50,38 @@ wait_for_postgres() {
 }
 
 ensure_database() {
-  local name=$1 exists
+  local name=$1 container=$2 exists
   [[ $name == sales || $name == openkeys ]] \
     || die "refusing to create unexpected database: $name"
-  exists=$(compose exec -T commerce-postgres \
-    psql -U "$LOCAL_USER" -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='$name'") \
+  exists=$(psql_on "$container" -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname='$name'") \
     || die "could not inspect local compose Postgres"
   if [[ $exists == 1 ]]; then
     log "database $name already exists"
     return 0
   fi
   log "creating database $name"
-  compose exec -T commerce-postgres \
-    psql -U "$LOCAL_USER" -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $name" \
+  psql_on "$container" -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE $name" \
     >/dev/null
 }
 
 ensure() {
+  local container
   command -v docker >/dev/null || die "docker is required to create the local sales/openkeys databases"
   [[ -f $COMPOSE_FILE ]] || die "compose.yaml is missing"
-  log "starting compose.yaml commerce-postgres"
-  compose up -d commerce-postgres >/dev/null
-  wait_for_postgres
-  ensure_database sales
-  ensure_database openkeys
+  container=$(listening_postgres_container)
+  if tcp_postgres_ready "$container"; then
+    log "reusing the Postgres already listening on 127.0.0.1:5433"
+  else
+    log "starting compose.yaml commerce-postgres"
+    if ! compose up -d commerce-postgres >/dev/null; then
+      die "could not bind 127.0.0.1:5433; stop the other listener or reuse a healthy local commerce Postgres"
+    fi
+    wait_for_postgres
+    container=$(listening_postgres_container)
+    [[ -n $container ]] || die "compose.yaml commerce-postgres did not publish 127.0.0.1:5433"
+  fi
+  ensure_database sales "$container"
+  ensure_database openkeys "$container"
 }
 
 uses_local_compose_dsn() {

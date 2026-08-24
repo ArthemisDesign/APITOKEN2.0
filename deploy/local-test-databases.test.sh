@@ -41,5 +41,9 @@ grep -Fq 'CREATE DATABASE openkeys' "$ROOT/deploy/local-postgres-init.sql" \
   || fail 'fresh-volume init SQL no longer creates openkeys'
 grep -Fq 'deploy/local-postgres-init.sql' "$ROOT/compose.yaml" \
   || fail 'compose.yaml no longer mounts the extra-database init SQL'
+grep -Fq 'reusing the Postgres already listening on 127.0.0.1:5433' "$RUNNER" \
+  || fail 'ensure no longer reuses a healthy listener on 5433'
+grep -Fq 'docker exec -i' "$RUNNER" \
+  || fail 'ensure no longer talks to a published local Postgres without a TTY'
 
 printf 'local-test-databases.test: ok\n'
