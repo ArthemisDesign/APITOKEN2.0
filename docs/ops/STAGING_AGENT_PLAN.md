@@ -1910,14 +1910,25 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED in
 Next: correct the production control-key file path used by the root controller.
 
 ### 2026-08-24 — Phase 8 control-key path repair
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `897ff01957f5adc53c8a4386373002df5ad65785`   watchdog: GREEN
 Result: The live controller correctly runs as root but sourced the nonexistent commerce path
 `/etc/apitoken/server.env`. Use the documented engine path `/srv/claude-api/data/server.env`. The
 Control key remains root-only and never enters the stage key file, unit environment, logs, or response.
 Checks actually run: `bash deploy/staging-phase8.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after the first no-spend enable attempt.
-Next: stage, attest, promote, enable a cents-scale key, run one minimal probe, disable, and close Phase 8.
+Next: make the root-created probe output writable by the stage-netns curl process.
+
+### 2026-08-24 — Phase 8 probe output permission repair
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Enable issued one capped key successfully. The first probe dispatched nothing because
+`deploy-stage` could not open root's mode-0600 `mktemp` output file; curl exited 23. Revoke the key
+immediately. Make only the disposable response file mode 0644 before the unprivileged curl writes it.
+The file contains provider response data, not credentials, and the root trap removes it on exit.
+Checks actually run: `bash deploy/staging-phase8.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`git diff --check`; live key disable.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after a zero-dispatch probe error.
+Next: stage, attest, promote, issue a fresh cents-scale key, probe once, disable, and close Phase 8.
 
 ---
 
