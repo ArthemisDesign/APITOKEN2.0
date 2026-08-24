@@ -15,6 +15,8 @@ grep -Fq 'cap >= 100000 && cap <= 100000000' "$ROOT/deploy/stage-live-control.sh
 grep -Fq 'spend_limit_nano' "$ROOT/deploy/stage-live-control.sh"
 grep -Fq 'source /srv/claude-api/data/server.env' "$ROOT/deploy/stage-live-control.sh"
 grep -Fq 'expires_ts' "$ROOT/deploy/stage-live-control.sh"
+grep -Fq 'iptables -I INPUT 1 -i veth-stage-host -s 10.254.32.2 -d 10.254.32.1 -p tcp --dport 9081 -j ACCEPT' "$ROOT/deploy/stage-live-control.sh"
+grep -Fq 'iptables -D INPUT -i veth-stage-host -s 10.254.32.2 -d 10.254.32.1 -p tcp --dport 9081 -j ACCEPT' "$ROOT/deploy/stage-live-control.sh"
 grep -Fq 'probe already consumed' "$ROOT/deploy/stage-live-control.sh"
 grep -Fq 'body=$(mktemp -p /var/lib/apitoken-staging/watchdog); chown deploy-stage:deploy-stage "$body"; chmod 0600 "$body"' "$ROOT/deploy/stage-live-control.sh"
 grep -Fq "rm -f -- /etc/apitoken-staging/stage-live.enabled" "$ROOT/deploy/stage-live-control.sh"

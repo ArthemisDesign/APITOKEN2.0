@@ -31,6 +31,8 @@ case "${1:-}" in
     install -o root -g deploy-stage -m 0640 /dev/null /etc/apitoken-staging/stage-live.enabled
     jq -cn --arg account "$account" --arg key_id "$key_id" --arg cap "$cap" --arg actor "$actor" --argjson expires "$expires" '{account:$account,key_id:$key_id,cap_nanousd:$cap,actor:$actor,expires_ts:$expires}' >"$META"; chmod 0600 "$META"
     ip netns exec apitoken-stage nft add rule inet apitoken_stage output ip daddr 10.254.32.1 tcp dport 9081 accept 2>/dev/null || true
+    iptables -C INPUT -i veth-stage-host -s 10.254.32.2 -d 10.254.32.1 -p tcp --dport 9081 -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT 1 -i veth-stage-host -s 10.254.32.2 -d 10.254.32.1 -p tcp --dport 9081 -j ACCEPT
     systemctl start apitoken-stage-live-host-proxy.service apitoken-stage-live-client.service
     printf 'stage-live-control: enabled key_id=%s cap_nanousd=%s expires_ts=%s\n' "$key_id" "$cap" "$expires"
     ;;
@@ -54,6 +56,7 @@ case "${1:-}" in
       control_curl -X POST "http://127.0.0.1:8790/admin/key-id/$key_id/status" --data '{"status":"disabled"}' >/dev/null
     fi
     systemctl stop apitoken-stage-live-client.service apitoken-stage-live-host-proxy.service
+    iptables -D INPUT -i veth-stage-host -s 10.254.32.2 -d 10.254.32.1 -p tcp --dport 9081 -j ACCEPT 2>/dev/null || true
     rm -f -- /etc/apitoken-staging/stage-live.enabled /etc/apitoken-staging/stage-live.key "$KEY" "$META"
     printf 'stage-live-control: disabled actor=%s\n' "$2"
     ;;

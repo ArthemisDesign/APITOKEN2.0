@@ -1931,7 +1931,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after a zero
 Next: move the disposable probe body into the stage loopback root.
 
 ### 2026-08-24 — Phase 8 probe body root repair
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `91271bc168c90763cb5ffa0651418832a641e0d2`   watchdog: GREEN
 Result: The second key also dispatched nothing. Mode 0644 was insufficient because systemd `PrivateTmp`
 gives the stage client a different `/tmp` mount. Create the disposable file under
 `/var/lib/apitoken-staging/watchdog`, transfer ownership to `deploy-stage`, and keep mode 0600. The
@@ -1939,8 +1939,20 @@ root controller can read it after curl returns and removes it on exit. The key w
 Checks actually run: `bash deploy/staging-phase8.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `git diff --check`; live key disable.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after a second zero-dispatch probe error.
-Next: stage; use the owner's standing authorization to attest/promote if GREEN; issue a fresh key,
-probe once, disable, and close Phase 8.
+Next: open and close the exact host INPUT rule with the live lane.
+
+### 2026-08-24 — Phase 8 veth firewall repair
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: The third key reached the stage client, but its fixed host bridge timed out. The namespace
+output rule was present; host UFW still dropped new input from `veth-stage-host`. Enable one exact
+iptables rule for source `10.254.32.2`, destination `10.254.32.1`, TCP 9081 only. Disable removes the
+same rule after it stops both bridge services. The key was revoked immediately and no provider response
+was observed.
+Checks actually run: `bash deploy/staging-phase8.test.sh`; `bash deploy/staging-foundation.test.sh`;
+`git diff --check`; live listener/firewall diagnostics; live key disable.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; public UFW/DNS routes remain unchanged.
+Next: stage; use standing authorization to attest/promote if GREEN; issue a fresh key, probe once,
+disable, and close Phase 8.
 
 ---
 
