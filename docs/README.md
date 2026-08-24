@@ -128,6 +128,7 @@ document, update this index.
 - [2026-08-23-UNATTESTED-MASTER-QUARANTINE.md](audits/2026-08-23-UNATTESTED-MASTER-QUARANTINE.md) — Phase 7 unattested `master` SHA `66c7dd2f` quarantined in fetching; merge-client `deploy/stage` gate and admitting-phase diagnostic.
 - [2026-08-24-FINAL-VERIFICATION-STATUS.md](audits/2026-08-24-FINAL-VERIFICATION-STATUS.md) — SHA `6ef38441` engine GREEN then final-verification RED; GitHub headline kept the subshell wrapper; inner lane `wd_die` now wins.
 - [2026-08-24-MONITORING-VERIFY-CUTOVER.md](audits/2026-08-24-MONITORING-VERIFY-CUTOVER.md) — SHA `289993c3` named the monitoring lane; watchdog `min(up)` 60s query was stricter than `MonitoringTargetDown`.
+- [2026-08-24-MONITORING-UP-JOB-SET.md](audits/2026-08-24-MONITORING-UP-JOB-SET.md) — SHA `7ee29306` named exporter `up`; blackbox `*-http` scrape timeouts kept `min(up)` at 0 while `probe_success` stayed 1.
 
 ## Next to the code (do not move here)
 

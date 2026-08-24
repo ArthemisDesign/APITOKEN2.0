@@ -2106,16 +2106,17 @@ final_verify_monitoring() {
   done
   [[ $grafana_ready == 1 ]] || wd_die "Grafana is not healthy on its loopback listener"
   [[ $prometheus_ready == 1 ]] || wd_die "Prometheus is not ready on its loopback listener"
-  # Wait across the same 2-minute `for:` window as MonitoringTargetDown / PublicEndpointDown /
-  # BusinessCollectorStale. Engine blue-green plus a 60s collector timer can keep a scrape or
-  # collector sample stale for more than the previous 60s retry; 6ef38441 and 289993c3 both
-  # quarantined on this combined query after a GREEN engine admission. Exclude the same jobs as
-  # the alert: an unprovisioned devbot has no listener, and RouterMetricsDown owns 8802.
-  local up_ready=0 probe_ready=0 collector_ready=0
+  # Split three operands. Synthetic HTTP health is probe_success, not blackbox `up`: a scrape
+  # timeout sets up=0 while probe_success keeps the last 1, so min(up) over *-http jobs never
+  # converges during engine cutover (7ee29306). Staging veth is not a production serving
+  # dependency. Router and unprovisioned devbot stay excluded as in MonitoringTargetDown.
+  # Wait the same 2-minute `for:` window as those alerts.
+  local up_ready=0 probe_ready=0 collector_ready=0 down_jobs=''
+  local up_filter='job!~"claude-router|devbot|staging-veth|.*-http"'
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do
     if (( up_ready == 0 )); then
       response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
-        --data-urlencode 'query=min(up{job!~"claude-router|devbot"}) == 1' \
+        --data-urlencode "query=min(up{$up_filter}) == 1" \
         "$CONTOUR_ORIGINS_PROMETHEUS/api/v1/query" 2>/dev/null || true)
       if jq --exit-status '.status == "success" and (.data.result | length) > 0' \
         >/dev/null 2>&1 <<<"$response"; then
@@ -2146,8 +2147,14 @@ final_verify_monitoring() {
     fi
     sleep 5
   done
-  [[ $up_ready == 1 ]] \
-    || wd_die "Prometheus scrape targets are not all up (MonitoringTargetDown job set)"
+  if (( up_ready != 1 )); then
+    response=$(curl --noproxy '*' --fail --silent --show-error --max-time 5 --get \
+      --data-urlencode "query=up{$up_filter} == 0" \
+      "$CONTOUR_ORIGINS_PROMETHEUS/api/v1/query" 2>/dev/null || true)
+    down_jobs=$(jq -r '[.data.result[]?.metric.job // empty | select(test("^[a-z0-9-]{1,64}$"))] | unique | .[0:8] | join(",")' \
+      <<<"$response" 2>/dev/null || true)
+    wd_die "Prometheus scrape targets down: ${down_jobs:-unknown}"
+  fi
   [[ $probe_ready == 1 ]] || wd_die "HTTP synthetic probes are not all succeeding"
   [[ $collector_ready == 1 ]] || wd_die "business collector last success is older than 180s"
 }

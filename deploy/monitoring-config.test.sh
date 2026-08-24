@@ -28,14 +28,17 @@ grep -Fq -- '-f /usr/local/lib/apitoken-watchdog/controller/commerce-postgres.co
 
 # Collector freshness stays aggregated with min() so an empty label set cannot fail vector
 # matching. The three operands are queried separately so a RED GitHub headline names the
-# failing piece. The job filter matches MonitoringTargetDown; the 24x5s window matches
-# that alert's 2m `for:` (6ef38441 and 289993c3 both quarantined after GREEN engine admission).
-grep -Fq 'query=min(up{job!~"claude-router|devbot"}) == 1' "$ROOT/deploy/watchdog.sh"
+# failing piece. Exporter `up` excludes blackbox *-http jobs and staging-veth: a scrape
+# timeout sets up=0 while probe_success stays 1 (7ee29306). 24x5s matches the alert `for:`.
+grep -Fq 'job!~"claude-router|devbot|staging-veth|.*-http"' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'query=up{$up_filter} == 0' "$ROOT/deploy/watchdog.sh"
+grep -Fq 'Prometheus scrape targets down:' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'query=min(probe_success{job=~"public-http|openai-http|gemini-http|protected-http|support-http|loopback-http"}) == 1' \
   "$ROOT/deploy/watchdog.sh"
 grep -Fq 'query=min(time() - apitoken_monitoring_collector_last_success_unixtime) < 180' \
   "$ROOT/deploy/watchdog.sh"
 ! grep -Fq 'min(up) == 1' "$ROOT/deploy/watchdog.sh"
+! grep -Fq 'min(up{job!~"claude-router|devbot"}) == 1' "$ROOT/deploy/watchdog.sh"
 grep -Fq 'for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do' \
   "$ROOT/deploy/watchdog.sh"
 ! grep -Fq 'and (time() - apitoken_monitoring_collector_last_success_unixtime < 180)' \

@@ -3650,13 +3650,14 @@ for scoped_verifier in final_verify_admin_routing final_verify_monitoring \
   grep -Fq "$scoped_verifier" "$ROOT/deploy/watchdog.sh" \
     || wd_die "final verification lost scoped check $scoped_verifier"
 done
-grep -Fq 'min(up{job!~"claude-router|devbot"})' "$ROOT/deploy/watchdog.sh" \
-  || wd_die "final monitoring verify must use the MonitoringTargetDown job filter"
+grep -Fq 'job!~"claude-router|devbot|staging-veth|.*-http"' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "final monitoring verify must exclude probe jobs and staging from exporter up"
+grep -Fq 'query=up{$up_filter} == 0' "$ROOT/deploy/watchdog.sh" \
+  || wd_die "final monitoring verify must list the down jobs on failure"
 grep -Fq 'for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do' \
   "$ROOT/deploy/watchdog.sh" \
   || wd_die "final monitoring verify must wait the 2-minute alert window, not 60s"
-grep -Fq 'Prometheus scrape targets are not all up (MonitoringTargetDown job set)' \
-  "$ROOT/deploy/watchdog.sh" \
+grep -Fq 'Prometheus scrape targets down:' "$ROOT/deploy/watchdog.sh" \
   || wd_die "final monitoring verify must name a scrape-target failure"
 grep -Fq 'HTTP synthetic probes are not all succeeding' "$ROOT/deploy/watchdog.sh" \
   || wd_die "final monitoring verify must name a synthetic-probe failure"

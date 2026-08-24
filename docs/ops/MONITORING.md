@@ -182,12 +182,13 @@ Open Prometheus Targets and inspect the scrape error. Confirm the exporter conta
 the listener is loopback-only, and its dependency is healthy. Do not expose exporter ports to fix
 a networking error.
 
-Post-admission `final_verify_monitoring` uses the same job filter
-(`up{job!~"claude-router|devbot"}`) and waits the same 2-minute `for:` window. It does not use
-bare `min(up) == 1`: an unprovisioned devbot has no listener, `RouterMetricsDown` owns 8802,
-and engine blue-green can keep a scrape or collector sample stale for more than 60s. SHA
-`6ef38441` and `289993c3` both quarantined on the old combined 60s query after GREEN engine
-admission.
+Post-admission `final_verify_monitoring` waits the same 2-minute `for:` window and splits three
+operands: exporter `up`, HTTP `probe_success`, and collector freshness. Exporter `up` excludes
+`claude-router`, `devbot`, `staging-veth`, and blackbox `*-http` jobs. Probe jobs already have
+`probe_success`; a scrape timeout sets their `up` to 0 while `probe_success` keeps the last 1, so
+`min(up)` over those jobs never converges during engine cutover (SHA `7ee29306`). Staging sinks
+are not a production serving dependency. A failed `up` check lists the down `job` names in the
+140-character GitHub headline.
 
 ## PublicEndpointDown
 
