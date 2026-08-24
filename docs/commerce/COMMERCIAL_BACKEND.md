@@ -172,9 +172,9 @@ so a repeat submit refreshes the pending row. An administrator decides it in
 `POST /admin/referral/applications/{id}/decision`: approving runs the same partner onboarding as
 `POST /admin/referral/partners` and the decision is written only after that succeeds, so a failed
 Sales call leaves the application pending rather than marking an account approved without access.
-After a successful submit or decision, Commerce fail-open POSTs a loopback webhook to Devbot
-when `DEVBOT_PARTNER_WEBHOOK_URL` is set (`docs/ops/DEVBOT.md`); a notify failure does not
-fail the HTTP request and the payload has no `userId`.
+After a successful applicant submit, Commerce fail-open POSTs a loopback webhook to Devbot
+when `DEVBOT_PARTNER_WEBHOOK_URL` is set (`docs/ops/DEVBOT.md`). An administrator decision does
+not notify. A notify failure does not fail the HTTP request and the payload has no `userId`.
 
 A Team invitation is likewise explicit: `GET /referral/invitation` returns the pending terms without
 consuming them, `POST /referral/invitation/accept` is the only path that creates the membership, and

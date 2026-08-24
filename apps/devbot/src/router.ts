@@ -446,7 +446,7 @@ export class Router {
 
   formatPartner(event: PartnerApplicationEvent): string {
     const status = event.status === "approved" ? "approved" : event.status === "rejected" ? "rejected" : "pending";
-    const lines = [`🤝 <b>Partner application</b> · ${escapeHtml(status)}`];
+    const lines = [`🤝 <b>New partner access request</b> · ${escapeHtml(status)}`];
     lines.push(`👤 <b>${escapeHtml(event.email)}</b>`);
     if (event.reviewerActor) lines.push(`👷 ${escapeHtml(event.reviewerActor)}`);
     const body = truncatePartnerMessage(event.message).trim();

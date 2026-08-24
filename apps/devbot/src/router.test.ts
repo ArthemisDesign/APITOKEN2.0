@@ -364,20 +364,19 @@ describe("Router partner applications", () => {
     await router.handlePartner(partnerEvent());
     expect(sent).toHaveLength(1);
     expect(sent[0]?.options.threadId).toBe(TOPICS.partners);
-    expect(sent[0]?.text).toContain("🤝 <b>Partner application</b> · pending");
+    expect(sent[0]?.text).toContain("🤝 <b>New partner access request</b> · pending");
     expect(sent[0]?.text).toContain("partner@example.com");
     expect(sent[0]?.text).toContain("I run an agency.");
     expect(sent[0]?.text).toContain("https://admin.apitoken.sale/partners/applications");
   });
 
-  it("edits the same Telegram message when the application is decided", async () => {
+  it("edits the same Telegram message when the applicant refreshes the request", async () => {
     const { router, sent, edited } = await makeRouter();
     await router.handlePartner(partnerEvent());
-    await router.handlePartner(partnerEvent({ event: "decided", status: "approved", reviewerActor: "ops" }));
+    await router.handlePartner(partnerEvent({ event: "updated", message: "Updated pitch." }));
     expect(sent).toHaveLength(1);
     expect(edited).toHaveLength(1);
-    expect(edited[0]?.text).toContain("approved");
-    expect(edited[0]?.text).toContain("ops");
+    expect(edited[0]?.text).toContain("Updated pitch.");
   });
 
   it("skips sending when the Partners topic is not provisioned", async () => {

@@ -85,7 +85,6 @@ export class ReferralApplicationService {
       reviewerNote: input.note,
     });
     if (!decided) throw new UnprocessableEntityException("application already decided");
-    this.devbot.notify({ event: "decided", ...webhookFields(decided) });
     return { application: decided };
   }
 }

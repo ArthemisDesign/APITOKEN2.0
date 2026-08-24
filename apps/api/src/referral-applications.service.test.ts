@@ -55,14 +55,7 @@ describe("Partner access applications", () => {
       actor: "ops",
     });
     expect(result.application.status).toBe("approved");
-    expect(notify).toHaveBeenCalledWith(expect.objectContaining({
-      event: "decided",
-      id: APPLICATION.id,
-      email: APPLICATION.email,
-      status: "approved",
-      reviewerActor: "ops",
-    }));
-    expect(notify.mock.calls[0]?.[0]).not.toHaveProperty("userId");
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it("notifies Devbot after a first submission", async () => {
@@ -103,12 +96,13 @@ describe("Partner access applications", () => {
   it("records a rejection without touching partner onboarding", async () => {
     db.findReferralApplication.mockResolvedValue(APPLICATION);
     db.decideReferralApplication.mockResolvedValue({ ...APPLICATION, status: "rejected", reviewerActor: "ops", reviewerNote: "No traffic yet." });
-    const { service: subject, onboard } = service();
+    const { service: subject, onboard, notify } = service();
 
     const result = await subject.decide({ id: APPLICATION.id, action: "reject", note: "No traffic yet.", actor: "ops" });
 
     expect(onboard).not.toHaveBeenCalled();
     expect(result.application.status).toBe("rejected");
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it("refuses a second decision on an application that is already decided", async () => {

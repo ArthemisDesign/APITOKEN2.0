@@ -43,7 +43,7 @@ Four transports deliver events to the bot:
 | **GitHub API poller** | `deploy/*` commit statuses and `production-*` Deployments | the same contract as `deploy/agent-merge.sh` (`am_status`) and `deploy/watchdog-github.sh`; 30–60 s interval |
 | **Journald tail** (stage 3) | manual interventions and rollbacks not reflected in GitHub | the `[watchdog]`, `[agent-merge]`, `[admin-deploy]`, `[sales-deploy]`, `[openkeys-deploy]` prefixes; read via `journalctl -f` |
 | **Chatwoot webhook** | Incoming client messages (`message_created`, `message_type=incoming`) | Chatwoot account webhook → `POST https://support.apitoken.sale/hooks/devbot/{DEVBOT_CHATWOOT_SECRET}` (Caddy → `127.0.0.1:3800`); loopback path is the same |
-| **Partner-application webhook** | Commerce partner-access applications (`submitted` / `updated` / `decided`) | `apps/api` POSTs to `http://127.0.0.1:3800/hooks/partners/{DEVBOT_PARTNER_SECRET}` when `DEVBOT_PARTNER_WEBHOOK_URL` is set; no Caddy — both processes share the host |
+| **Partner-application webhook** | Commerce partner-access applications (`submitted` / `updated`; inbound only) | `apps/api` POSTs to `http://127.0.0.1:3800/hooks/partners/{DEVBOT_PARTNER_SECRET}` when `DEVBOT_PARTNER_WEBHOOK_URL` is set; no Caddy — both processes share the host |
 
 ### 2.1 Deploy pipeline (host-watchdog)
 
@@ -255,7 +255,7 @@ Posted to 🤝 Partners. HTML-escaped, applicant text truncated to 1500 characte
 to the Admin review queue. The payload has no `userId`.
 
 ```
-🤝 <b>Partner application</b> · pending
+🤝 <b>New partner access request</b> · pending
 👤 <b>partner@example.com</b>
 
 I run an agency with three AI products.
@@ -264,7 +264,8 @@ I run an agency with three AI products.
 ```
 
 Dedup key: `partner:{id}` in the fingerprint store (48 h TTL). The first delivery posts; a
-later `updated` or `decided` event for the same id edits that message. Intake turns on only
+later `updated` event for the same id edits that message. Commerce notifies on applicant
+submit only, not on an administrator decision. Intake turns on only
 when both `DEVBOT_PARTNER_SECRET` and `DEVBOT_TOPIC_PARTNERS` are set. Commerce POSTs only
 when `DEVBOT_PARTNER_WEBHOOK_URL` is a loopback HTTP URL; a failed POST is logged with the
 application id and does not fail the applicant or admin request.
@@ -358,11 +359,11 @@ Event flows:
    and posts one HTML message into 💬 Support. When `DEVBOT_CHATWOOT_HMAC_SECRET` is set,
    `X-Chatwoot-Signature` / `X-Chatwoot-Timestamp` are required (`sha256=` HMAC of
    `{timestamp}.{raw_body}`, 5-minute replay window).
-5. **Partner-application webhook**: Commerce POSTs `submitted` / `updated` / `decided` to
-   `http://127.0.0.1:3800/hooks/partners/{DEVBOT_PARTNER_SECRET}` after a successful submit or
-   decision. The bot posts one HTML message into 🤝 Partners, then edits it for later events
-   of the same application id. No Caddy: both processes bind loopback on the same host. A failed
-   POST does not fail the Commerce request.
+5. **Partner-application webhook**: Commerce POSTs `submitted` / `updated` to
+   `http://127.0.0.1:3800/hooks/partners/{DEVBOT_PARTNER_SECRET}` after a successful applicant
+   submit, not after an administrator decision. The bot posts one HTML message into 🤝 Partners,
+   then edits it if the same application id is submitted again. No Caddy: both processes bind
+   loopback on the same host. A failed POST does not fail the Commerce request.
 6. **Commands**: long polling → allowlist → handler → loopback probes and APIs.
 
 State: a single JSON file (the last processed SHA and its phase message, a fingerprint store
