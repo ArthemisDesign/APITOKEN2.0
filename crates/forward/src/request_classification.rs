@@ -538,10 +538,8 @@ fn openai_responses_tool_classes(tool: &Value) -> Option<Vec<ToolClass>> {
     match tool.get("type").and_then(Value::as_str) {
         Some("function") => Some(vec![ToolClass::CustomFunction]),
         Some("custom") => Some(vec![ToolClass::CustomTool]),
-        // The native parser accepts the Codex CLI stock web_search descriptor
-        // (`external_web_access` / `search_content_types`) and then drops it. This records
-        // validated client intent, not the provider behavior after degradation. Other
-        // web_search shapes fail closed as documented_limitation before admission.
+        // Hosted web_search is forwarded to the Codex backend. This records the declared
+        // client intent; settlement later counts completed web_search_call items.
         Some("web_search") => Some(vec![ToolClass::WebSearch]),
         // Explicit `tool_search` declaration. Client-executed form (`execution:"client"`) is
         // later rewritten to `__codex_client_tool_search`; hosted form (omitted/`server`/`hosted`)

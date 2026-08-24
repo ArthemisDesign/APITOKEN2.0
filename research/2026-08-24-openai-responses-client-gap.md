@@ -16,16 +16,11 @@ Whisper, and mask inpainting do not exist on that wire.
 Closed slices (parser/wire only; no live ChatGPT probe of search or constrained
 decoding):
 
-- **fail-closed-hosted-tools.** `400 documented_limitation` for hosted
-  `code_interpreter`, `file_search`, `computer`, `computer_use`,
-  `computer_use_preview`, `image_generation` (message names
-  `/v1/images/generations` and `/v1/images/edits`), `mcp`, and non-CLI
-  `web_search`. Codex CLI stock `web_search` (`external_web_access` /
-  `search_content_types`) is still accepted and dropped, never forwarded.
-  Unknown future tool types are still dropped. Namespace children stay
-  function/custom only. Present non-null `prompt_cache_retention` /
-  `prompt_cache_options` fail closed; `prompt_cache_key` stays accepted.
-  `parallel_tool_calls=false` is still accepted.
+- **hosted execution.** `web_search`, `code_interpreter`, and `image_generation`
+  are forwarded to ChatGPT Codex `/responses`. `web_search_call` items settle at
+  `$0.01` per call. `file_search` / `computer*` / `mcp` stay
+  `400 documented_limitation`. `prompt_cache_retention` / `prompt_cache_options`
+  stay 400. `prompt_cache_key` stays accepted.
 - **strict-json-schema.** Function-tool `strict` and `text.format.strict` are
   kept on the parsed request and sent upstream. They are not rewritten to false.
   Chat still copies `strict`. Extra `additionalProperties` flags on tools stay
@@ -41,16 +36,15 @@ API-key plane.
 
 ## Remaining gaps
 
-### 1. Hosted `web_search` execution (partial)
+### 1. Hosted `web_search` — forwarded and billed; live ChatGPT proof pending
 
-API `tools: [{ "type": "web_search" }]` now gets `400 documented_limitation`
-instead of a silent 200. Codex CLI stock search is still dropped. The model
-still does not run search. Metered forwarding needs a live probe and a tariff.
+The gateway now forwards `web_search` and bills `web_search_call` at $0.01.
+Live proof on a production subscription is the remaining gate.
 
-### 2. Hosted `code_interpreter` execution
+### 2. Hosted `code_interpreter` — forwarded; live ChatGPT proof pending
 
-The type now fails closed. There is still no container, file mount, or Python
-execution. `include: ["code_interpreter_call.outputs"]` is still ignored.
+The descriptor is forwarded. The gateway does not run a local Python container.
+Whether ChatGPT Codex executes it is the remaining gate.
 
 ### 3. Hosted `tool_search` — forwarded, not gateway-executed
 

@@ -338,14 +338,11 @@ without executing them on the gateway. `tool_search` with `execution:"client"` i
 rewritten to `__codex_client_tool_search`; hosted `tool_search` (`execution` omitted,
 `server`, or `hosted`) is forwarded as `type:tool_search` and is not executed locally.
 Function-tool `strict` and json_schema `text.format.strict` are forwarded to the Codex
-upstream body; they are not rewritten to false. Hosted `web_search` is not a client tool
-and is never forwarded: the Codex CLI stock descriptor (`external_web_access` /
-`search_content_types`) is accepted and dropped, while any other `web_search` shape
-and the known hosted types this plane cannot execute (`code_interpreter`,
-`file_search`, `computer`, `computer_use`, `computer_use_preview`,
-`image_generation`, `mcp`) fail closed with `400 documented_limitation`
-(`image_generation` names `POST /v1/images/generations` and
-`POST /v1/images/edits`). A `web_search` nested inside a namespace still fails
+upstream body; they are not rewritten to false. Hosted `web_search`, `code_interpreter`,
+and `image_generation` are forwarded to the ChatGPT Codex backend and executed there.
+`web_search_call` items settle at `$0.01` per call. `file_search`, `computer`,
+`computer_use`, `computer_use_preview`, and `mcp` fail closed with
+`400 documented_limitation`. A `web_search` nested inside a namespace still fails
 closed. Unknown future tool types stay dropped so the next Codex CLI release does
 not brick. Present non-null `prompt_cache_retention` / `prompt_cache_options` also
 fail closed: 24-hour KV retention cannot be honoured on ChatGPT OAuth;

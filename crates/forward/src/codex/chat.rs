@@ -135,6 +135,7 @@ pub async fn completions(
             prepared.request.max_output_tokens,
             gateway.config().reserve_overhead_tokens,
             prepared.request.service_tier.is_some(),
+            0,
             billable_fact,
         )
         .await
@@ -2062,6 +2063,7 @@ mod tests {
             output_tokens: 20,
             reasoning_output_tokens: 5,
             total_tokens: 120,
+            web_search_requests: 0,
         });
         assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 40);
         assert_eq!(usage["prompt_tokens_details"]["cache_write_tokens"], 10);

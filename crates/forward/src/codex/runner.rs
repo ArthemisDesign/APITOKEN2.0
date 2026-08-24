@@ -22,6 +22,9 @@ pub(crate) struct CodexUsage {
     pub output_tokens: u64,
     pub reasoning_output_tokens: u64,
     pub total_tokens: u64,
+    /// Completed hosted `web_search_call` items (and/or provider usage). Billed at
+    /// `metering::WEB_SEARCH_NANO` per call.
+    pub web_search_requests: u64,
 }
 
 impl CodexUsage {
@@ -38,6 +41,9 @@ impl CodexUsage {
             .reasoning_output_tokens
             .saturating_add(other.reasoning_output_tokens);
         self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
+        self.web_search_requests = self
+            .web_search_requests
+            .saturating_add(other.web_search_requests);
     }
 
     fn from_value(value: &Value) -> Self {
@@ -49,6 +55,7 @@ impl CodexUsage {
             output_tokens: get("outputTokens"),
             reasoning_output_tokens: get("reasoningOutputTokens"),
             total_tokens: get("totalTokens"),
+            web_search_requests: get("webSearchRequests"),
         }
     }
 }
@@ -204,6 +211,7 @@ fn upstream_tool(tool: &Value) -> Option<Value> {
         })),
         Some("custom") => Some(tool.clone()),
         Some("tool_search") => Some(tool.clone()),
+        Some("web_search" | "code_interpreter" | "image_generation") => Some(tool.clone()),
         Some("namespace") => Some(json!({
             "type": "namespace",
             "name": tool.get("name").cloned().unwrap_or(Value::Null),
@@ -783,6 +791,13 @@ impl CodexHome {
             if !saw_raw_usage {
                 return Err(ProcessError::MissingAuthoritativeUsage);
             }
+            let observed_searches = output
+                .iter()
+                .filter(|item| {
+                    item.get("type").and_then(Value::as_str) == Some("web_search_call")
+                })
+                .count() as u64;
+            usage.web_search_requests = usage.web_search_requests.max(observed_searches);
             let effective_service_tier = Some(
                 effective_service_tier(requested_fast, provider_reported_service_tier.as_deref())
                     .to_string(),
@@ -855,6 +870,9 @@ fn ensure_output_item_id(item: &mut Value) {
         Some("function_call") => "fc",
         Some("custom_tool_call") => "ctc",
         Some("reasoning") => "rs",
+        Some("web_search_call") => "ws",
+        Some("code_interpreter_call") => "ci",
+        Some("image_generation_call") => "img",
         _ => return,
     };
     item["id"] = Value::String(new_id(prefix));
@@ -865,7 +883,11 @@ fn claim_completed_output(item: &Value, completed: &mut HashSet<(String, String)
         return true;
     };
     let identity = match kind {
-        "function_call" | "custom_tool_call" => item
+        "function_call"
+        | "custom_tool_call"
+        | "web_search_call"
+        | "code_interpreter_call"
+        | "image_generation_call" => item
             .get("call_id")
             .and_then(Value::as_str)
             .or_else(|| item.get("id").and_then(Value::as_str)),
@@ -1069,6 +1091,27 @@ mod tests {
         assert_eq!(body["tools"][0]["description"], "Search available tools");
         assert_eq!(body["tools"][0]["parameters"]["required"], json!(["query"]));
         assert!(body["tools"][0].get("inputSchema").is_none());
+    }
+
+    #[test]
+    fn hosted_web_search_and_code_interpreter_reach_the_upstream_body() {
+        let mut request = turn_request(test_model());
+        request.dynamic_tools = vec![
+            json!({"type": "web_search"}),
+            json!({"type": "code_interpreter", "container": {"type": "auto"}}),
+            json!({"type": "image_generation"}),
+        ];
+        let body = build_responses_body(&request);
+        let types: Vec<&str> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            types,
+            ["web_search", "code_interpreter", "image_generation"]
+        );
     }
 
     #[test]

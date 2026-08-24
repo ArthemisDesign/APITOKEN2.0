@@ -432,6 +432,7 @@ pub async fn responses(
             prepared.request.max_output_tokens,
             gateway.config().reserve_overhead_tokens,
             prepared.request.service_tier.is_some(),
+            hosted_search_reserve_nano(&prepared.request.dynamic_tools),
             billable_fact,
         )
         .await
@@ -1773,25 +1774,29 @@ fn parse_dynamic_tools(
                 callable_count += 1;
                 dynamic.push(parsed);
             }
-            Some("web_search") => {
-                // Codex CLI ships web search in every stock config (mode `cached`) as a
-                // descriptor with `external_web_access` or `search_content_types`. Accept that
-                // shape and drop it — never forward an unmetered hosted search. Any other
-                // `web_search` object is an API hosted-search request this plane cannot meter.
-                if !is_codex_cli_web_search(object) {
-                    return Err(ApiError::documented_limitation(
-                        "Hosted web_search is not forwarded because it cannot be metered on this plane.",
+            Some(kind @ ("web_search" | "code_interpreter" | "image_generation")) => {
+                // ChatGPT Codex executes these hosted tools on the subscription wire. Forward the
+                // descriptor so the backend can run them; settlement bills web_search_call items
+                // at the official $0.01/call. Duplicate hosted types are rejected because the
+                // backend treats each as one capability grant, not a list of aliases.
+                let unique = format!("__hosted_{kind}");
+                if !names.insert(unique) {
+                    return Err(ApiError::invalid(
+                        match source {
+                            ToolListSource::TopLevel => "Tool names must be unique.",
+                            ToolListSource::Additional => "Additional tool names must be unique.",
+                        },
                         Some(format!("{tool_param}.type")),
                     ));
                 }
+                callable_count += 1;
+                dynamic.push(hosted_tool_descriptor(object, kind));
             }
             Some(
-                kind @ ("code_interpreter"
-                | "file_search"
+                kind @ ("file_search"
                 | "computer"
                 | "computer_use"
                 | "computer_use_preview"
-                | "image_generation"
                 | "mcp"),
             ) => {
                 return Err(hosted_tool_documented_limitation(kind, &tool_param));
@@ -1813,17 +1818,36 @@ fn parse_dynamic_tools(
     Ok(dynamic)
 }
 
-fn is_codex_cli_web_search(object: &Map<String, Value>) -> bool {
-    object.contains_key("external_web_access") || object.contains_key("search_content_types")
+fn hosted_tool_descriptor(object: &Map<String, Value>, kind: &str) -> Value {
+    let mut tool = Value::Object(object.clone());
+    tool["type"] = Value::String(kind.to_string());
+    tool
+}
+
+fn hosted_web_search_declared(tools: &[Value]) -> bool {
+    tools
+        .iter()
+        .any(|tool| tool.get("type").and_then(Value::as_str) == Some("web_search"))
+}
+
+/// Conservative hold for hosted web search: official $0.01/call × 8 calls.
+/// gpt-5.5 has been observed to issue several searches in one turn; the hold is a ceiling,
+/// settlement bills the actual `web_search_call` count.
+pub(super) const WEB_SEARCH_RESERVE_CALLS: i128 = 8;
+
+fn hosted_search_reserve_nano(tools: &[Value]) -> i128 {
+    if hosted_web_search_declared(tools) {
+        WEB_SEARCH_RESERVE_CALLS.saturating_mul(metering::WEB_SEARCH_NANO)
+    } else {
+        0
+    }
 }
 
 fn hosted_tool_documented_limitation(kind: &str, tool_param: &str) -> ApiError {
-    let message = if kind == "image_generation" {
-        "Hosted image_generation is not executed on this plane. Use POST /v1/images/generations or POST /v1/images/edits.".to_string()
-    } else {
-        format!("Hosted {kind} is not executed on this plane.")
-    };
-    ApiError::documented_limitation(message, Some(format!("{tool_param}.type")))
+    ApiError::documented_limitation(
+        format!("Hosted {kind} is not executed on this plane."),
+        Some(format!("{tool_param}.type")),
+    )
 }
 
 fn reject_unhonoured_prompt_cache_fields(object: &Map<String, Value>) -> Result<(), ApiError> {
@@ -2646,7 +2670,10 @@ fn public_usage(usage: &CodexUsage) -> Value {
         "output_tokens_details": {
             "reasoning_tokens": usage.reasoning_output_tokens
         },
-        "total_tokens": usage.total_tokens
+        "total_tokens": usage.total_tokens,
+        "server_tool_use": {
+            "web_search_requests": usage.web_search_requests
+        }
     })
 }
 
@@ -2783,6 +2810,21 @@ fn normalize_output_item_with_options(
                 if let Some(encrypted) = item.get("encrypted_content").and_then(Value::as_str) {
                     output["encrypted_content"] = Value::String(encrypted.to_string());
                 }
+            }
+            Some(output)
+        }
+        "web_search_call" | "code_interpreter_call" | "image_generation_call" => {
+            let mut output = item.clone();
+            if output.get("id").and_then(Value::as_str).is_none() {
+                let prefix = match item.get("type").and_then(Value::as_str) {
+                    Some("web_search_call") => "ws",
+                    Some("code_interpreter_call") => "ci",
+                    _ => "img",
+                };
+                output["id"] = Value::String(new_id(prefix));
+            }
+            if output.get("status").and_then(Value::as_str).is_none() {
+                output["status"] = Value::String("completed".to_string());
             }
             Some(output)
         }

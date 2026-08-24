@@ -1147,6 +1147,10 @@ fn translate_usage(usage: &Value) -> Value {
                 .and_then(Value::as_u64)
         })
         .unwrap_or(0);
+    let server_tool_use = usage
+        .get("server_tool_use")
+        .cloned()
+        .unwrap_or(Value::Null);
     json!({
         "inputTokens": details(usage, "input_tokens"),
         "cachedInputTokens": details(&input_details, "cached_tokens"),
@@ -1154,6 +1158,8 @@ fn translate_usage(usage: &Value) -> Value {
         "outputTokens": details(usage, "output_tokens"),
         "reasoningOutputTokens": details(&output_details, "reasoning_tokens"),
         "totalTokens": details(usage, "total_tokens"),
+        "webSearchRequests": details(&server_tool_use, "web_search_requests")
+            .max(details(usage, "web_search_requests")),
     })
 }
 
@@ -1484,6 +1490,15 @@ mod tests {
         assert_eq!(translated["outputTokens"], 20);
         assert_eq!(translated["reasoningOutputTokens"], 5);
         assert_eq!(translated["totalTokens"], 120);
+        assert_eq!(translated["webSearchRequests"], 0);
+
+        let with_search = translate_usage(&json!({
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "total_tokens": 120,
+            "server_tool_use": {"web_search_requests": 2},
+        }));
+        assert_eq!(with_search["webSearchRequests"], 2);
     }
 
     #[test]

@@ -455,6 +455,7 @@ impl PendingCodexAdmission {
         requested_output_tokens: Option<u64>,
         reserve_overhead_tokens: u64,
         fast: bool,
+        extra_hold_nano: i128,
         billable_fact: Option<(CodexRequestFactSeed, CodexBillableRequestSpec)>,
     ) -> Result<CodexAdmission, AdmissionError> {
         let reservation = match (&self.authz, &app.billing) {
@@ -490,6 +491,7 @@ impl PendingCodexAdmission {
                     requested_output_tokens,
                     reserve_overhead_tokens,
                     fast,
+                    extra_hold_nano,
                     self.authz.mult_for(registry::PROVIDER_OPENAI),
                     *available_nano,
                     &self.execution,
@@ -668,6 +670,7 @@ async fn reserve_codex_metered(
     requested_output_tokens: Option<u64>,
     reserve_overhead_tokens: u64,
     fast: bool,
+    extra_hold_nano: i128,
     mult_bp: i64,
     available_nano: i64,
     execution: &registry::ExecutionAttempt,
@@ -686,6 +689,7 @@ async fn reserve_codex_metered(
         requested_output_tokens,
         reserve_overhead_tokens,
         fast,
+        extra_hold_nano,
         mult_bp,
         available_nano,
         &request_id,
@@ -705,6 +709,7 @@ async fn reserve_codex_legacy(
     requested_output_tokens: Option<u64>,
     reserve_overhead_tokens: u64,
     fast: bool,
+    extra_hold_nano: i128,
     mult_bp: i64,
     available_nano: i64,
     request_id: &str,
@@ -736,7 +741,8 @@ async fn reserve_codex_legacy(
         estimated,
         requested_output_tokens,
         fast,
-    );
+    )
+    .saturating_add(extra_hold_nano.max(0));
     let hold = if mult_bp <= 0 {
         0
     } else {
@@ -1458,7 +1464,7 @@ fn settled_charge_with_prices(
         cache_read_tokens: priced.cached_input.min(i64::MAX as u64) as i64,
         cache_write_5m_tokens: 0,
         cache_write_1h_tokens: priced.cache_write_input.min(i64::MAX as u64) as i64,
-        web_search_requests: 0,
+        web_search_requests: usage.web_search_requests.min(i64::MAX as u64) as i64,
         real_nano: priced.real_nano.min(i64::MAX as i128) as i64,
         // What the customer is billed for: the capped slice when the model overshot the ceiling it
         // asked for. The ledger's multiplier invariant is checked against this, while the full
@@ -1471,7 +1477,7 @@ fn settled_charge_with_prices(
         cache_read_nano: priced.cached_nano.min(i64::MAX as i128) as i64,
         cache_write_5m_nano: 0,
         cache_write_1h_nano: priced.cache_write_nano.min(i64::MAX as i128) as i64,
-        web_search_nano: 0,
+        web_search_nano: priced.search_nano.min(i64::MAX as i128) as i64,
         priced_ts: now,
     });
     (charge, usage_event)
@@ -1713,6 +1719,7 @@ struct PricedUsage {
     cached_nano: i128,
     cache_write_nano: i128,
     output_nano: i128,
+    search_nano: i128,
     real_nano: i128,
 }
 
@@ -1763,6 +1770,7 @@ fn price_usage_with_prices(
         output_multiplier,
     );
     let output_nano = apply_fast_multiplier(prices, output_nano, fast);
+    let search_nano = (usage.web_search_requests as i128).saturating_mul(metering::WEB_SEARCH_NANO);
     PricedUsage {
         normal_input,
         cached_input,
@@ -1771,10 +1779,12 @@ fn price_usage_with_prices(
         cached_nano,
         cache_write_nano,
         output_nano,
+        search_nano,
         real_nano: input_nano
             .saturating_add(cached_nano)
             .saturating_add(cache_write_nano)
-            .saturating_add(output_nano),
+            .saturating_add(output_nano)
+            .saturating_add(search_nano),
     }
 }
 
@@ -1939,6 +1949,7 @@ mod tests {
             false,
             0,
             0,
+            0,
             &registry::ExecutionAttempt::direct(),
             None,
         )
@@ -2031,6 +2042,27 @@ mod tests {
         assert_eq!(
             priced.real_nano,
             500 * 5_000 + 400 * 500 + 100 * 6_250 + 20 * 30_000
+        );
+        assert_eq!(priced.search_nano, 0);
+    }
+
+    #[test]
+    fn hosted_web_search_calls_are_billed_at_the_official_tool_rate() {
+        let priced = price_usage(
+            &model(),
+            &CodexUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+                web_search_requests: 3,
+                ..CodexUsage::default()
+            },
+            0,
+            false,
+        );
+        assert_eq!(priced.search_nano, 3 * metering::WEB_SEARCH_NANO);
+        assert_eq!(
+            priced.real_nano,
+            10 * 5_000 + 5 * 30_000 + 3 * metering::WEB_SEARCH_NANO
         );
     }
 

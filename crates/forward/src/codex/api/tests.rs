@@ -2299,10 +2299,7 @@ fn assert_documented_limitation(error: &ApiError, param: &str) {
 }
 
 #[test]
-fn hosted_web_search_is_accepted_and_never_forwarded() {
-    // Codex CLI stock shape only: `external_web_access` / `search_content_types`. That
-    // descriptor is present in every default config (mode `cached`). Rejecting it made those
-    // models unusable; accept the declaration, drop it, never forward an unmetered hosted call.
+fn hosted_web_search_is_forwarded_to_the_backend() {
     let parsed = parse_responses_request(
         &gateway(),
         json!({
@@ -2324,12 +2321,16 @@ fn hosted_web_search_is_accepted_and_never_forwarded() {
     )
     .unwrap();
 
-    // The client's declaration is echoed back verbatim, but only the callable tool is dispatched.
     assert_eq!(parsed.original_tools.len(), 2);
-    assert_eq!(parsed.dynamic_tools.len(), 1);
-    assert_eq!(parsed.dynamic_tools[0]["name"], "get_weather");
-    assert!(!parsed
+    assert_eq!(parsed.dynamic_tools.len(), 2);
+    assert!(parsed
         .dynamic_tools
+        .iter()
+        .any(|tool| tool["type"] == "web_search"));
+    let body = upstream_body_from_parsed(&parsed);
+    assert!(body["tools"]
+        .as_array()
+        .unwrap()
         .iter()
         .any(|tool| tool["type"] == "web_search"));
 }
@@ -2451,14 +2452,45 @@ fn unknown_top_level_tool_types_are_dropped_not_rejected() {
 }
 
 #[test]
+fn executable_hosted_tools_are_forwarded() {
+    for kind in ["code_interpreter", "image_generation"] {
+        let parsed = parse_responses_request(
+            &gateway(),
+            json!({
+                "model": "gpt-5.6",
+                "input": "hi",
+                "tools": [{"type": kind}]
+            }),
+        )
+        .expect(kind);
+        assert_eq!(parsed.dynamic_tools.len(), 1);
+        assert_eq!(parsed.dynamic_tools[0]["type"], kind);
+        let body = upstream_body_from_parsed(&parsed);
+        assert_eq!(body["tools"][0]["type"], kind);
+    }
+}
+
+#[test]
+fn hosted_call_output_items_are_kept_in_the_public_response() {
+    for (kind, prefix) in [
+        ("web_search_call", "ws"),
+        ("code_interpreter_call", "ci"),
+        ("image_generation_call", "img"),
+    ] {
+        let item = json!({"type": kind, "status": "completed", "action": {"query": "x"}});
+        let out = normalize_output_item(&item).expect(kind);
+        assert_eq!(out["type"], kind);
+        assert!(out["id"].as_str().unwrap().starts_with(prefix));
+    }
+}
+
+#[test]
 fn known_hosted_tools_are_documented_limitations() {
     for kind in [
-        "code_interpreter",
         "file_search",
         "computer",
         "computer_use",
         "computer_use_preview",
-        "image_generation",
         "mcp",
     ] {
         let error = parse_responses_request(
@@ -2476,24 +2508,12 @@ fn known_hosted_tools_are_documented_limitations() {
             "documented_limitation for {kind} must name the type, got {:?}",
             error.message
         );
-        if kind == "image_generation" {
-            assert!(
-                error.message.contains("POST /v1/images/generations"),
-                "image_generation must name POST /v1/images/generations, got {:?}",
-                error.message
-            );
-            assert!(
-                error.message.contains("/v1/images/edits"),
-                "image_generation must name /v1/images/edits, got {:?}",
-                error.message
-            );
-        }
     }
 }
 
 #[test]
-fn api_hosted_web_search_is_documented_limitation() {
-    let error = parse_responses_request(
+fn api_hosted_web_search_is_forwarded() {
+    let parsed = parse_responses_request(
         &gateway(),
         json!({
             "model": "gpt-5.6",
@@ -2501,10 +2521,10 @@ fn api_hosted_web_search_is_documented_limitation() {
             "tools": [{"type": "web_search"}]
         }),
     )
-    .unwrap_err();
-    assert_documented_limitation(&error, "tools.0.type");
-    assert!(error.message.contains("web_search"));
-    assert!(error.message.contains("metered"));
+    .unwrap();
+    assert_eq!(parsed.dynamic_tools[0]["type"], "web_search");
+    let body = upstream_body_from_parsed(&parsed);
+    assert_eq!(body["tools"][0]["type"], "web_search");
 
     let with_filters = parse_responses_request(
         &gateway(),
@@ -2517,8 +2537,8 @@ fn api_hosted_web_search_is_documented_limitation() {
             }]
         }),
     )
-    .unwrap_err();
-    assert_documented_limitation(&with_filters, "tools.0.type");
+    .unwrap();
+    assert_eq!(with_filters.dynamic_tools[0]["filters"]["allowed_domains"][0], "example.com");
 }
 
 #[test]
@@ -2712,10 +2732,12 @@ fn public_usage_preserves_cached_write_and_reasoning_details() {
         output_tokens: 20,
         reasoning_output_tokens: 12,
         total_tokens: 120,
+        web_search_requests: 2,
     });
     assert_eq!(usage["input_tokens_details"]["cached_tokens"], 40);
     assert_eq!(usage["input_tokens_details"]["cache_write_tokens"], 10);
     assert_eq!(usage["output_tokens_details"]["reasoning_tokens"], 12);
+    assert_eq!(usage["server_tool_use"]["web_search_requests"], 2);
 }
 
 #[test]

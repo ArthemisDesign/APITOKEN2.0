@@ -171,15 +171,15 @@ The evidence and private operator procedure remain in `docs/ops/GPT_IMAGE_2_CANA
   `__codex_client_tool_search` for Codex CLI deferred discovery; hosted `tool_search`
   (`execution` omitted, `server`, or `hosted`) stays `type:tool_search` and is forwarded
   to the Codex backend. The gateway does not run a search loop and does not invent an MCP
-  registry. Hosted `web_search` is server-executed and billed per call, so it is never
-  forwarded. The Codex CLI stock descriptor (mode `cached`, fields `external_web_access` /
-  `search_content_types`) is accepted and dropped; any other `web_search` shape is an API
-  hosted-search request and fails closed with `400 documented_limitation` because this plane
-  cannot meter it. A `web_search` nested inside a namespace still fails closed. Known hosted
-  types this plane cannot execute (`code_interpreter`, `file_search`, `computer`,
-  `computer_use`, `computer_use_preview`, `image_generation`, `mcp`) fail closed the same way
-  at top level — not as a silent drop. `image_generation` names `POST /v1/images/generations`
-  and `POST /v1/images/edits`. Unknown future tool types in either list stay dropped: an
+  registry. Hosted `web_search`, `code_interpreter`, and `image_generation` are forwarded to
+  the ChatGPT Codex `/responses` backend so the subscription can execute them. Completed
+  `web_search_call` items (and provider `server_tool_use.web_search_requests` when present)
+  settle at the official `$0.01` per call (`metering::WEB_SEARCH_NANO`); search content tokens
+  stay in the normal input buckets. A turn that declares `web_search` reserves eight calls as
+  a hold ceiling. A `web_search` nested inside a namespace still fails closed. Known hosted
+  types this plane cannot execute (`file_search`, `computer`, `computer_use`,
+  `computer_use_preview`, `mcp`) fail closed at top level with `400 documented_limitation`.
+  Unknown future tool types in either list stay dropped: an
   undelivered descriptor can neither run nor bill, so failing the turn over it would only
   break callers on the next client release that adds a type. Both lists reach the same verdict
   for the same descriptor — unknown descriptor fields ignored, function-tool `strict` kept and
