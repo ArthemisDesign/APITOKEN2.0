@@ -118,7 +118,7 @@ Read order at the start of work:
 | **Phase 6 — attestation dry-run + drills** | **DONE** | `679a299794e654ca106f214618d4a196eb170099` | 2026-08-23 | GREEN atomic record contract and both mandatory drills. |
 | **Phase 7 — fail-closed enforcement** | **DONE** | `83dc18a35ec22ec5af11ab6a13fcf93a7004eed6` | 2026-08-23 | GREEN fail-closed admission plus merge-client gate. Mock-first twin. §12 full twin is not accepted. |
 | Parallel — host-image-gate extension | **DONE** | `4b8ba93831a52a8cf5af63a138bf676c02305675` | 2026-08-23 | Disposable Ubuntu gate; stage never applies host-global installers. |
-| Phase 8 — budgeted live endpoint | **IN PROGRESS** | *(this commit)* | 2026-08-24 | Owner selected capped production-fleet client contour. |
+| **Phase 8 — budgeted live endpoint** | **DONE** | `e3218a48cc9eb95ede85fd7f1a9947a9ae83db4c` | 2026-08-24 | GREEN $0.01-capped client, one $0.000105 probe, revoked and disabled. |
 
 Status vocabulary: `NOT STARTED` · `IN PROGRESS` · `BLOCKED on N` · `MERGED, waiting watchdog` ·
 `DONE` · `OWNER GATE`.
@@ -1865,7 +1865,7 @@ application; only production watchdog installed them after exact promotion eligi
 
 Source: `STAGING_ENVIRONMENT.md` §5.3.1, §10 phase 8, §11.3.
 
-Status: **IN PROGRESS**. Owner selected **budgeted live endpoint** in chat.
+Status: **DONE**. Owner selected **budgeted live endpoint**; live bounded acceptance is GREEN.
 
 ### Scope
 
@@ -1876,8 +1876,8 @@ Status: **IN PROGRESS**. Owner selected **budgeted live endpoint** in chat.
 - [x] The lane is off without `stage-live.enabled`; one explicit operator command enables it.
 - [x] One minimal non-stream probe per issued key; `max_tokens <= 64`; body <= 1 MiB.
 - [x] Explicit disable revokes the key, stops both bridge processes, and removes the stage key and marker.
-- [ ] Run one live minimal generation and record exact key id, cap, TTL, response digest, and resulting key spend.
-- [ ] Re-run isolation, degradation, production readiness, and stage/production exact-SHA flow.
+- [x] Run one live minimal generation and record exact key id, cap, TTL, response digest, and resulting key spend.
+- [x] Re-run isolation, degradation, production readiness, and stage/production exact-SHA flow.
 
 Payment/OAuth/mail vendor egress stays forbidden. `STAGING_ENVIRONMENT.md` §11.3 is unchanged.
 
@@ -1954,7 +1954,7 @@ Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix; public UFW/
 Next: restrict the live client to current production Anthropic model IDs.
 
 ### 2026-08-24 — Phase 8 live model allowlist repair
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `e3218a48cc9eb95ede85fd7f1a9947a9ae83db4c`   watchdog: GREEN
 Result: The fourth key reached production and the fleet, but the historical
 `claude-sonnet-4-20250514` model returned an upstream 404. The capped key retained zero spent nanoUSD
 and was revoked immediately. Restrict the stage client to current audited Anthropic IDs
@@ -1962,8 +1962,28 @@ and was revoked immediately. Restrict the stage client to current audited Anthro
 Checks actually run: `bash deploy/staging-phase8.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `git diff --check`; production structured error showed exact key id, zero spent, capped policy, 404.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after a bounded provider rejection.
-Next: stage; auto-attest/promote if GREEN; issue a fresh key with `claude-sonnet-4-6`, probe once,
-disable, and close Phase 8.
+Next: close Phase 8 from the live bounded evidence.
+
+### 2026-08-24 — Phase 8 budgeted live-endpoint closeout
+SHA: `e3218a48cc9eb95ede85fd7f1a9947a9ae83db4c`   watchdog: GREEN
+Result: Owner selected the budgeted live endpoint and gave standing authorization for GREEN
+stage→attest→master promotions. A fresh production `stage-live` key
+`key_4101579758baca518ac94787c19d36d0` had lifetime cap `10,000,000` nanoUSD ($0.01), zero
+reserved amount, and expiry `1787563142`. One non-stream `claude-sonnet-4-6` generation returned HTTP
+200 through stage client `10.254.32.2:9081` and host bridge `10.254.32.1:9081`; response digest was
+`cc9fa02f8a971ced4eef02e5f4ee707be5ea8cf639af531e8983b1f5dcb3dde3`. Exact settled key spend
+was `105,000` nanoUSD ($0.000105), reserved returned to zero, and spend stayed below the hard cap.
+Disable revoked the key, stopped both bridge services, removed the stage key/marker, and removed the
+exact INPUT rule. Live isolation remained PASS. Trusted degradation stayed GREEN and caught its
+injected regression. All six production readiness probes returned HTTP 200. `origin/stage` and
+`origin/master` matched the final implementation SHA. No production provider credential, OAuth
+envelope, full Control key, or vendor payment/mail/OAuth access entered staging.
+Checks actually run: live enable/probe/key-policy read/disable; live `proof isolation`; live
+`proof degradation`; production `observe status`; exact ref equality; `bash deploy/staging-phase8.test.sh`;
+`bash deploy/staging-foundation.test.sh`; GREEN `deploy/stage`; GREEN `deploy/watchdog`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: no §11.3 lock changed. Three pre-dispatch
+keys and one model-rejected key were revoked during forward fixes; all recorded zero spent nanoUSD.
+Next: Phase 8 is complete. Keep the live lane disabled unless the owner explicitly orders another capped run.
 
 ---
 
