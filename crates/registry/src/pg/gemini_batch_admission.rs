@@ -6,9 +6,8 @@
 use super::PgStore;
 use crate::{
     GeminiBatchAdmissionBegin, GeminiBatchAdmissionBeginOutcome, GeminiBatchAdmissionItem,
-    GeminiBatchCreateOutcome, GeminiBatchIdempotencyConflict, ACCOUNT_OVERDRAFT_NANO,
-    MAX_BATCH_ADMISSION_PAGE_SIZE, MAX_BATCH_ITEMS, MAX_BATCH_NONTERMINAL_JOBS,
-    MAX_BATCH_REFERENCED_FILE_BYTES,
+    GeminiBatchCreateOutcome, GeminiBatchIdempotencyConflict, MAX_BATCH_ADMISSION_PAGE_SIZE,
+    MAX_BATCH_ITEMS, MAX_BATCH_NONTERMINAL_JOBS, MAX_BATCH_REFERENCED_FILE_BYTES,
 };
 use anyhow::{bail, Context, Result};
 use postgres::Transaction;
@@ -368,7 +367,7 @@ impl PgStore {
             bail!("Gemini Batch creator key identity changed")
         }
         let now = super::now();
-        let aggregate_hold: i64 = admission.get(13);
+        let _aggregate_hold: i64 = admission.get(13);
         let active_key = key.get::<_, String>(1) == "active"
             && key
                 .get::<_, Option<i64>>(2)
@@ -376,7 +375,6 @@ impl PgStore {
         let within_key_limit = key.get::<_, Option<i64>>(3).is_none_or(|limit| {
             key.get::<_, i64>(4)
                 .checked_add(key.get::<_, i64>(5))
-                .and_then(|value| value.checked_add(aggregate_hold))
                 .is_some_and(|value| value <= limit)
         });
         if !active_key || !within_key_limit {
@@ -407,22 +405,12 @@ impl PgStore {
             tx.rollback()?;
             return Ok(GeminiBatchCreateOutcome::RejectedLimit);
         }
-        let Some(account) = tx.query_opt(
-            "UPDATE accounts SET balance_nano=balance_nano-$1,reserved_nano=reserved_nano+$1 \
-             WHERE id=$2 AND status='active' AND balance_nano >= $1::bigint-$3::bigint RETURNING balance_nano",
-            &[&aggregate_hold, &account_id, &ACCOUNT_OVERDRAFT_NANO],
-        )? else {
+        let Some(balance_nano) =
+            super::lock_active_account_without_hold(&mut tx, &account_id, true)?
+        else {
             tx.rollback()?;
             return Ok(GeminiBatchCreateOutcome::RejectedFunds);
         };
-        let balance_nano: i64 = account.get(0);
-        if tx.execute(
-            "UPDATE api_keys SET reserved_nano=reserved_nano+$1 WHERE key=$2 AND account_id=$3",
-            &[&aggregate_hold, &creator_key, &account_id],
-        )? != 1
-        {
-            bail!("Gemini Batch creator key disappeared while locked")
-        }
         tx.execute(
             "INSERT INTO gemini_batch_jobs(job_id,account_id,creator_key_id,public_model,display_name,\
              canonical_request_digest,idempotency_digest,priority,input_kind,input_file_id,schema_version,\

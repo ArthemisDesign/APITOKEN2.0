@@ -110,6 +110,26 @@ and immutable/dormant artifacts are not rewritten.
       wire schema changes, walk the separate sales feed checklist.
 - [ ] `apps/admin/src/app/sales/calculator/calculation.ts` — `PRODUCT_CATALOG`.
 
+## Money admission
+
+Changing how the engine admits or charges customer money (holds, debt, 402, collection floor,
+`reserved_nano`, `uncollected_nano`).
+
+- [ ] Registry PostgreSQL and SQLite share the same admission gate and settlement equation.
+      Paid work requires `balance_nano > 0`; service (`mult_bp = 0`) is never blocked for money.
+- [ ] Every provider plane that used `cap_to_balance` or a positive hold is updated together:
+      Anthropic, Codex/OpenAI, Gemini interactive, Gemini Batch, Kimi, GLM, Suno, Tripo3D.
+- [ ] New work stores `hold_nano = 0` and does not increment `reserved_nano`. Leftover hold>0
+      rows still settle with the previous release/floor path.
+- [ ] Control API keeps `reserved_nano` / `uncollected_nano` (expand-only). Document the new
+      meaning in `docs/engine/CONTROL_API.md` in the same producer commit.
+- [ ] `docs/commerce/PRICING_MODEL.md`, `crates/registry/CLAUDE.md`, `crates/forward/CLAUDE.md`,
+      `docs/engine/STAGE2_POSTGRES_AUTHORITY.md`, `docs/ops/MONITORING.md`.
+- [ ] Dashboard / OpenKeys / admin show a signed balance and a debt state when negative.
+      402 copy stays the public insufficient-balance text.
+- [ ] Conservation remains `balance + spent + reserved - uncollected = funding`.
+- [ ] Key spend limits still 402 when already exhausted; one request may overshoot.
+
 ## New subscription provider
 
 Full order research → credential/Auth Bot → runtime → money/calibration → admin → blue-green →

@@ -4545,7 +4545,7 @@ async fn malformed_private_success_is_never_exposed_and_rotates() {
 }
 
 #[tokio::test]
-async fn low_balance_caps_max_output_tokens_before_the_google_request() {
+async fn positive_balance_does_not_cap_max_output_tokens_before_the_google_request() {
     let server = start_mock(MockState::with_replies([(
         PROFILE_A_KEY,
         vec![MockReply::json(
@@ -4571,7 +4571,7 @@ async fn low_balance_caps_max_output_tokens_before_the_google_request() {
     let upstream_body: Value = serde_json::from_slice(&seen[0].body).unwrap();
     assert_eq!(
         upstream_body["request"]["generationConfig"]["maxOutputTokens"],
-        7
+        64
     );
     assert_eq!(upstream_body["project"], "paid-project-01");
     assert!(upstream_body.get("user_prompt_id").is_some());

@@ -598,6 +598,13 @@ async fn create(
     headers: HeaderMap,
     b: Body,
 ) -> Response {
+    if a.mult_bp > 0 && a.available <= 0 {
+        return error(
+            StatusCode::PAYMENT_REQUIRED,
+            "RESOURCE_EXHAUSTED",
+            "Insufficient balance.",
+        );
+    }
     let bytes = match body(b, BODY_LIMIT).await {
         Ok(v) => v,
         Err(r) => return r,
@@ -795,7 +802,6 @@ async fn create(
     }
     let mut next = resume_at;
     let mut source_index = 0i64;
-    let mut total = 0i64;
     let mut request_digests = Sha256::new();
     request_digests.update(b"apitoken:gemini-batch-request-digests:v1\0");
     let prices = metering::gemini_prices_at(&model.id, created).unwrap_or(model.prices);
@@ -865,31 +871,7 @@ async fn create(
             }
             let (_, output, _, grounding) = api::batch_generation_controls(&req, &model);
             let plain = serde_json::to_vec(&req).expect("JSON serialization");
-            let hold = metering::apply_multiplier(
-                super::billing::reserve_cost_with_prices(
-                    prices,
-                    plain.len() as u64,
-                    output,
-                    0,
-                    grounding,
-                ),
-                a.mult_bp,
-            )
-            .clamp(0, i64::MAX as i128) as i64;
-            total = total.checked_add(hold).ok_or_else(|| {
-                error(
-                    StatusCode::BAD_REQUEST,
-                    "INVALID_ARGUMENT",
-                    "Batch hold exceeds the supported range.",
-                )
-            })?;
-            if total > a.available {
-                return Err(error(
-                    StatusCode::PAYMENT_REQUIRED,
-                    "RESOURCE_EXHAUSTED",
-                    "Insufficient balance for the whole batch.",
-                ));
-            }
+            let _ = (output, grounding, prices);
             let idx = page_start
                 + i64::try_from(entry_offset).map_err(|_| {
                     error(
@@ -948,7 +930,7 @@ async fn create(
                     request_digest,
                     input_file_id: None,
                     referenced_file_ids: refs,
-                    hold_nano: hold,
+                    hold_nano: 0,
                     payable_multiplier_bp: a.mult_bp,
                     priced_ts: created,
                     tariff_family: family.to_owned(),

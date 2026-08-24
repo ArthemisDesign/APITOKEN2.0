@@ -40,9 +40,11 @@ Every model of every provider is available to every key. Availability is a runti
    2026-12-31 and $1.50 / $0.15 / $7.50 from 2027-01-01T00:00:00Z; Search stays on its separate
    per-query leg. The storefront resolves the same effective-date contract on each price-bearing
    request, so it changes without a redeploy. This provider tariff is not an account discount.
-4. Admission caps the reserve to the balance (`cap_to_balance`) and reserves atomically.
-5. Settlement charges the real usage at the same tariff and multiplier the reserve pinned, against the same
-   balance.
+4. Admission requires `balance_nano > 0` for paid work and stores a zero-hold ticket. It does not
+   debit the balance or shrink `max_tokens` to remaining money.
+5. Settlement charges the real usage at the same tariff and multiplier the ticket pinned. The
+   charge may take the balance negative; the next paid request is refused until a top-up leaves
+   `balance_nano > 0`.
 
 A discount write is live on the next request. There is no version to activate, nothing to
 materialize and nothing that can disagree with the balance.
@@ -146,9 +148,10 @@ and the drift surfaces as a customer being told they have no money.
    multiplier from anywhere else.
 3. **A discount write takes effect on the next request.** No generation, no activation, no
    snapshot to keep in step.
-4. **A funded account can spend.** If a request is refused for money, the account balance must
-   actually be insufficient for the hold plus the one account-wide $1 admission buffer. PostgreSQL
-   and the SQLite audit/fallback implementation apply the same post-reserve floor.
+4. **A funded account can spend.** Paid work is refused for money only when `balance_nano <= 0`
+   (empty or unpaid debt) or a key spend limit is already exhausted. PostgreSQL and the SQLite
+   audit/fallback implementation share that gate. Settlement of a started request may then create
+   customer debt; covering it down to exactly `0` is not enough to resume.
 
 ## Spend accounting: free money is spent first
 

@@ -48,7 +48,7 @@ Contributor/AI workflow and automated `master` delivery — [`CONTRIBUTING.md`](
 
 | Crate | Role | Owner branch |
 |---|---|---|
-| `crates/registry` | **PostgreSQL authority**: subscriptions, money reservations/outbox, capacity leases, epochs | `comp/registry` |
+| `crates/registry` | **PostgreSQL authority**: subscriptions, billing tickets/outbox, capacity leases, epochs | `comp/registry` |
 | `crates/pool` | **Pool + rotation**: least-loaded selection, cooling on 429, limits state | `comp/pool` |
 | `crates/forward` | **Transparent forwarding** of `/v1/*`: auto-affinity L1/Redis, identity, rotation, stream | `comp/forward` |
 | `crates/server` | **Composition** (bin `claude-api`): env config, CLI, router `/health`+`/pool`, background loops | `comp/server` |

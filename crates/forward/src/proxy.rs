@@ -564,26 +564,20 @@ pub(crate) async fn read_body_bounded(
     }
     if declared_content_length(headers).is_some_and(|declared| declared > request_limit.bytes()) {
         crate::metrics::Metrics::inc(&app.metrics.body_admission_oversized);
-        return Err(BodyAdmitError::Storage(bounded_body::StorageError::TooLarge));
+        return Err(BodyAdmitError::Storage(
+            bounded_body::StorageError::TooLarge,
+        ));
     }
     let initial = api_limits::ByteLimit::from_bytes(api_limits::MIB);
-    let body_storage = app
-        .body_storage()
-        .map_err(BodyAdmitError::Storage)?;
-    let storage = body_storage
-        .storage
-        .try_reserve(initial)
-        .map_err(|_| {
-            crate::metrics::Metrics::inc(&app.metrics.body_admission_overload);
-            BodyAdmitError::Storage(bounded_body::StorageError::StorageExhausted)
-        })?;
-    let memory = body_storage
-        .memory
-        .try_reserve(initial)
-        .map_err(|_| {
-            crate::metrics::Metrics::inc(&app.metrics.body_admission_overload);
-            BodyAdmitError::Storage(bounded_body::StorageError::MemoryExhausted)
-        })?;
+    let body_storage = app.body_storage().map_err(BodyAdmitError::Storage)?;
+    let storage = body_storage.storage.try_reserve(initial).map_err(|_| {
+        crate::metrics::Metrics::inc(&app.metrics.body_admission_overload);
+        BodyAdmitError::Storage(bounded_body::StorageError::StorageExhausted)
+    })?;
+    let memory = body_storage.memory.try_reserve(initial).map_err(|_| {
+        crate::metrics::Metrics::inc(&app.metrics.body_admission_overload);
+        BodyAdmitError::Storage(bounded_body::StorageError::MemoryExhausted)
+    })?;
     let mut store = bounded_body::BodyStore::start(
         bounded_body::StorageConfig {
             request_limit,
@@ -593,7 +587,10 @@ pub(crate) async fn read_body_bounded(
         &body_storage.memory,
         storage,
         memory,
-        body_storage.spool.try_clone().map_err(BodyAdmitError::Storage)?,
+        body_storage
+            .spool
+            .try_clone()
+            .map_err(BodyAdmitError::Storage)?,
     )
     .map_err(BodyAdmitError::Storage)?;
     let mut stream = body.into_data_stream();
@@ -631,9 +628,7 @@ pub(crate) async fn read_anthropic_body_bounded(
     headers: &HeaderMap,
     body: Body,
 ) -> Result<MaterializedAnthropicBody, BodyAdmitError> {
-    let body_storage = app
-        .body_storage()
-        .map_err(BodyAdmitError::Storage)?;
+    let body_storage = app.body_storage().map_err(BodyAdmitError::Storage)?;
     let body = read_body_bounded(
         app,
         headers,
@@ -663,9 +658,9 @@ pub(crate) async fn collect_response_bytes(
             Ok((admitted.bytes, Some(admitted._lease)))
         }
         None => {
-            let limit = limit
-                .as_usize()
-                .map_err(|_| BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow))?;
+            let limit = limit.as_usize().map_err(|_| {
+                BodyAdmitError::Storage(bounded_body::StorageError::ArithmeticOverflow)
+            })?;
             axum::body::to_bytes(body, limit)
                 .await
                 .map(|bytes| (bytes, None))
@@ -1150,62 +1145,6 @@ pub(crate) fn local_err_for(
     with_not_started(response)
 }
 
-/// Точный баланс-лимит метерного ключа: сколько OUTPUT-токенов и какой hold клиент может позволить
-/// остатком баланса `bal` (client-нанодоллары, т.е. с учётом наценки). Гарантии («ни на токен/цент
-/// больше баланса»):
-///   • `None` → баланса не хватает даже на ВХОД worst-case → запрос отклоняется (иначе вход мог бы
-///     пробить баланс, ведь input тарифицируется всегда, даже при output=0);
-///   • `hold ≤ bal` (по построению + кламп) → атомарный reserve не уводит баланс в минус;
-///   • при возвращённом `eff_mt`: реальная стоимость (usage ≤ input_est токенов входа + `eff_mt`
-///     output + web_buf) ≤ hold — т.к. affordable округляем ВНИЗ и вход оценён сверху (байты ≥ токены).
-/// Anthropic, получив урезанный `max_tokens=eff_mt`, останавливает генерацию ровно на доступном
-/// токене — это и есть «отруб посреди запроса» без mid-stream-хаков.
-/// Дефолт лимита web-поисков, если web_search включён без явного `max_uses` — консервативная оценка
-/// для резерва их стоимости под баланс (реальный `max_uses` из тела приоритетен).
-const DEFAULT_WEB_USES: u64 = 20;
-
-fn cap_to_balance(
-    bal: i128,
-    input_est: i128,
-    web_buf: i128,
-    p: &metering::Prices,
-    mult_bp: i64,
-    client_mt: u64,
-) -> Option<(u64, i64)> {
-    // Наценка ≤ 0 = бесплатный ключ (charge всегда 0) → не лимитируем, hold 0 (баланс не двигается).
-    if mult_bp <= 0 {
-        return Some((client_mt, 0));
-    }
-    // Овердрафт-буфер: доступное = balance + $1. Funded-юзера НЕ роняем 402 из-за гонки конкурентных
-    // резервов — атомарный резерв (registry) всё равно держит пол баланса на −$1. За полом (bal ≤ −$1) → None.
-    let ceil = bal + metering::OVERDRAFT_NANO;
-    if ceil <= 0 {
-        return None;
-    }
-    // Работаем в RAW-нано (до наценки). Максимальная RAW-стоимость `x_max`, чья КЛИЕНТСКАЯ цена
-    // (apply_multiplier, round-half-up) гарантированно ≤ ceil (=bal+$1): X ≤ ⌊ceil·10000/m⌋ → X·m ≤
-    // ceil·10000 → (X·m+5000)/10000 ≤ ceil. Так `hold=apply_multiplier(ceiling) ≤ bal+$1` по построению.
-    let x_max = ceil.saturating_mul(10000) / (mult_bp as i128);
-    let fixed_raw = input_est * p.cache_write_1h + web_buf; // вход worst-case + буфер поисков (RAW)
-    if fixed_raw > x_max {
-        return None;
-    } // не тянет даже вход worst-case → 402
-    let out = p.output.max(1);
-    let affordable = ((x_max - fixed_raw) / out).max(0) as u64; // сколько output-токенов влезает в x_max
-    if affordable == 0 {
-        return None;
-    }
-    let eff_mt = client_mt.min(affordable);
-    // ceiling_raw ≤ x_max (по построению) → hold = apply_multiplier(ceiling_raw) ≤ bal. А реальный
-    // charge = apply_multiplier(real_raw) ≤ hold, т.к. real_raw ≤ ceiling_raw (реальных input-токенов
-    // ≤ байт=input_est, ставка входа ≤ cw1h, output ≤ eff_mt). Итог: charge ≤ hold ≤ bal — жёстко.
-    let ceiling_raw = fixed_raw + (eff_mt as i128) * p.output;
-    // Кламп к i64::MAX: овердрафт-буфер (bal+$1) при абсурдном балансе мог бы толкнуть hold за i64,
-    // и `as i64` обернул бы его в отрицательный. Реальные балансы недостижимы близко к i64::MAX.
-    let hold = metering::apply_multiplier(ceiling_raw, mult_bp).min(i64::MAX as i128) as i64;
-    Some((eff_mt, hold))
-}
-
 /// Ensure the mandatory subscription OAuth identity prefix for an ordinary SDK request. A genuine
 /// Claude Code marker stays in place here and is handled separately by the attribution rewrite below.
 fn is_cc_marker(text: &str) -> bool {
@@ -1588,7 +1527,6 @@ pub async fn forward(
     // каждую попытку ротации тогда O(1) refcount, а не копия до BODY_LIMIT (анти-амплификация памяти).
     let body_bytes: bytes::Bytes = raw.clone();
     let mut model = String::new();
-    let mut max_tokens: u64 = 0;
     let mut requested_fast = false;
     let mut requested_us_inference = false;
     let mut affinity_input = None;
@@ -1833,10 +1771,8 @@ pub async fn forward(
     // `parsed` (если тело — JSON) держим как ФИНАЛИЗИРУЕМЫЙ шаблон: инжектим identity/cap max_tokens
     // здесь, а per-sub metadata.user_id — в цикле per-подписка, и сериализуем тело per-attempt. `body_bytes`
     // (=raw) — фолбэк для не-JSON тела. В общем случае (1 попытка) это 1 сериализация, как и раньше.
-    let mut web_uses: u64 = 0; // суммарный лимит web-поисков (для резерва их стоимости под баланс)
     if let Some(v) = parsed.as_mut() {
         model = strip_own_namespace(v);
-        max_tokens = v.get("max_tokens").and_then(Value::as_u64).unwrap_or(0);
         requested_fast = v
             .get("speed")
             .and_then(Value::as_str)
@@ -1845,28 +1781,6 @@ pub async fn forward(
             .get("inference_geo")
             .and_then(Value::as_str)
             .is_some_and(|geo| geo.eq_ignore_ascii_case("us"));
-        // Резервируем стоимость web_search по РЕАЛЬНОМУ max_uses каждого инструмента (не фикс-буфер):
-        // иначе клиент с max_uses>buf пробил бы hold. Без max_uses — консервативный дефолт.
-        if let Some(tools) = v.get("tools").and_then(Value::as_array) {
-            for t in tools {
-                let is_web = t
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .map(|s| s.contains("web_search"))
-                    .unwrap_or(false);
-                if is_web {
-                    // saturating + кламп: crafted max_uses≈u64::MAX не должен обернуть web_uses (release-wrap
-                    // → мизерный web_buf → недорезерв). Потолок 1000 с запасом покрывает любой реальный кейс.
-                    web_uses = web_uses
-                        .saturating_add(
-                            t.get("max_uses")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(DEFAULT_WEB_USES),
-                        )
-                        .min(1000);
-                }
-            }
-        }
         // Infer from the untouched client request. Native harness IDs win; ordinary API clients are
         // linked by canonical transcript prefixes. The account (not individual API key) is the tenant.
         if let Some(scope) = authz.affinity_scope() {
@@ -2024,13 +1938,7 @@ pub async fn forward(
     {
         // Одна скидка на запрос: переопределение аккаунта по `anthropic`, иначе его дефолт.
         let mult_bp = &authz.mult_for(registry::PROVIDER_ANTHROPIC);
-        // баланс несём из authorize (свежая выборка) — без повторного чтения. Гонку с параллельными
-        // запросами всё равно ловит АТОМАРНЫЙ reserve (WHERE balance>=hold): stale-баланс лишь мог бы
-        // дать чуть больший cap, но reserve тогда честно откажет (402), в минус не уводя.
         let bal = *available_nano as i128;
-        // РЕЗЕРВ по model_prices_RESERVE: распознанная модель → её цена; нераспознанный алиас →
-        // MAX-тариф. Иначе резерв по дешёвому дефолту, а списание по (дорогой) модели ОТВЕТА пробили
-        // бы hold → баланс в минус до −2×. Списание (finalize) остаётся по реальной модели ответа.
         let price_ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs() as i64)
@@ -2053,123 +1961,61 @@ pub async fn forward(
                 pin: None,
             },
         };
-        let mut p = resolved_tariff.prices;
         let tariff_pin = resolved_tariff.pin;
-        if requested_us_inference {
-            p = metering::premium_prices_ceil(p, 11_000);
-        }
-        let input_est = ((raw.len() + app.cfg.identity.len()) as i128).max(1);
-        // web-буфер = число разрешённых поисков × ставка (0 без web_search-инструмента → малобалансовым
-        // не блокирует обычные запросы; при включённом — покрывает ровно заявленный max_uses).
-        let web_buf = (web_uses as i128) * metering::WEB_SEARCH_NANO;
-        let client_mt = if max_tokens > 0 {
-            max_tokens.min(2_000_000)
-        } else {
-            4096
-        };
-        // РЕЗЕРВ по АККАУНТУ с ПЕРЕ-РЕЗЕРВОМ под свежий баланс: funded-юзера НЕ роняем 402 из-за гонки
-        // конкурентных резервов. `bal` из authorize оптимистичен; если атомарный reserve отказал (соседние
-        // holds увели баланс за пол −$1, или per-key лимит), перечитываем АКТУАЛЬНЫЙ баланс, дорезаем
-        // output под него+буфер и повторяем. None-путь reserve строки НЕ создаёт → тот же request_id
-        // безопасно повторить с меньшим hold (идемпотентность не триггерится). Ограничено 4 попытками:
-        // строго убывающий hold сходится быстро; иначе честный 402 (реально за полом даже с буфером).
-        let mut reserved_pair: Option<(u64, i64)> = None;
         let settlement_mult_bp = *mult_bp;
         let settlement_priced_ts: Option<i64> = None;
         if *mult_bp > 0 && bal <= 0 {
             return local_err(LocalErr::LowBalance, None);
         }
-        let mut cur = cap_to_balance(bal, input_est, web_buf, &p, *mult_bp, client_mt);
-        for _ in 0..4 {
-            let (eff_mt, hold) = match cur {
-                Some(x) => x,
-                None => break,
-            };
-            let reserve_result = match request_fact_admission.as_ref() {
-                Some(request_fact) => {
-                    billing
-                        .reserve_priced_request_for_execution_with_fact(
-                            &engine_request_id,
-                            account_id,
-                            key,
-                            hold,
-                            execution.clone(),
-                            registry::PROVIDER_ANTHROPIC,
-                            *mult_bp,
-                            request_fact.clone(),
-                        )
-                        .await
-                }
-                None => {
-                    billing
-                        .reserve_priced_request_for_execution(
-                            &engine_request_id,
-                            account_id,
-                            key,
-                            hold,
-                            execution.clone(),
-                            registry::PROVIDER_ANTHROPIC,
-                            *mult_bp,
-                        )
-                        .await
-                }
-            };
-            match reserve_result {
-                Ok(Some(_)) => {
-                    reserved_pair = Some((eff_mt, hold));
-                    break;
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    elog::error("forward", format!("billing reservation failed: {error:#}"));
-                    return local_err_for(
-                        LocalErr::Overloaded,
-                        "billing_reservation_unavailable",
-                        Some(2),
-                    );
-                }
+        const HOLD_NANO: i64 = 0;
+        let reserve_result = match request_fact_admission.as_ref() {
+            Some(request_fact) => {
+                billing
+                    .reserve_priced_request_for_execution_with_fact(
+                        &engine_request_id,
+                        account_id,
+                        key,
+                        HOLD_NANO,
+                        execution.clone(),
+                        registry::PROVIDER_ANTHROPIC,
+                        *mult_bp,
+                        request_fact.clone(),
+                    )
+                    .await
             }
-            let fresh = match billing.account(account_id).await {
-                Ok(Some(account)) => account.balance_nano as i128,
-                Ok(None) => 0,
-                Err(error) => {
-                    elog::error(
-                        "forward",
-                        format!("billing balance refresh failed: {error:#}"),
-                    );
-                    return local_err_for(
-                        LocalErr::Overloaded,
-                        "billing_balance_refresh_unavailable",
-                        Some(2),
-                    );
-                }
-            };
-            match cap_to_balance(fresh, input_est, web_buf, &p, *mult_bp, client_mt) {
-                Some((e, h)) if h < hold => cur = Some((e, h)),
-                _ => break,
-            }
-        }
-        let (eff_mt, hold) = match reserved_pair {
-            Some(x) => x,
             None => {
-                return local_err_for(LocalErr::LowBalance, "billing_reservation_rejected", None)
+                billing
+                    .reserve_priced_request_for_execution(
+                        &engine_request_id,
+                        account_id,
+                        key,
+                        HOLD_NANO,
+                        execution.clone(),
+                        registry::PROVIDER_ANTHROPIC,
+                        *mult_bp,
+                    )
+                    .await
             }
         };
-        // урезали под баланс → правим max_tokens в теле ПОСЛЕ финального eff_mt (мог уменьшиться на
-        // ретрае): Anthropic остановит генерацию ровно тут.
-        if eff_mt < max_tokens {
-            if let Some(v) = parsed.as_mut() {
-                v["max_tokens"] = serde_json::json!(eff_mt);
+        match reserve_result {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return local_err_for(LocalErr::LowBalance, "billing_reservation_rejected", None)
             }
-            if let Some(v) = fallback_parsed.as_mut() {
-                v["max_tokens"] = serde_json::json!(eff_mt);
+            Err(error) => {
+                elog::error("forward", format!("billing reservation failed: {error:#}"));
+                return local_err_for(
+                    LocalErr::Overloaded,
+                    "billing_reservation_unavailable",
+                    Some(2),
+                );
             }
         }
         reserved = Some((
             engine_request_id.clone(),
             account_id.clone(),
             key.clone(),
-            hold,
+            HOLD_NANO,
             settlement_mult_bp,
             settlement_priced_ts,
             tariff_pin,

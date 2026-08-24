@@ -93,7 +93,7 @@ fn proxy_test_app(billing: Arc<AsyncBilling>, path: &str) -> AppState {
         codex: None,
         gemini: None,
         gemini_batch: None,
-            gemini_batch_runtime: None,
+        gemini_batch_runtime: None,
         kimi: None,
         glm: None,
         tripo3d: None,
@@ -252,7 +252,7 @@ async fn count_fact_test_app(
         codex: None,
         gemini: None,
         gemini_batch: None,
-            gemini_batch_runtime: None,
+        gemini_batch_runtime: None,
         kimi: None,
         glm: None,
         tripo3d: None,
@@ -1503,54 +1503,10 @@ async fn authorize_keeps_nonsecret_key_id_separate_from_raw_billing_key() {
 }
 
 #[test]
-fn cap_to_balance_enforces_budget() {
-    let p = metering::model_prices("claude-haiku-4-5"); // input 1000, output 5000, cw1h 2000
-    let od = metering::OVERDRAFT_NANO;
-    // ИНВАРИАНТ с овердрафт-буфером: hold ≤ bal+$1 (funded не роняем; резерв держит пол −$1),
-    // charge(worst usage) ≤ hold, и +1 output-токен пробил бы bal+$1 (точность отруба «ни на токен больше»).
-    for &m in &[10000i64, 2000, 900, 33333] {
-        // ×1.0, ×0.2 (прод), ×0.09, ×3.33
-        for &bal in &[500_000i128, 2_000_000, 50_000_000, 10_000_000_000] {
-            let ib = 137i128; // байты входа
-            if let Some((eff, hold)) = cap_to_balance(bal, ib, 0, &p, m, 100_000) {
-                assert!(
-                    (hold as i128) <= bal + od,
-                    "hold {hold} > bal+$1 ({}) (m={m})",
-                    bal + od
-                );
-                let real = ib * p.cache_write_1h + (eff as i128) * p.output; // worst-case usage
-                assert!(
-                    metering::apply_multiplier(real, m) <= hold as i128,
-                    "charge > hold (m={m}, bal={bal}, eff={eff})"
-                );
-                // если урезали (eff < запрошенного) — +1 токен обязан пробить bal+$1
-                if eff < 100_000 {
-                    let over = ib * p.cache_write_1h + ((eff + 1) as i128) * p.output;
-                    assert!(
-                        metering::apply_multiplier(over, m) > bal + od,
-                        "eff+1 должен пробить bal+$1 (m={m}, bal={bal}, eff={eff})"
-                    );
-                }
-            }
-        }
-    }
-    // большой баланс + большой запрос → НЕ режем (eff == запрошенное)
-    let (eff, _) = cap_to_balance(1_000_000_000, 100, 0, &p, 2000, 50).unwrap();
-    assert_eq!(eff, 50);
-    // бесплатный ключ (наценка 0) → не лимитируем, hold 0
-    assert_eq!(
-        cap_to_balance(0, 999_999, 0, &p, 0, 12345),
-        Some((12345, 0))
-    );
-    // funded (bal>0) НЕ роняем: овердрафт-буфер $1 покрывает — прежние балансовые «None» теперь Some
-    assert!(cap_to_balance(100, 100_000, 0, &p, 2000, 10).is_some());
-    assert!(cap_to_balance(0, 10, 0, &p, 2000, 10).is_some());
-    // отказ ТОЛЬКО когда вход worst-case не влезает даже в bal+$1, либо аккаунт уже на полу −$1
-    assert!(cap_to_balance(100, 600_000, 0, &p, 10000, 10).is_none());
-    assert!(cap_to_balance(-od, 10, 0, &p, 2000, 10).is_none());
-    // Переполнения нет: огромный баланс и max_tokens.
-    let (_, h) = cap_to_balance(i64::MAX as i128, 100, 0, &p, 2000, u64::MAX).unwrap();
-    assert!(h >= 0);
+fn paid_low_balance_is_payment_required() {
+    let (status, _, message) = LocalErr::LowBalance.parts();
+    assert_eq!(status.as_u16(), 402);
+    assert!(message.contains("insufficient balance"));
 }
 
 /// Все синтетические причины перебираем в одном месте (гарантия, что тест покрывает КАЖДУЮ).
@@ -1609,7 +1565,11 @@ fn local_err_maps_to_authentic_anthropic_triples() {
         (LocalErr::LowBalance, 402, "invalid_request_error"),
         (LocalErr::NotFound, 404, "not_found_error"),
         (LocalErr::BodyTooLarge, 413, "request_too_large"),
-        (LocalErr::UnsupportedContentEncoding, 415, "invalid_request_error"),
+        (
+            LocalErr::UnsupportedContentEncoding,
+            415,
+            "invalid_request_error",
+        ),
         (LocalErr::BadRequest, 400, "invalid_request_error"),
         (LocalErr::BadBeta, 400, "invalid_request_error"),
         (LocalErr::Internal, 500, "api_error"),
@@ -1851,7 +1811,7 @@ data: {"type":"message_stop"}
         codex: None,
         gemini: None,
         gemini_batch: None,
-            gemini_batch_runtime: None,
+        gemini_batch_runtime: None,
         kimi: None,
         glm: None,
         tripo3d: None,
@@ -2189,7 +2149,7 @@ fn native_billable_messages_admission_delivery_and_terminal_share_postgres_money
         codex: None,
         gemini: None,
         gemini_batch: None,
-            gemini_batch_runtime: None,
+        gemini_batch_runtime: None,
         kimi: None,
         glm: None,
         tripo3d: None,
@@ -2380,7 +2340,7 @@ fn native_count_tokens_terminal_fact_persists_privacy_bounded_postgres_row() {
         codex: None,
         gemini: None,
         gemini_batch: None,
-            gemini_batch_runtime: None,
+        gemini_batch_runtime: None,
         kimi: None,
         glm: None,
         tripo3d: None,

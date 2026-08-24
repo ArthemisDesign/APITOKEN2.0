@@ -815,6 +815,93 @@ fn reconcile_does_not_refund_unowned_aggregate_reservations() {
     assert_eq!(acc.reserved_nano, 600_000_000);
 }
 
+/// Paid zero-hold admission requires a strictly positive balance; settlement may go negative
+/// without recording uncollected shortfall; a leftover hold>0 still uses the old debit path.
+#[test]
+fn zero_hold_paid_admission_and_full_collection() {
+    let c = db();
+    acct_with_key(&c, "empty", "empty-key", 0, 5_000);
+    assert_eq!(
+        sqlite_reserve_request(&c, "empty-req", "empty", "empty-key", 0, 60).unwrap(),
+        None
+    );
+
+    acct_with_key(&c, "debt", "debt-key", 1, 5_000);
+    account_settle(&c, "debt", "debt-key", 0, 5, Some("seed-debt"), None).unwrap();
+    assert!(account_get(&c, "debt").unwrap().unwrap().balance_nano < 0);
+    assert_eq!(
+        sqlite_reserve_request(&c, "debt-req", "debt", "debt-key", 0, 60).unwrap(),
+        None
+    );
+
+    acct_with_key(&c, "paid", "paid-key", 100, 5_000);
+    let pricing = ReservationPricing::new(PROVIDER_ANTHROPIC, 5_000).unwrap();
+    assert_eq!(
+        sqlite_reserve_priced_request_for_execution(
+            &c,
+            "paid-req",
+            "paid",
+            "paid-key",
+            0,
+            60,
+            &ExecutionAttempt::direct(),
+            &pricing,
+        )
+        .unwrap(),
+        Some(100)
+    );
+    let acc = account_get(&c, "paid").unwrap().unwrap();
+    assert_eq!(acc.balance_nano, 100);
+    assert_eq!(acc.reserved_nano, 0);
+
+    let usage = UsageEventInput {
+        model: "claude-zero-hold-test".into(),
+        provider: PROVIDER_ANTHROPIC.into(),
+        real_nano: 250,
+        charge_basis_nano: 250,
+        ..Default::default()
+    };
+    assert_eq!(
+        sqlite_settle_request(
+            &c,
+            "paid-req",
+            "paid",
+            "paid-key",
+            0,
+            250,
+            Some("paid-req"),
+            Some(&usage),
+        )
+        .unwrap(),
+        Some(100 - 250)
+    );
+    let acc = account_get(&c, "paid").unwrap().unwrap();
+    assert_eq!(acc.balance_nano, -150);
+    assert_eq!(acc.spent_nano, 250);
+    assert_eq!(acc.reserved_nano, 0);
+    assert_eq!(acc.uncollected_nano, 0);
+    let ledger = ledger_recent(&c, "paid", 10).unwrap();
+    assert_eq!(ledger[0].amount_nano, 250);
+    assert_eq!(ledger[0].uncollected_nano, 0);
+
+    let service = ReservationPricing::new(PROVIDER_ANTHROPIC, 0).unwrap();
+    acct_with_key(&c, "svc", "svc-key", 0, 0);
+    assert_eq!(
+        sqlite_reserve_priced_request_for_execution(
+            &c,
+            "svc-req",
+            "svc",
+            "svc-key",
+            0,
+            60,
+            &ExecutionAttempt::direct(),
+            &service,
+        )
+        .unwrap(),
+        Some(0)
+    );
+}
+
 /// reserve атомарно гейтит по общему account floor; settle сводит пару к −actual; per-key spent + ledger.
 #[test]
 fn reserve_gates_and_settle_nets_to_actual() {

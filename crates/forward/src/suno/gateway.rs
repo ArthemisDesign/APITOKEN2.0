@@ -34,9 +34,7 @@ use axum::body::Body;
 use axum::http::StatusCode;
 use axum::response::Response;
 use bytes::Bytes;
-use metering::suno::{
-    suno_cost_nanodollars, suno_paid_model, SUNO_TARIFF_SCHEDULE_ID,
-};
+use metering::suno::{suno_cost_nanodollars, suno_paid_model, SUNO_TARIFF_SCHEDULE_ID};
 use registry::{ExecutionAttempt, SunoTurnCalibrationEvent};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -54,9 +52,7 @@ use super::queue::{DeliveryHealth, PendingTurn, TurnQueue, WriteOutcome, DEFAULT
 use super::roster::{load_roster, load_roster_for_reload, SunoProfile};
 use super::selection::{select, select_ignoring_soft, Candidate, Hard, Soft};
 use super::session::SessionManager;
-use super::transport::{
-    classify_status, parse_retry_after, SunoHosts, UpstreamVerdict,
-};
+use super::transport::{classify_status, parse_retry_after, SunoHosts, UpstreamVerdict};
 use super::upload::{store_upload, upload_path, UPLOAD_MAX_BYTES};
 
 const ERROR_BODY_LIMIT: usize = 64 * 1024;
@@ -622,9 +618,9 @@ impl SunoGateway {
             // serving generation. A session the provider rejects (401/403) must not start
             // carrying traffic.
             for profile in needs_probe {
-                self.probe_profile(&profile)
-                    .await
-                    .map_err(|error| anyhow!("Suno reload billing-probe class={}", error.class()))?;
+                self.probe_profile(&profile).await.map_err(|error| {
+                    anyhow!("Suno reload billing-probe class={}", error.class())
+                })?;
             }
 
             let verified = self.load_reload_snapshot(!current.is_empty()).await?;
@@ -634,7 +630,10 @@ impl SunoGateway {
             if self.shutting_down.load(Ordering::Acquire) {
                 return Ok(false);
             }
-            let live = next.iter().filter(|profile| profile.authenticated()).count();
+            let live = next
+                .iter()
+                .filter(|profile| profile.authenticated())
+                .count();
             *self.profiles.write().expect("Suno profiles lock") = next;
             self.live_profiles.store(live, Ordering::Release);
             return Ok(true);
@@ -904,7 +903,10 @@ impl SunoGateway {
         match client::parse_billing_probe(status, &body) {
             Ok(BillingProbe::Valid(snapshot)) => Ok(snapshot),
             Ok(BillingProbe::Invalid) => Err(GatewayFailure::Auth),
-            Err(_) => Err(GatewayFailure::from_verdict(classify_status(status), status)),
+            Err(_) => Err(GatewayFailure::from_verdict(
+                classify_status(status),
+                status,
+            )),
         }
     }
 
@@ -941,8 +943,8 @@ impl SunoGateway {
             .filter_map(|profile| profile.candidate(now, reserve_credits))
             .collect::<Vec<_>>();
         let cursor = self.cursor.fetch_add(1, Ordering::Relaxed);
-        let selected = select(&candidates, cursor)
-            .or_else(|| select_ignoring_soft(&candidates, cursor))?;
+        let selected =
+            select(&candidates, cursor).or_else(|| select_ignoring_soft(&candidates, cursor))?;
         profiles
             .into_iter()
             .find(|profile| profile.id == selected.profile_id)
@@ -951,7 +953,12 @@ impl SunoGateway {
     /// Profiles still tryable after `current` under the same pass selection would use next:
     /// strict-eligible first, then merely hard-eligible. Zero means real provider limits — the
     /// honest 429, never an invented 503.
-    fn remaining_count(&self, excluded: &HashSet<String>, current: &str, reserve_credits: i64) -> usize {
+    fn remaining_count(
+        &self,
+        excluded: &HashSet<String>,
+        current: &str,
+        reserve_credits: i64,
+    ) -> usize {
         let now = now_unix();
         let candidates = self
             .profiles_snapshot()
@@ -1004,57 +1011,38 @@ impl SunoGateway {
         let billing = self.billing.as_ref().ok_or(GatewayFailure::Unavailable(
             "suno_billing_authority_unavailable",
         ))?;
-        let raw = suno_cost_nanodollars(i128::from(admitted.reserve_credits))
+        let _raw = suno_cost_nanodollars(i128::from(admitted.reserve_credits))
             .map_err(|_| GatewayFailure::Unavailable("suno_price_overflow"))?;
-        // The hold is the reserve priced with the customer's multiplier, clamped to the ledger
-        // width; a zero multiplier is free but still metered.
-        let hold = metering::apply_multiplier(raw, input.mult_bp).clamp(0, i128::from(i64::MAX)) as i64;
-        let mut balance = i128::from(input.available_nano);
-        for _ in 0..4 {
-            if i128::from(hold) > balance + metering::OVERDRAFT_NANO {
-                return Err(GatewayFailure::LowBalance);
-            }
-            match billing
-                .reserve_priced_request_for_execution(
-                    request_id,
-                    &input.account_id,
-                    &input.key,
-                    hold,
-                    execution.clone(),
-                    registry::PROVIDER_SUNO,
-                    input.mult_bp,
-                )
-                .await
-                .map_err(|error| {
-                    elog::error("suno", "Suno reservation failed");
-                    let _ = error;
-                    GatewayFailure::Unavailable("suno_reservation_unavailable")
-                })? {
-                Some(_) => {
-                    return Ok(Some(Reservation {
-                        request_id: request_id.to_string(),
-                        account_id: input.account_id.clone(),
-                        key: input.key.clone(),
-                        hold,
-                        mult_bp: input.mult_bp,
-                        priced_ts,
-                    }));
-                }
-                None => {
-                    balance = billing
-                        .account(&input.account_id)
-                        .await
-                        .map_err(|error| {
-                            elog::error("suno", "Suno balance read failed");
-                            let _ = error;
-                            GatewayFailure::Unavailable("suno_balance_unavailable")
-                        })?
-                        .map(|account| i128::from(account.balance_nano))
-                        .unwrap_or(0);
-                }
-            }
+        if input.mult_bp > 0 && input.available_nano <= 0 {
+            return Err(GatewayFailure::LowBalance);
         }
-        Err(GatewayFailure::LowBalance)
+        const HOLD_NANO: i64 = 0;
+        match billing
+            .reserve_priced_request_for_execution(
+                request_id,
+                &input.account_id,
+                &input.key,
+                HOLD_NANO,
+                execution.clone(),
+                registry::PROVIDER_SUNO,
+                input.mult_bp,
+            )
+            .await
+            .map_err(|error| {
+                elog::error("suno", "Suno reservation failed");
+                let _ = error;
+                GatewayFailure::Unavailable("suno_reservation_unavailable")
+            })? {
+            Some(_) => Ok(Some(Reservation {
+                request_id: request_id.to_string(),
+                account_id: input.account_id.clone(),
+                key: input.key.clone(),
+                hold: HOLD_NANO,
+                mult_bp: input.mult_bp,
+                priced_ts,
+            })),
+            None => Err(GatewayFailure::LowBalance),
+        }
     }
 
     /// One admitted generation request: validate → reserve → pre-check → create → deliver the
@@ -1081,7 +1069,13 @@ impl SunoGateway {
         let request_id = crate::upstream::fresh_request_id();
         let priced_ts = now_unix();
         let mut reservation = match self
-            .reserve_customer(&admitted, &request_id, priced_ts, billing.as_ref(), execution)
+            .reserve_customer(
+                &admitted,
+                &request_id,
+                priced_ts,
+                billing.as_ref(),
+                execution,
+            )
             .await
         {
             Ok(reservation) => reservation,
@@ -1106,15 +1100,25 @@ impl SunoGateway {
         loop {
             let Some(profile) = self.select_profile(&excluded, admitted.reserve_credits) else {
                 elog::warn("suno", "suno pool exhausted: no profile");
-                return error_response_with_retry(GatewayFailure::Capacity, self.capacity_retry_after());
+                return error_response_with_retry(
+                    GatewayFailure::Capacity,
+                    self.capacity_retry_after(),
+                );
             };
             let lease = ProfileLease::new(profile.clone());
             // The hCaptcha pre-check runs before every creation on this profile
             // (`oss-hypothesis`, manifest §4). `required: true` soft-cools and rotates — no
             // CAPTCHA is ever solved.
-            let (upstream_ids, baseline) = match self.precheck_and_create(&profile, &admitted, &body_bytes).await {
+            let (upstream_ids, baseline) = match self
+                .precheck_and_create(&profile, &admitted, &body_bytes)
+                .await
+            {
                 CreateOutcome::Created { ids, baseline } => (ids, baseline),
-                CreateOutcome::Refused { verdict, retry_after, status } => {
+                CreateOutcome::Refused {
+                    verdict,
+                    retry_after,
+                    status,
+                } => {
                     let remaining =
                         self.remaining_count(&excluded, &profile.id, admitted.reserve_credits);
                     elog::warn("suno", format!("suno upstream refused: {status}"));
@@ -1128,7 +1132,10 @@ impl SunoGateway {
                             continue;
                         }
                         NextStep::SurfaceCapacityExhausted => {
-                            return error_response_with_retry(GatewayFailure::Capacity, self.capacity_retry_after());
+                            return error_response_with_retry(
+                                GatewayFailure::Capacity,
+                                self.capacity_retry_after(),
+                            );
                         }
                         NextStep::SurfaceUpstreamError => {
                             return error_response(GatewayFailure::Upstream(status));
@@ -1215,11 +1222,7 @@ impl SunoGateway {
         admitted: &AdmittedGeneration,
         body: &Bytes,
     ) -> CreateOutcome {
-        let jwt = match profile
-            .session
-            .jwt(&profile.client, &profile.hosts)
-            .await
-        {
+        let jwt = match profile.session.jwt(&profile.client, &profile.hosts).await {
             Ok(jwt) => jwt,
             Err(error) => {
                 return CreateOutcome::Refused {
@@ -1254,10 +1257,7 @@ impl SunoGateway {
         // Attribution baseline: the quota state right before creation, valid only if this lease
         // is the profile's only in-flight work. A failed baseline read does not block the
         // create — settlement then falls to the documented conservative reserve.
-        let baseline = match self
-            .read_quota_with(profile, &jwt, &cookie)
-            .await
-        {
+        let baseline = match self.read_quota_with(profile, &jwt, &cookie).await {
             Ok(snapshot) if profile.inflight.load(Ordering::SeqCst) == 1 => {
                 Some(AttributionBaseline {
                     snapshot,
@@ -1267,7 +1267,10 @@ impl SunoGateway {
             _ => None,
         };
 
-        match self.send_create(profile, admitted, body, &jwt, &cookie).await {
+        match self
+            .send_create(profile, admitted, body, &jwt, &cookie)
+            .await
+        {
             Ok(ids) => CreateOutcome::Created { ids, baseline },
             Err((verdict, retry_after, status)) => CreateOutcome::Refused {
                 verdict,
@@ -1357,7 +1360,9 @@ impl SunoGateway {
             OperationKind::Song => profile.hosts.generate_song_url(),
             OperationKind::Extend => profile.hosts.generate_concat_url(),
             OperationKind::Lyrics => profile.hosts.lyrics_create_url(),
-            OperationKind::Stems => profile.hosts.stems_url(&admitted.song_id.clone().unwrap_or_default()),
+            OperationKind::Stems => profile
+                .hosts
+                .stems_url(&admitted.song_id.clone().unwrap_or_default()),
         };
         let response = profile
             .client
@@ -1476,7 +1481,10 @@ impl SunoGateway {
             if started.elapsed() >= POLL_DEADLINE {
                 elog::error(
                     "suno",
-                    format!("suno generation drain deadline profile={}", context.profile.id),
+                    format!(
+                        "suno generation drain deadline profile={}",
+                        context.profile.id
+                    ),
                 );
                 self.update_generation(&context.request_id, |record| {
                     record.status = "expired";
@@ -1517,7 +1525,8 @@ impl SunoGateway {
                         record.error = Some("suno_generation_lost");
                         record.finalized = true;
                     });
-                    self.settle_conservative_hold(&context, "suno-generation-lost").await;
+                    self.settle_conservative_hold(&context, "suno-generation-lost")
+                        .await;
                     return;
                 }
                 Err(_) => {
@@ -1543,7 +1552,10 @@ impl SunoGateway {
         match context.kind {
             OperationKind::Song | OperationKind::Extend => {
                 let clips = self.poll_feed(&context.profile, upstream_ids).await?;
-                if clips.iter().any(|clip| clip.lifecycle == Some(ClipLifecycle::Error)) {
+                if clips
+                    .iter()
+                    .any(|clip| clip.lifecycle == Some(ClipLifecycle::Error))
+                {
                     return Ok(DrainPoll::Final(Finalized::Clips {
                         clips,
                         succeeded: false,
@@ -1630,7 +1642,9 @@ impl SunoGateway {
         profile: &Arc<RuntimeProfile>,
         id: &str,
     ) -> Result<client::LyricsState, UpstreamVerdict> {
-        let (status, body) = self.authed_get(profile, profile.hosts.lyrics_status_url(id)).await?;
+        let (status, body) = self
+            .authed_get(profile, profile.hosts.lyrics_status_url(id))
+            .await?;
         client::parse_lyrics_state(status, &body)
     }
 
@@ -1675,17 +1689,21 @@ impl SunoGateway {
     /// (manifest §4.1).
     async fn finalize_generation(&self, context: &DrainContext, finalized: Finalized) {
         let completed_at = now_unix();
-        let (succeeded, mut stored, served_model, clips): (bool, Vec<String>, Option<String>, Vec<ClipState>) =
-            match &finalized {
-                Finalized::Clips { clips, succeeded } => (
-                    *succeeded,
-                    Vec::new(),
-                    clips.iter().find_map(|clip| clip.served_model.clone()),
-                    clips.clone(),
-                ),
-                Finalized::Lyrics(_) => (true, Vec::new(), None, Vec::new()),
-                Finalized::LyricsFailed => (false, Vec::new(), None, Vec::new()),
-            };
+        let (succeeded, mut stored, served_model, clips): (
+            bool,
+            Vec<String>,
+            Option<String>,
+            Vec<ClipState>,
+        ) = match &finalized {
+            Finalized::Clips { clips, succeeded } => (
+                *succeeded,
+                Vec::new(),
+                clips.iter().find_map(|clip| clip.served_model.clone()),
+                clips.clone(),
+            ),
+            Finalized::Lyrics(_) => (true, Vec::new(), None, Vec::new()),
+            Finalized::LyricsFailed => (false, Vec::new(), None, Vec::new()),
+        };
         if succeeded {
             // Artifacts first: upstream media URLs are short-lived, settlement can wait a
             // moment. Lyrics persist through the same durable path from memory.
@@ -1753,10 +1771,7 @@ impl SunoGateway {
 
         // The post-turn quota read: the delta against the pre-create baseline attributes this
         // generation's credit movement, iff no other lease overlapped the window.
-        let post = self
-            .fetch_quota(&context.profile, false)
-            .await
-            .ok();
+        let post = self.fetch_quota(&context.profile, false).await.ok();
         let attributed_delta_credits = match (&context.baseline, &post) {
             (Some(baseline), Some(post))
                 if context.profile.turn_epoch.load(Ordering::SeqCst) == baseline.epoch =>
@@ -1788,7 +1803,8 @@ impl SunoGateway {
                 // Zero movement on a completed generation is not credible consumption
                 // evidence; the reserve holds (documented conservative default).
                 None => {
-                    self.unattributed_settlements.fetch_add(1, Ordering::Relaxed);
+                    self.unattributed_settlements
+                        .fetch_add(1, Ordering::Relaxed);
                     Money::Reserve("suno-attribution-ambiguous")
                 }
             }
@@ -1805,7 +1821,8 @@ impl SunoGateway {
                     Money::Reserve("suno-tariff-anomaly")
                 }
                 None => {
-                    self.unattributed_settlements.fetch_add(1, Ordering::Relaxed);
+                    self.unattributed_settlements
+                        .fetch_add(1, Ordering::Relaxed);
                     Money::Reserve("suno-attribution-ambiguous")
                 }
             }
@@ -2058,10 +2075,7 @@ impl SunoGateway {
     /// (manifest §4/§6), so admission of a generation carrying the id fails closed with a clear
     /// 400 — the intake exists so the capability is end-to-end on our side the moment an
     /// upstream path is proven, and so a customer binary is never silently dropped.
-    pub(crate) async fn handle_audio_upload(
-        self: &Arc<Self>,
-        bytes: Bytes,
-    ) -> Response {
+    pub(crate) async fn handle_audio_upload(self: &Arc<Self>, bytes: Bytes) -> Response {
         if self.shutting_down.load(Ordering::Acquire) {
             return error_response(GatewayFailure::Unavailable("suno_shutdown"));
         }
@@ -2135,7 +2149,11 @@ impl SunoGateway {
         if !record.artifacts.iter().any(|artifact| artifact == name) {
             return None;
         }
-        Some(artifact_path(&self.config.artifact_dir, generation_id, name))
+        Some(artifact_path(
+            &self.config.artifact_dir,
+            generation_id,
+            name,
+        ))
     }
 
     /// Read only cached operational state. Metrics collection and the admin projection never
@@ -2210,7 +2228,11 @@ impl SunoGateway {
             transport_cooling_profiles,
             inflight_requests,
             inflight_drains: 0,
-            tracked_generations: self.generations.lock().expect("Suno generations lock").len(),
+            tracked_generations: self
+                .generations
+                .lock()
+                .expect("Suno generations lock")
+                .len(),
             unattributed_settlements: self.unattributed_settlements.load(Ordering::Acquire),
             tariff_anomaly: self.tariff_anomaly.load(Ordering::Acquire),
             artifact_failures: self.artifact_failures.load(Ordering::Acquire),
@@ -2315,7 +2337,10 @@ enum DrainPoll {
 
 /// A finalized upstream generation, with the evidence the settlement needs.
 enum Finalized {
-    Clips { clips: Vec<ClipState>, succeeded: bool },
+    Clips {
+        clips: Vec<ClipState>,
+        succeeded: bool,
+    },
     Lyrics(client::LyricsState),
     LyricsFailed,
 }
@@ -2330,7 +2355,7 @@ enum CreateOutcome {
         verdict: UpstreamVerdict,
         retry_after: Option<i64>,
         status: u16,
-    }
+    },
 }
 
 fn same_profile_generation(left: &[Arc<RuntimeProfile>], right: &[Arc<RuntimeProfile>]) -> bool {
@@ -2454,8 +2479,14 @@ fn admit_generation(body: GenerationBody) -> Result<AdmittedGeneration, GatewayF
     // Attachments: the real API takes audio input for covers/extend-type operations, but the
     // blueprint documents no upstream upload endpoint (manifest §4/§6). Fail closed with the
     // gap named — never invent an upstream path.
-    if body.attachments.as_ref().is_some_and(|list| !list.is_empty()) {
-        return Err(GatewayFailure::Unsupported("suno_attachment_upstream_unknown"));
+    if body
+        .attachments
+        .as_ref()
+        .is_some_and(|list| !list.is_empty())
+    {
+        return Err(GatewayFailure::Unsupported(
+            "suno_attachment_upstream_unknown",
+        ));
     }
 
     let model = body.model.as_deref();
@@ -2509,7 +2540,11 @@ fn admit_generation(body: GenerationBody) -> Result<AdmittedGeneration, GatewayF
                     object.insert("negative_tags".into(), json!(negative));
                 }
             } else {
-                let Some(prompt) = body.prompt.as_deref().filter(|p| bounded_text(p, MAX_PROMPT_LEN)) else {
+                let Some(prompt) = body
+                    .prompt
+                    .as_deref()
+                    .filter(|p| bounded_text(p, MAX_PROMPT_LEN))
+                else {
                     return Err(GatewayFailure::BadRequest("suno_prompt_required"));
                 };
                 object.insert("gpt_description_prompt".into(), json!(prompt));
@@ -2543,7 +2578,11 @@ fn admit_generation(body: GenerationBody) -> Result<AdmittedGeneration, GatewayF
             }
         }
         OperationKind::Lyrics => {
-            let Some(prompt) = body.prompt.as_deref().filter(|p| bounded_text(p, MAX_PROMPT_LEN)) else {
+            let Some(prompt) = body
+                .prompt
+                .as_deref()
+                .filter(|p| bounded_text(p, MAX_PROMPT_LEN))
+            else {
                 return Err(GatewayFailure::BadRequest("suno_prompt_required"));
             };
             object.insert("prompt".into(), json!(prompt));
@@ -2716,10 +2755,7 @@ fn error_response_with_retry(error: GatewayFailure, capacity_retry_after: i64) -
             Some(2),
         ),
     };
-    let mut response = json_response(
-        status,
-        json!({"error": {"type": kind, "message": message}}),
-    );
+    let mut response = json_response(status, json!({"error": {"type": kind, "message": message}}));
     if let Some(secs) = retry_after {
         if let Ok(value) = axum::http::HeaderValue::from_str(&secs.to_string()) {
             response.headers_mut().insert("retry-after", value);
@@ -2735,7 +2771,9 @@ fn json_response(status: StatusCode, value: Value) -> Response {
     let mut response = Response::builder()
         .status(status)
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec())))
+        .body(Body::from(
+            serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+        ))
         .expect("Suno response");
     if let Ok(value) = axum::http::HeaderValue::from_str(&crate::fresh_request_id()) {
         response.headers_mut().insert("x-request-id", value);
@@ -2818,9 +2856,12 @@ async fn plane_authz(
 }
 
 fn gateway_or_404(app: &AppState) -> Result<Arc<SunoGateway>, Response> {
-    app.suno
-        .clone()
-        .ok_or_else(|| json_response(StatusCode::NOT_FOUND, json!({"error": {"type": "not_found", "message": "Not Found"}})))
+    app.suno.clone().ok_or_else(|| {
+        json_response(
+            StatusCode::NOT_FOUND,
+            json!({"error": {"type": "not_found", "message": "Not Found"}}),
+        )
+    })
 }
 
 /// `POST /v1/audio/generations` — create one admitted generation. The response names OUR
@@ -2915,14 +2956,18 @@ async fn read_multipart_file(
             continue;
         }
         if found.is_some() {
-            return Err(error_response(GatewayFailure::BadRequest("suno_multipart_invalid")));
+            return Err(error_response(GatewayFailure::BadRequest(
+                "suno_multipart_invalid",
+            )));
         }
         let bytes = field
             .bytes()
             .await
             .map_err(|_| error_response(GatewayFailure::BadRequest("suno_multipart_invalid")))?;
         if bytes.is_empty() || bytes.len() > max_bytes {
-            return Err(error_response(GatewayFailure::BadRequest("suno_upload_too_large")));
+            return Err(error_response(GatewayFailure::BadRequest(
+                "suno_upload_too_large",
+            )));
         }
         found = Some(bytes);
     }
@@ -2981,7 +3026,8 @@ pub async fn generation_artifact(
         Ok(pair) => pair,
         Err(response) => return response,
     };
-    let Some(path) = gateway.generation_artifact_path(&generation_id, &name, requester.as_deref()) else {
+    let Some(path) = gateway.generation_artifact_path(&generation_id, &name, requester.as_deref())
+    else {
         return json_response(
             StatusCode::NOT_FOUND,
             json!({"error": {"type": "not_found", "message": "Not Found"}}),

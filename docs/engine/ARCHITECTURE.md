@@ -51,7 +51,7 @@ Client (Anthropic SDK / curl)  ──POST /v1/messages (our api-key)──►  c
                 ▼
 ┌────────────────────────────────────────────────────────────┐
 │ registry  — engine-owned PostgreSQL authority              │
-│   reservations/outbox · capacity leases · epochs · CRUD    │
+│   billing tickets/outbox · capacity leases · epochs · CRUD │
 └────────────────────────────────────────────────────────────┘
 ```
 

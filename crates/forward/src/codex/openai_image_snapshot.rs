@@ -124,10 +124,8 @@ pub(super) fn openai_image_quote(input: OpenAiImageQuoteInput) -> Result<Option<
         input.payable_multiplier_bp,
     )
     .clamp(minimum_hold, i128::from(i64::MAX)) as i64;
-    if input.payable_multiplier_bp > 0 && charged_hold_nano > input.available_nano {
-        return Ok(None);
-    }
-    build_openai_image_quote(input, charged_hold_nano).map(Some)
+    let _ = charged_hold_nano;
+    build_openai_image_quote(input, 0).map(Some)
 }
 
 fn input_official_hold(input: &OpenAiImageQuoteInput) -> Result<i64> {
@@ -234,8 +232,8 @@ mod tests {
     }
 
     #[test]
-    fn quote_requires_the_full_hold_and_rejects_unknown_identity() {
-        assert!(openai_image_quote(OpenAiImageQuoteInput {
+    fn quote_requires_positive_paid_balance_and_rejects_unknown_identity() {
+        let quoted = openai_image_quote(OpenAiImageQuoteInput {
             request_id: request_id(),
             account_id: "acct".to_owned(),
             requested_model_id: metering::GPT_IMAGE_2_ALIAS.to_owned(),
@@ -245,7 +243,8 @@ mod tests {
             available_nano: GENERATION_HOLD_NANO - 1,
         })
         .unwrap()
-        .is_none());
+        .expect("paid image work starts whenever the balance is strictly positive");
+        assert_eq!(quoted.into_snapshot().charged_hold_nano(), 0);
 
         let meter_only = openai_image_quote(OpenAiImageQuoteInput {
             request_id: request_id(),

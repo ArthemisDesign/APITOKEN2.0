@@ -22,14 +22,14 @@ use crate::request_facts::{
 #[cfg(test)]
 use crate::PROVIDER_OPENAI;
 use crate::{
-    mask_proxy, AccountRow, AnthropicCalibrationRow, AnthropicWindowObservation, BillingTotals,
-    ClaudeLifecycleProfile, CodexCalibrationRow, CodexHomeCalibrationSpend,
-    CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent, CodexWindowObservation,
-    GeminiCalibrationRow, GeminiExactCalibrationRow, GeminiExactWindowObservation,
-    GeminiWindowObservation, GlmCalibrationRow, GlmSubjectSpend, GlmTurnCalibrationEvent,
-    GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow, KimiCalibrationRow,
-    KimiTurnCalibrationEvent, KimiWindowObservation, LedgerConsumerLag, LedgerRow, PoolStateRow,
-    ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
+    mask_proxy, paid_admission_requires_positive_balance, AccountRow, AnthropicCalibrationRow,
+    AnthropicWindowObservation, BillingTotals, ClaudeLifecycleProfile, CodexCalibrationRow,
+    CodexHomeCalibrationSpend, CodexTurnCalibrationAggregate, CodexTurnCalibrationEvent,
+    CodexWindowObservation, GeminiCalibrationRow, GeminiExactCalibrationRow,
+    GeminiExactWindowObservation, GeminiWindowObservation, GlmCalibrationRow, GlmSubjectSpend,
+    GlmTurnCalibrationEvent, GlmWindowObservation, KeyAuth, KeyPolicyUpdate, KeyRow,
+    KimiCalibrationRow, KimiTurnCalibrationEvent, KimiWindowObservation, LedgerConsumerLag,
+    LedgerRow, PoolStateRow, ProviderCalibrationSubjectSpend, ProviderTurnCalibrationAggregate,
     ProviderTurnCalibrationEvent, SettlementFailure, SettlementHealth, SpendAccountAgg,
     SpendModelAgg, SpendProviderAgg, Sub, SubAdmin, SubHealth, SubRow, SunoCalibrationRow,
     SunoSubjectSpend, SunoTurnCalibrationEvent, SunoWindowObservation, Tripo3dBalanceObservation,
@@ -243,8 +243,7 @@ const MIGRATION_0059: &str =
     include_str!("../migrations_pg/0059_gemini_batch_ultra_profile_slots.sql");
 const MIGRATION_0060: &str =
     include_str!("../migrations_pg/0060_gemini_batch_streaming_lifecycle.sql");
-const MIGRATION_0061: &str =
-    include_str!("../migrations_pg/0061_request_observability_views.sql");
+const MIGRATION_0061: &str = include_str!("../migrations_pg/0061_request_observability_views.sql");
 const MIGRATION_0062: &str =
     include_str!("../migrations_pg/0062_request_usage_grafana_rollups.sql");
 
@@ -522,16 +521,36 @@ pub(crate) struct AccountCollection {
     pub uncollected_nano: i64,
 }
 
-/// Apply the shared account-floor settlement equation inside the caller's transaction.
+/// Apply settlement inside the caller's transaction.
 ///
-/// Both interactive and Gemini Batch settlement use this primitive so the hold release, full billed
-/// spend, collection cap, and explicit pool-funded shortfall cannot drift between paths.
+/// `hold_nano = 0` is the current admission ticket: debit full actual, do not touch
+/// `reserved_nano`, and do not apply the leftover −$1 floor. `hold_nano > 0` is a mixed-version
+/// leftover hold and keeps the previous release/floor/uncollected equation.
+///
+/// Interactive and Gemini Batch settlement share this primitive so the two paths cannot drift.
 pub(crate) fn collect_account_settlement_tx(
     tx: &mut Transaction<'_>,
     account_id: &str,
     hold_nano: i64,
     actual_nano: i64,
 ) -> Result<AccountCollection> {
+    if hold_nano == 0 {
+        let account_update = tx
+            .query_opt(
+                "UPDATE accounts SET \
+                   balance_nano=(balance_nano::numeric-$1::bigint::numeric)::bigint, \
+                   spent_nano=(spent_nano::numeric+$1::bigint::numeric)::bigint \
+                 WHERE id=$2 \
+                 RETURNING balance_nano",
+                &[&actual_nano, &account_id],
+            )?
+            .context("reservation/account aggregate invariant failed")?;
+        return Ok(AccountCollection {
+            balance_nano: account_update.get(0),
+            collected_nano: actual_nano,
+            uncollected_nano: 0,
+        });
+    }
     let collection_floor = -ACCOUNT_OVERDRAFT_NANO;
     let account_update = tx
         .query_opt(
@@ -566,6 +585,26 @@ pub(crate) fn collect_account_settlement_tx(
         collected_nano,
         uncollected_nano,
     })
+}
+
+/// Lock an active account for a zero-hold admission ticket. Paid work requires `balance_nano > 0`.
+pub(crate) fn lock_active_account_without_hold(
+    tx: &mut Transaction<'_>,
+    account_id: &str,
+    require_positive_balance: bool,
+) -> Result<Option<i64>> {
+    let Some(row) = tx.query_opt(
+        "SELECT balance_nano FROM accounts WHERE id=$1 AND status='active' FOR UPDATE",
+        &[&account_id],
+    )?
+    else {
+        return Ok(None);
+    };
+    let balance: i64 = row.get(0);
+    if require_positive_balance && balance <= 0 {
+        return Ok(None);
+    }
+    Ok(Some(balance))
 }
 
 pub(crate) fn record_provider_turn_calibration_event_tx(
@@ -1085,36 +1124,54 @@ impl PgStore {
             tx.commit()?;
             return Ok(Some(balance));
         }
-        // Овердрафт-буфер: funded-запрос НЕ роняем из-за гонки конкурентных резервов. Пускаем, пока
-        // ПОСЛЕ-баланс не ниже пола −OVERDRAFT_NANO (`balance-hold >= -OVERDRAFT` ⇔ `balance >= hold-OVERDRAFT`).
-        // Гейт атомарен на строке аккаунта → суммарный баланс НИКОГДА не уходит ниже −$1 даже под
-        // конкуренцией (каждый успешный резерв гарантирует post_balance ≥ −$1; за полом любой h>0 отбит).
-        // Стоимость: аккаунт может получить максимум $1 в долг (per-account, не per-request) — принятый
-        // размен на «ноль ложных 402». Синхронно с `metering::OVERDRAFT_NANO`.
-        // Write the gate as `balance >= hold-overdraft` with explicit bigint casts. Besides keeping
-        // parameter inference stable, this avoids overflowing a very large stored balance merely
-        // to decide whether a small hold fits.
+        // New admission stores hold_nano=0 and does not debit the balance. Paid work requires
+        // balance_nano > 0; a zero-multiplier service request is admitted without a money gate.
+        // hold_nano > 0 remains the mixed-version leftover path that still debits reserved_nano.
         let reservation_ts = now();
         Self::assert_owner_locked(&mut tx, owner, reservation_ts)?;
-        let Some(row) = tx.query_opt(
-            "UPDATE accounts SET balance_nano=balance_nano-$1, reserved_nano=reserved_nano+$1 \
-             WHERE id=$2 AND status='active' \
-               AND balance_nano >= $1::bigint - $3::bigint RETURNING balance_nano",
-            &[&hold, &account_id, &ACCOUNT_OVERDRAFT_NANO],
-        )?
-        else {
-            tx.rollback()?;
-            return Ok(None);
+        let require_positive = paid_admission_requires_positive_balance(
+            pricing.map(|value| value.payable_multiplier_bp),
+        );
+        let balance = if hold == 0 {
+            let Some(balance) =
+                lock_active_account_without_hold(&mut tx, account_id, require_positive)?
+            else {
+                tx.rollback()?;
+                return Ok(None);
+            };
+            balance
+        } else {
+            let Some(row) = tx.query_opt(
+                "UPDATE accounts SET balance_nano=balance_nano-$1, reserved_nano=reserved_nano+$1 \
+                 WHERE id=$2 AND status='active' \
+                   AND balance_nano >= $1::bigint - $3::bigint RETURNING balance_nano",
+                &[&hold, &account_id, &ACCOUNT_OVERDRAFT_NANO],
+            )?
+            else {
+                tx.rollback()?;
+                return Ok(None);
+            };
+            row.get(0)
         };
-        let balance: i64 = row.get(0);
-        let key_updated = tx.execute(
-            "UPDATE api_keys SET reserved_nano=reserved_nano+$1 \
-             WHERE key=$2 AND account_id=$3 AND status='active' \
-               AND (expires_ts IS NULL OR expires_ts>floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint) \
-               AND (spend_limit_nano IS NULL OR spent_nano+reserved_nano+$1<=spend_limit_nano)",
-            &[&hold, &key, &account_id],
-        )?;
-        if key_updated != 1 {
+        let key_ok = if hold == 0 {
+            tx.query_opt(
+                "SELECT 1 FROM api_keys WHERE key=$1 AND account_id=$2 AND status='active' \
+                   AND (expires_ts IS NULL OR expires_ts>floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint) \
+                   AND (spend_limit_nano IS NULL OR spent_nano+reserved_nano<=spend_limit_nano) \
+                 FOR UPDATE",
+                &[&key, &account_id],
+            )?
+            .is_some()
+        } else {
+            tx.execute(
+                "UPDATE api_keys SET reserved_nano=reserved_nano+$1 \
+                 WHERE key=$2 AND account_id=$3 AND status='active' \
+                   AND (expires_ts IS NULL OR expires_ts>floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint) \
+                   AND (spend_limit_nano IS NULL OR spent_nano+reserved_nano+$1<=spend_limit_nano)",
+                &[&hold, &key, &account_id],
+            )? == 1
+        };
+        if !key_ok {
             tx.rollback()?;
             return Ok(None);
         }

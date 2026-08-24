@@ -22,19 +22,18 @@ side effect. `serve` may only perform the read-only schema verification before c
   financial and policy state in its existing single SQLite/PostgreSQL statement and snapshot; callers
   must keep using the raw key for reserve/settle. Wrapper `Billing` (Mutex<Conn>). Cost computation
   (tokens→nano) does NOT belong here — that is `metering`; registry accepts the ready amount. **Money
-  invariant (with overdraft buffer):** reserve keeps the balance FLOOR at −$1 (`OVERDRAFT_NANO`, in sync with
-  `metering::OVERDRAFT_NANO`) — a funded request is NOT dropped with 402 due to a race of concurrent reserves; below the floor
-  any positive hold is rejected (max $1 in balance debt per account). Settle preserves the REAL
-  amount even when `actual > hold`, but the account-row lock collects only what leaves the shared
-  balance at or above −$1. If an explicit adjustment already recorded deeper debt while a request
-  was in flight, settlement uses that pre-settle balance as its floor: it cannot worsen the debt,
-  but it still collects the existing hold instead of refunding it as false pool loss. The remainder
-  is pool-funded evidence:
+  invariant:** new admission stores `hold_nano = 0` and does not debit `balance_nano` or increment
+  `reserved_nano`. Paid work (`payable_multiplier_bp > 0`, or unpriced callers) requires
+  `balance_nano > 0`; a zero-multiplier service request is admitted without a money gate. Settlement
+  of hold=0 rows collects full actual with no floor, so the balance may go arbitrarily negative
+  (customer debt). `uncollected_nano` for that charge is 0. Mixed-version leftover `hold_nano > 0`
+  rows still debit/release `reserved_nano` and keep the previous −$1 collection floor
+  (`ACCOUNT_OVERDRAFT_NANO`, in sync with `metering::OVERDRAFT_NANO`). For those leftover rows,
   `actual_nano = collected_nano + uncollected_nano`. Account/key `spent_nano` and usage carry full
   actual; ledger `amount_nano` is that same full billed actual and `uncollected_nano` is its
   pool-funded subset. Customer balance movement is therefore `amount_nano - uncollected_nano`.
   Conservation is `balance + spent + reserved - uncollected = topup/adjust funding`. A future top-up
-  is not auto-debited for old shortfall because registry cannot reconstruct its funding class.
+  is a credit that raises the balance; paid work resumes only when `balance_nano > 0`.
   `reservations.request_id` is the ownership key;
   `settlement_outbox` retries until the same transaction updates balances and inserts the unique
   `(kind,request_id)` charge. Upstream request IDs are audit metadata, never the money identity.
@@ -47,14 +46,14 @@ side effect. `serve` may only perform the read-only schema verification before c
   request-less usage row with the same account, null-safe key/ref/model, exact charge and at most
   one second of settlement timestamp drift. Every candidate must carry the same non-empty provider;
   ambiguity stays unknown, and a conflict with persisted ledger provider fails the read. The model
-  is a fingerprint field only, never provider inference. SQLite and PostgreSQL reserve semantics use
-  the same shared `ACCOUNT_OVERDRAFT_NANO` floor; the audit backend must not reject a request that
-  PostgreSQL would admit.
-  Optional per-key `spend_limit_nano` and `expires_ts` are engine-authoritative. Reservation updates
-  key `reserved_nano` in the same transaction and enforces
-  `spent_nano + reserved_nano + hold <= spend_limit_nano`; settlement atomically converts the hold
-  into actual spend or releases it. Mutable policy replacement is account-scoped and atomic with
-  reservations; a non-null new limit must cover both settled and reserved usage.
+  is a fingerprint field only, never provider inference. SQLite and PostgreSQL share hold=0
+  admission (`balance_nano > 0` for paid work) and leftover hold>0 settlement on
+  `ACCOUNT_OVERDRAFT_NANO`; the audit backend must not reject a request that PostgreSQL would admit.
+  Optional per-key `spend_limit_nano` and `expires_ts` are engine-authoritative. New admission
+  enforces `spent_nano + reserved_nano <= spend_limit_nano` without adding a hold. Leftover
+  hold>0 rows still increment key `reserved_nano`. Settlement converts leftover holds into actual
+  spend or releases them; hold=0 settlement only advances `spent_nano`. A non-null new limit must
+  cover settled usage plus any leftover reserved usage.
   Soft migration of the old "key=wallet" model → account per-key (`migrate_legacy_keys`).
 - **Gemini Batch authority (migrations `0055`–`0060`) is PostgreSQL-only; SQLite returns typed unsupported.**
   It owns isolated job/item/blob/file/outbox/profile-lease authorities plus normalized item→file

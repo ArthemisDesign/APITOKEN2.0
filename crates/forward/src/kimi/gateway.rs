@@ -318,7 +318,11 @@ impl RuntimeProfile {
     /// минуты у границы reset. Reset передаём как секунды до него по часам движка; прошедший
     /// reset клампится в 0 (окно у самого сброса почти бесплатно), отсутствующий — `None`,
     /// и тогда селектор держит полный вес: «неизвестно» ≠ «скоро сбросится».
-    fn window_evidence(health: &ProfileHealth, duration_secs: i64, now: i64) -> Option<WindowEvidence> {
+    fn window_evidence(
+        health: &ProfileHealth,
+        duration_secs: i64,
+        now: i64,
+    ) -> Option<WindowEvidence> {
         let tolerance = duration_secs / 10;
         let window = health
             .quota_windows
@@ -1790,64 +1794,38 @@ impl KimiGateway {
             compiled,
             tariff_book::as_kimi,
         );
-        let prices = resolved_base.prices;
-        let requested_max = bounded_requested_output(body);
-        let mut balance = i128::from(input.available_nano);
-        for _ in 0..4 {
-            let Some((effective_max, hold)) = cap_to_balance(
-                balance,
-                raw_len.max(1) as i128,
-                prices,
-                input.mult_bp,
-                requested_max,
-            ) else {
-                return Err(GatewayFailure::LowBalance);
-            };
-            match billing
-                .reserve_priced_request_for_execution(
-                    request_id,
-                    &input.account_id,
-                    &input.key,
-                    hold,
-                    execution.clone(),
-                    registry::PROVIDER_KIMI,
-                    input.mult_bp,
-                )
-                .await
-                .map_err(|error| {
-                    elog::error("kimi", "kimi reservation failed");
-                    let _ = error;
-                    GatewayFailure::Unavailable("kimi_reservation_unavailable")
-                })? {
-                Some(_) => {
-                    if effective_max < requested_max {
-                        body["max_tokens"] = json!(effective_max);
-                    }
-                    return Ok(Some(Reservation {
-                        request_id: request_id.to_string(),
-                        account_id: input.account_id.clone(),
-                        key: input.key.clone(),
-                        hold,
-                        mult_bp: input.mult_bp,
-                        priced_ts,
-                        pinned_tariff: resolved_base.pin.clone(),
-                    }));
-                }
-                None => {
-                    balance = billing
-                        .account(&input.account_id)
-                        .await
-                        .map_err(|error| {
-                            elog::error("kimi", "kimi balance read failed");
-                            let _ = error;
-                            GatewayFailure::Unavailable("kimi_balance_unavailable")
-                        })?
-                        .map(|account| i128::from(account.balance_nano))
-                        .unwrap_or(0);
-                }
-            }
+        let _ = (body, raw_len);
+        if input.mult_bp > 0 && input.available_nano <= 0 {
+            return Err(GatewayFailure::LowBalance);
         }
-        Err(GatewayFailure::LowBalance)
+        const HOLD_NANO: i64 = 0;
+        match billing
+            .reserve_priced_request_for_execution(
+                request_id,
+                &input.account_id,
+                &input.key,
+                HOLD_NANO,
+                execution.clone(),
+                registry::PROVIDER_KIMI,
+                input.mult_bp,
+            )
+            .await
+            .map_err(|error| {
+                elog::error("kimi", "kimi reservation failed");
+                let _ = error;
+                GatewayFailure::Unavailable("kimi_reservation_unavailable")
+            })? {
+            Some(_) => Ok(Some(Reservation {
+                request_id: request_id.to_string(),
+                account_id: input.account_id.clone(),
+                key: input.key.clone(),
+                hold: HOLD_NANO,
+                mult_bp: input.mult_bp,
+                priced_ts,
+                pinned_tariff: resolved_base.pin.clone(),
+            })),
+            None => Err(GatewayFailure::LowBalance),
+        }
     }
 
     async fn send_generation(
@@ -2070,7 +2048,9 @@ impl KimiGateway {
         tokio::spawn(async move {
             let _background = background;
             let _lease = lease;
-            let mut checkpoint = reservation.as_ref().map(MeasuredCheckpoint::from_reservation);
+            let mut checkpoint = reservation
+                .as_ref()
+                .map(MeasuredCheckpoint::from_reservation);
             let mut deliver = deliver;
             let mut clean = true;
             let mut total = initial_len;
@@ -2311,7 +2291,11 @@ impl KimiGateway {
         // the queue instead, because the quota barrier and the replay-conflict quarantine rely on
         // the drain's total order. The bounded FIFO remains the fallback for transient
         // persistence failures and for a missing billing authority.
-        let idle = self.turn_queue.lock().expect("KIMI turn queue lock").is_empty();
+        let idle = self
+            .turn_queue
+            .lock()
+            .expect("KIMI turn queue lock")
+            .is_empty();
         if idle {
             if let Some(billing) = &self.billing {
                 match billing.record_kimi_turn(event.clone()).await {
@@ -2652,9 +2636,12 @@ impl MeasuredCheckpoint {
         let Some(served) = parsed.served_model.as_deref() else {
             return;
         };
-        let Some(total) =
-            price_measured_sync(&parsed.usage, served, self.priced_ts, self.pinned_tariff.as_ref())
-        else {
+        let Some(total) = price_measured_sync(
+            &parsed.usage,
+            served,
+            self.priced_ts,
+            self.pinned_tariff.as_ref(),
+        ) else {
             return;
         };
         let measured = customer_actual(total, self.mult_bp);

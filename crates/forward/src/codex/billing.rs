@@ -743,15 +743,12 @@ async fn reserve_codex_legacy(
         fast,
     )
     .saturating_add(extra_hold_nano.max(0));
-    let hold = if mult_bp <= 0 {
-        0
-    } else {
-        metering::apply_multiplier(base, mult_bp).clamp(1, i64::MAX as i128) as i64
-    };
-    // Preserve the scalar admission contract exactly: a conservative full-output estimate is
-    // capped to the account balance. Exact settlement retains the full charge; registry caps only
-    // collection at the shared account floor and records any remainder as uncollected.
-    let hold = hold.min(available_nano.max(1));
+    let _ = (base, available_nano);
+    if mult_bp > 0 && available_nano <= 0 {
+        return Err(AdmissionError::LowBalance);
+    }
+    const HOLD_NANO: i64 = 0;
+    let hold = HOLD_NANO;
     let (request_fact_admission, request_fact_context) = match billable_fact {
         Some((seed, spec)) => {
             let (admission, context) = seed.into_billable_admission(request_id.to_owned(), &spec);

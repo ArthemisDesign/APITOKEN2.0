@@ -95,19 +95,18 @@ native Messages count, native Gemini countTokens, and billable native/universal 
 money path still receives the raw key,
 and the two identities must never be substituted
 for one another. A zero multiplier is
-free but metered on every provider: admission holds zero, settlement debits zero and still persists
-the authoritative usage event. Balance/reserve/markup live on the account (shared across all of a user's keys).
+free but metered on every provider: admission stores a zero-hold ticket, settlement debits zero and still persists
+the authoritative usage event. Balance and markup live on the account (shared across all of a user's keys).
 All DB operations go through `AsyncBilling` (DB actors: 1 writer + N readers; sync PostgreSQL/legacy
-SQLite live on dedicated threads, NOT on async workers). The generated request ID is created before reserve;
+SQLite live on dedicated threads, NOT on async workers). The generated request ID is created before admission;
 successful delivery is marked durable before the stream is handed over; finalize puts an idempotent settlement into the
 outbox, and the writer retries it until commit. The RAII cancel closes exactly this request ID.
-Every provider reserve pins the fixed provider id and `Authz::mult_for(provider)` value in the same
-money transaction, so a concurrent admin edit cannot reprice an in-flight response. Reserve uses a
-conservative hold with `max_tokens` clamped down (`cap_to_balance`), but authoritative provider
-usage may exceed that estimate. Settlement keeps full billed usage while the shared account-row
-fence limits collection to the aggregate −$1 floor; any remainder is explicit pool-funded
-`uncollected_nano`, never a silent clamp or a second per-request overdraft. 4xx/errors/rotation are
-NOT metered.
+Every provider admission pins the fixed provider id and `Authz::mult_for(provider)` value in the same
+money transaction, so a concurrent admin edit cannot reprice an in-flight response. Paid admission
+requires `available_nano > 0` and stores `hold_nano = 0`; it does not debit the balance or clamp
+`max_tokens` to remaining money. Settlement of that ticket collects full actual and may take the
+balance negative. Leftover `hold_nano > 0` rows from the previous binary still use the −$1
+collection floor and `uncollected_nano`. 4xx/errors/rotation are NOT metered.
 
 **Request-fact producer plumbing (S3A plus four narrow producers):** `AsyncBilling` has opt-in
 typed fact-aware reserve, delivery, and terminal settlement commands. On PostgreSQL they stay in the

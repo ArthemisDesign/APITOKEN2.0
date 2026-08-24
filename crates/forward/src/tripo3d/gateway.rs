@@ -223,7 +223,10 @@ struct RuntimeProfile {
 }
 
 impl RuntimeProfile {
-    fn from_roster(profile: Tripo3dProfile, config: &Tripo3dPlaneConfig) -> anyhow::Result<Arc<Self>> {
+    fn from_roster(
+        profile: Tripo3dProfile,
+        config: &Tripo3dPlaneConfig,
+    ) -> anyhow::Result<Arc<Self>> {
         let client = client::build_client(
             &profile.credential.proxy_url,
             Duration::from_secs(10),
@@ -598,9 +601,9 @@ impl Tripo3dGateway {
             // serving generation. A key the provider rejects (401) must not start carrying
             // traffic.
             for profile in needs_probe {
-                self.probe_profile(&profile)
-                    .await
-                    .map_err(|error| anyhow!("Tripo3D reload balance-probe class={}", error.class()))?;
+                self.probe_profile(&profile).await.map_err(|error| {
+                    anyhow!("Tripo3D reload balance-probe class={}", error.class())
+                })?;
             }
 
             let verified = self.load_reload_snapshot(!current.is_empty()).await?;
@@ -610,7 +613,10 @@ impl Tripo3dGateway {
             if self.shutting_down.load(Ordering::Acquire) {
                 return Ok(false);
             }
-            let live = next.iter().filter(|profile| profile.authenticated()).count();
+            let live = next
+                .iter()
+                .filter(|profile| profile.authenticated())
+                .count();
             *self.profiles.write().expect("Tripo3D profiles lock") = next;
             self.live_profiles.store(live, Ordering::Release);
             return Ok(true);
@@ -976,8 +982,8 @@ impl Tripo3dGateway {
             return None;
         }
         let cursor = self.cursor.fetch_add(1, Ordering::Relaxed);
-        let selected = select(&candidates, cursor)
-            .or_else(|| select_ignoring_soft(&candidates, cursor))?;
+        let selected =
+            select(&candidates, cursor).or_else(|| select_ignoring_soft(&candidates, cursor))?;
         profiles
             .into_iter()
             .find(|profile| profile.id == selected.profile_id)
@@ -986,7 +992,12 @@ impl Tripo3dGateway {
     /// Profiles still tryable after `current` under the same pass selection would use next:
     /// strict-eligible first, then merely hard-eligible. Zero means real provider limits — the
     /// honest 429, never an invented 503.
-    fn remaining_count(&self, excluded: &HashSet<String>, current: &str, reserve_credits: i64) -> usize {
+    fn remaining_count(
+        &self,
+        excluded: &HashSet<String>,
+        current: &str,
+        reserve_credits: i64,
+    ) -> usize {
         let now = now_unix();
         let candidates = self
             .profiles_snapshot()
@@ -1039,57 +1050,38 @@ impl Tripo3dGateway {
         let billing = self.billing.as_ref().ok_or(GatewayFailure::Unavailable(
             "tripo3d_billing_authority_unavailable",
         ))?;
-        let raw = tripo3d_cost_nanodollars(i128::from(admitted.reserve_credits))
+        let _raw = tripo3d_cost_nanodollars(i128::from(admitted.reserve_credits))
             .map_err(|_| GatewayFailure::Unavailable("tripo3d_price_overflow"))?;
-        // The hold is the reserve priced with the customer's multiplier, clamped to the ledger
-        // width; a zero multiplier is free but still metered.
-        let hold = metering::apply_multiplier(raw, input.mult_bp).clamp(0, i128::from(i64::MAX)) as i64;
-        let mut balance = i128::from(input.available_nano);
-        for _ in 0..4 {
-            if i128::from(hold) > balance + metering::OVERDRAFT_NANO {
-                return Err(GatewayFailure::LowBalance);
-            }
-            match billing
-                .reserve_priced_request_for_execution(
-                    request_id,
-                    &input.account_id,
-                    &input.key,
-                    hold,
-                    execution.clone(),
-                    registry::PROVIDER_TRIPO3D,
-                    input.mult_bp,
-                )
-                .await
-                .map_err(|error| {
-                    elog::error("tripo3d", "Tripo3D reservation failed");
-                    let _ = error;
-                    GatewayFailure::Unavailable("tripo3d_reservation_unavailable")
-                })? {
-                Some(_) => {
-                    return Ok(Some(Reservation {
-                        request_id: request_id.to_string(),
-                        account_id: input.account_id.clone(),
-                        key: input.key.clone(),
-                        hold,
-                        mult_bp: input.mult_bp,
-                        priced_ts,
-                    }));
-                }
-                None => {
-                    balance = billing
-                        .account(&input.account_id)
-                        .await
-                        .map_err(|error| {
-                            elog::error("tripo3d", "Tripo3D balance read failed");
-                            let _ = error;
-                            GatewayFailure::Unavailable("tripo3d_balance_unavailable")
-                        })?
-                        .map(|account| i128::from(account.balance_nano))
-                        .unwrap_or(0);
-                }
-            }
+        if input.mult_bp > 0 && input.available_nano <= 0 {
+            return Err(GatewayFailure::LowBalance);
         }
-        Err(GatewayFailure::LowBalance)
+        const HOLD_NANO: i64 = 0;
+        match billing
+            .reserve_priced_request_for_execution(
+                request_id,
+                &input.account_id,
+                &input.key,
+                HOLD_NANO,
+                execution.clone(),
+                registry::PROVIDER_TRIPO3D,
+                input.mult_bp,
+            )
+            .await
+            .map_err(|error| {
+                elog::error("tripo3d", "Tripo3D reservation failed");
+                let _ = error;
+                GatewayFailure::Unavailable("tripo3d_reservation_unavailable")
+            })? {
+            Some(_) => Ok(Some(Reservation {
+                request_id: request_id.to_string(),
+                account_id: input.account_id.clone(),
+                key: input.key.clone(),
+                hold: HOLD_NANO,
+                mult_bp: input.mult_bp,
+                priced_ts,
+            })),
+            None => Err(GatewayFailure::LowBalance),
+        }
     }
 
     /// One admitted generation request: validate → reserve → create → deliver the task handle.
@@ -1115,7 +1107,13 @@ impl Tripo3dGateway {
         let request_id = crate::upstream::fresh_request_id();
         let priced_ts = now_unix();
         let mut reservation = match self
-            .reserve_customer(&admitted, &request_id, priced_ts, billing.as_ref(), execution)
+            .reserve_customer(
+                &admitted,
+                &request_id,
+                priced_ts,
+                billing.as_ref(),
+                execution,
+            )
             .await
         {
             Ok(reservation) => reservation,
@@ -1144,16 +1142,27 @@ impl Tripo3dGateway {
                 admitted.reserve_credits,
             ) else {
                 elog::warn("tripo3d", "tripo3d pool exhausted: no profile");
-                return error_response_with_retry(GatewayFailure::Capacity, self.capacity_retry_after());
+                return error_response_with_retry(
+                    GatewayFailure::Capacity,
+                    self.capacity_retry_after(),
+                );
             };
             let lease = ProfileLease::new(profile.clone());
             let response = match self.send_create(&profile, body_bytes.clone()).await {
                 Ok(response) => response,
                 Err(error) => {
-                    elog::error("tripo3d", format!("tripo3d upstream transport failed: {error:?}"));
+                    elog::error(
+                        "tripo3d",
+                        format!("tripo3d upstream transport failed: {error:?}"),
+                    );
                     let remaining =
                         self.remaining_count(&excluded, &profile.id, admitted.reserve_credits);
-                    let decision = decide(UpstreamVerdict::Transport, Phase::BeforeCreate, policy, remaining);
+                    let decision = decide(
+                        UpstreamVerdict::Transport,
+                        Phase::BeforeCreate,
+                        policy,
+                        remaining,
+                    );
                     profile.apply_effect(decision.effect, now_unix(), None);
                     policy = decision.policy;
                     if decision.next == NextStep::RotateToAnotherProfile {
@@ -1174,7 +1183,10 @@ impl Tripo3dGateway {
             let body = match read_bounded(response, RESPONSE_BODY_LIMIT).await {
                 Ok(body) => body,
                 Err(error) => {
-                    elog::error("tripo3d", format!("tripo3d create body read failed: {error:?}"));
+                    elog::error(
+                        "tripo3d",
+                        format!("tripo3d create body read failed: {error:?}"),
+                    );
                     return error_response(error);
                 }
             };
@@ -1193,7 +1205,9 @@ impl Tripo3dGateway {
                                 DrainContext {
                                     request_id: request_id.clone(),
                                     task_type: admitted.kind,
-                                    requested_model_version: admitted.requested_model_version.clone(),
+                                    requested_model_version: admitted
+                                        .requested_model_version
+                                        .clone(),
                                     reserve_credits: admitted.reserve_credits,
                                     priced_ts,
                                     profile: profile.clone(),
@@ -1256,7 +1270,10 @@ impl Tripo3dGateway {
                             continue;
                         }
                         NextStep::SurfaceCapacityExhausted => {
-                            return error_response_with_retry(GatewayFailure::Capacity, self.capacity_retry_after());
+                            return error_response_with_retry(
+                                GatewayFailure::Capacity,
+                                self.capacity_retry_after(),
+                            );
                         }
                         NextStep::SurfaceUpstreamError => {
                             return error_response(GatewayFailure::Upstream(status));
@@ -1396,7 +1413,10 @@ impl Tripo3dGateway {
                     .await;
                 return;
             }
-            match self.poll_upstream_task(&context.profile, &upstream_task_id).await {
+            match self
+                .poll_upstream_task(&context.profile, &upstream_task_id)
+                .await
+            {
                 Ok(state) => {
                     let lifecycle = state.lifecycle.expect("a parsed poll names a lifecycle");
                     if lifecycle.is_final() {
@@ -1429,7 +1449,8 @@ impl Tripo3dGateway {
                         record.error = Some("tripo3d_task_lost");
                         record.finalized = true;
                     });
-                    self.settle_conservative_hold(&context, "tripo3d-task-lost").await;
+                    self.settle_conservative_hold(&context, "tripo3d-task-lost")
+                        .await;
                     return;
                 }
                 Err(_) => {
@@ -1535,8 +1556,8 @@ impl Tripo3dGateway {
             .and_then(client::millicredits_from_raw);
         let bound_milli = context.reserve_credits.saturating_mul(1_000);
         enum Money {
-            Exact(i64),       // millicredits
-            Refund,           // documented zero
+            Exact(i64), // millicredits
+            Refund,     // documented zero
             Conservative(&'static str),
         }
         let money = match lifecycle {
@@ -1790,14 +1811,19 @@ impl Tripo3dGateway {
         let mut policy = AttemptPolicy::default();
         loop {
             let Some(profile) = self.select_profile(&excluded, None, 0) else {
-                return error_response_with_retry(GatewayFailure::Capacity, self.capacity_retry_after());
+                return error_response_with_retry(
+                    GatewayFailure::Capacity,
+                    self.capacity_retry_after(),
+                );
             };
             let lease = ProfileLease::new(profile.clone());
             let result = self
                 .send_image_upload(&profile, body.clone(), &boundary)
                 .await;
             let verdict = match result {
-                Ok((status, body)) => client::parse_image_upload(status, &body).map(|t| (profile.clone(), t)),
+                Ok((status, body)) => {
+                    client::parse_image_upload(status, &body).map(|t| (profile.clone(), t))
+                }
                 Err(error) => Err(error.verdict()),
             };
             match verdict {
@@ -1827,7 +1853,10 @@ impl Tripo3dGateway {
                             continue;
                         }
                         NextStep::SurfaceCapacityExhausted => {
-                            return error_response_with_retry(GatewayFailure::Capacity, self.capacity_retry_after());
+                            return error_response_with_retry(
+                                GatewayFailure::Capacity,
+                                self.capacity_retry_after(),
+                            );
                         }
                         _ => return error_response(GatewayFailure::from_verdict(verdict, 502)),
                     }
@@ -1891,7 +1920,10 @@ impl Tripo3dGateway {
         let mut policy = AttemptPolicy::default();
         loop {
             let Some(profile) = self.select_profile(&excluded, None, 0) else {
-                return error_response_with_retry(GatewayFailure::Capacity, self.capacity_retry_after());
+                return error_response_with_retry(
+                    GatewayFailure::Capacity,
+                    self.capacity_retry_after(),
+                );
             };
             let lease = ProfileLease::new(profile.clone());
             let result = self.upload_model_via(&profile, format, &bytes).await;
@@ -1923,7 +1955,10 @@ impl Tripo3dGateway {
                             continue;
                         }
                         NextStep::SurfaceCapacityExhausted => {
-                            return error_response_with_retry(GatewayFailure::Capacity, self.capacity_retry_after());
+                            return error_response_with_retry(
+                                GatewayFailure::Capacity,
+                                self.capacity_retry_after(),
+                            );
                         }
                         _ => return error_response(GatewayFailure::from_verdict(verdict, 502)),
                     }
@@ -1979,7 +2014,12 @@ impl Tripo3dGateway {
     /// The read model of one task for its creating account (or an admin). A foreign or unknown
     /// id answers `None` — the plane never reveals whether a task exists across accounts.
     pub fn task_view(&self, task_id: &str, requester: Option<&str>) -> Option<Tripo3dTaskView> {
-        let record = self.tasks.lock().expect("Tripo3D tasks lock").get(task_id).cloned()?;
+        let record = self
+            .tasks
+            .lock()
+            .expect("Tripo3D tasks lock")
+            .get(task_id)
+            .cloned()?;
         // Admin (no account scope) reads everything; a metered reader sees only its own
         // account's tasks; a foreign id is indistinguishable from an unknown one.
         if let (Some(owner), Some(requester)) = (record.account_id.as_deref(), requester) {
@@ -2007,7 +2047,12 @@ impl Tripo3dGateway {
         name: &str,
         requester: Option<&str>,
     ) -> Option<PathBuf> {
-        let record = self.tasks.lock().expect("Tripo3D tasks lock").get(task_id).cloned()?;
+        let record = self
+            .tasks
+            .lock()
+            .expect("Tripo3D tasks lock")
+            .get(task_id)
+            .cloned()?;
         if let (Some(owner), Some(requester)) = (record.account_id.as_deref(), requester) {
             if owner != requester {
                 return None;
@@ -2267,7 +2312,11 @@ fn bounded_text(value: &str, max: usize) -> bool {
     !value.is_empty() && value.len() <= max && !value.bytes().any(|b| b < 0x08)
 }
 
-fn image_file_object(image_type: Option<&str>, token: Option<&str>, url: Option<&str>) -> Result<Value, GatewayFailure> {
+fn image_file_object(
+    image_type: Option<&str>,
+    token: Option<&str>,
+    url: Option<&str>,
+) -> Result<Value, GatewayFailure> {
     let kind = match image_type.unwrap_or("jpg") {
         "jpg" | "jpeg" => "jpeg",
         "png" => "png",
@@ -2294,19 +2343,29 @@ fn bool_flag(value: Option<bool>) -> bool {
 
 /// Insert the price-relevant generation options into the upstream body, only when non-default
 /// (the SDK's own convention), and build the pricing view.
-fn generation_options(body: &GenerationBody) -> Result<(Tripo3dOptions, Vec<(&'static str, Value)>), GatewayFailure> {
+fn generation_options(
+    body: &GenerationBody,
+) -> Result<(Tripo3dOptions, Vec<(&'static str, Value)>), GatewayFailure> {
     let texture_quality = match body.texture_quality.as_deref() {
         None | Some("standard") => Tripo3dTextureQuality::Standard,
         Some("detailed") => Tripo3dTextureQuality::Detailed,
         // `extreme` is on the billing changelog only (manifest §6.8): priced on the card, so
         // admitted — an upstream refusal is the provider's own honest 4xx.
         Some("extreme") => Tripo3dTextureQuality::Extreme,
-        Some(_) => return Err(GatewayFailure::BadRequest("tripo3d_texture_quality_unknown")),
+        Some(_) => {
+            return Err(GatewayFailure::BadRequest(
+                "tripo3d_texture_quality_unknown",
+            ))
+        }
     };
     let geometry_quality = match body.geometry_quality.as_deref() {
         None | Some("standard") => Tripo3dGeometryQuality::Standard,
         Some("detailed") => Tripo3dGeometryQuality::Detailed,
-        Some(_) => return Err(GatewayFailure::BadRequest("tripo3d_geometry_quality_unknown")),
+        Some(_) => {
+            return Err(GatewayFailure::BadRequest(
+                "tripo3d_geometry_quality_unknown",
+            ))
+        }
     };
     let options = Tripo3dOptions {
         texture: bool_flag(body.texture),
@@ -2338,7 +2397,10 @@ fn generation_options(body: &GenerationBody) -> Result<(Tripo3dOptions, Vec<(&'s
         wire.push(("style", json!(true)));
     }
     if options.texture && texture_quality != Tripo3dTextureQuality::Standard {
-        wire.push(("texture_quality", json!(body.texture_quality.as_deref().unwrap_or("standard"))));
+        wire.push((
+            "texture_quality",
+            json!(body.texture_quality.as_deref().unwrap_or("standard")),
+        ));
     }
     if geometry_quality == Tripo3dGeometryQuality::Detailed {
         wire.push(("geometry_quality", json!("detailed")));
@@ -2349,13 +2411,18 @@ fn generation_options(body: &GenerationBody) -> Result<(Tripo3dOptions, Vec<(&'s
 /// Validate and price one create-task request: the metering-admitted shapes only, every other
 /// `type` rejected with the admitted set named. Returns the upstream body 1:1 over the
 /// documented task fields plus the reserve.
-fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<AdmittedTask, GatewayFailure> {
+fn admit_task(
+    gateway: &Tripo3dGateway,
+    body: GenerationBody,
+) -> Result<AdmittedTask, GatewayFailure> {
     let Some(kind) = Tripo3dTaskKind::from_wire(&body.task_type) else {
         return Err(GatewayFailure::BadRequest("tripo3d_task_type_unknown"));
     };
     if kind == Tripo3dTaskKind::HighpolyToLowpoly {
         // The documented docs-vs-SDK version conflict (manifest §6.6): do not guess.
-        return Err(GatewayFailure::BadRequest("tripo3d_highpoly_version_conflict"));
+        return Err(GatewayFailure::BadRequest(
+            "tripo3d_highpoly_version_conflict",
+        ));
     }
     if let Some(version) = body.model_version.as_deref() {
         if version.is_empty() || version.len() > 64 {
@@ -2386,7 +2453,9 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
     // Non-applicable price flags must not silently ride along: reserve and wire would desync.
     let options_applicable = matches!(
         kind,
-        Tripo3dTaskKind::TextToModel | Tripo3dTaskKind::ImageToModel | Tripo3dTaskKind::MultiviewToModel
+        Tripo3dTaskKind::TextToModel
+            | Tripo3dTaskKind::ImageToModel
+            | Tripo3dTaskKind::MultiviewToModel
     );
     if !options_applicable
         && (bool_flag(body.texture)
@@ -2425,14 +2494,19 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
     let mut conservative = false;
     match kind {
         Tripo3dTaskKind::TextToModel => {
-            let prompt = body.prompt.as_deref().filter(|p| bounded_text(p, MAX_TEXT_LEN));
+            let prompt = body
+                .prompt
+                .as_deref()
+                .filter(|p| bounded_text(p, MAX_TEXT_LEN));
             let Some(prompt) = prompt else {
                 return Err(GatewayFailure::BadRequest("tripo3d_prompt_required"));
             };
             object.insert("prompt".into(), json!(prompt));
             if let Some(negative) = body.negative_prompt.as_deref() {
                 if !bounded_text(negative, MAX_TEXT_LEN) {
-                    return Err(GatewayFailure::BadRequest("tripo3d_negative_prompt_invalid"));
+                    return Err(GatewayFailure::BadRequest(
+                        "tripo3d_negative_prompt_invalid",
+                    ));
                 }
                 object.insert("negative_prompt".into(), json!(negative));
             }
@@ -2454,11 +2528,15 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
         }
         Tripo3dTaskKind::MultiviewToModel => {
             let Some(files) = body.files.as_ref() else {
-                return Err(GatewayFailure::BadRequest("tripo3d_multiview_files_required"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_multiview_files_required",
+                ));
             };
             // Manifest §3: exactly 4 ordered views, the front mandatory.
             if files.len() != MULTIVIEW_SLOTS || files.first().is_none_or(|slot| slot.is_none()) {
-                return Err(GatewayFailure::BadRequest("tripo3d_multiview_slots_invalid"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_multiview_slots_invalid",
+                ));
             }
             let mut wire_files = Vec::with_capacity(MULTIVIEW_SLOTS);
             for slot in files {
@@ -2482,10 +2560,14 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
         }
         Tripo3dTaskKind::TextureModel => {
             let Some(original) = body.original_model_task_id.as_deref() else {
-                return Err(GatewayFailure::BadRequest("tripo3d_original_model_task_required"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_original_model_task_required",
+                ));
             };
             if !bounded_text(original, MAX_ID_LEN) {
-                return Err(GatewayFailure::BadRequest("tripo3d_original_model_task_invalid"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_original_model_task_invalid",
+                ));
             }
             object.insert("original_model_task_id".into(), json!(original));
             // The wire always textures (that IS this task); the price selector is
@@ -2495,7 +2577,8 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
             if let Some(quality) = body.texture_quality.as_deref() {
                 object.insert("texture_quality".into(), json!(quality));
             }
-            let has_style_image = body.style_image_token.is_some() || body.style_image_url.is_some();
+            let has_style_image =
+                body.style_image_token.is_some() || body.style_image_url.is_some();
             if bool_flag(body.style) && !has_style_image {
                 return Err(GatewayFailure::BadRequest("tripo3d_style_image_required"));
             }
@@ -2528,10 +2611,14 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
         }
         Tripo3dTaskKind::MeshSegmentation | Tripo3dTaskKind::MeshCompletion => {
             let Some(original) = body.original_model_task_id.as_deref() else {
-                return Err(GatewayFailure::BadRequest("tripo3d_original_model_task_required"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_original_model_task_required",
+                ));
             };
             if !bounded_text(original, MAX_ID_LEN) {
-                return Err(GatewayFailure::BadRequest("tripo3d_original_model_task_invalid"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_original_model_task_invalid",
+                ));
             }
             object.insert("original_model_task_id".into(), json!(original));
             if kind == Tripo3dTaskKind::MeshCompletion {
@@ -2547,10 +2634,14 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
         }
         Tripo3dTaskKind::AnimatePrerigcheck | Tripo3dTaskKind::AnimateRig => {
             let Some(original) = body.original_model_task_id.as_deref() else {
-                return Err(GatewayFailure::BadRequest("tripo3d_original_model_task_required"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_original_model_task_required",
+                ));
             };
             if !bounded_text(original, MAX_ID_LEN) {
-                return Err(GatewayFailure::BadRequest("tripo3d_original_model_task_invalid"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_original_model_task_invalid",
+                ));
             }
             object.insert("original_model_task_id".into(), json!(original));
             if kind == Tripo3dTaskKind::AnimateRig {
@@ -2563,8 +2654,14 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
                 if let Some(rig_type) = body.rig_type.as_deref() {
                     if !matches!(
                         rig_type,
-                        "biped" | "quadruped" | "hexapod" | "octopod" | "avian" | "serpentine"
-                            | "aquatic" | "others"
+                        "biped"
+                            | "quadruped"
+                            | "hexapod"
+                            | "octopod"
+                            | "avian"
+                            | "serpentine"
+                            | "aquatic"
+                            | "others"
                     ) {
                         return Err(GatewayFailure::BadRequest("tripo3d_rig_type_unknown"));
                     }
@@ -2580,10 +2677,14 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
         }
         Tripo3dTaskKind::AnimateRetarget => {
             let Some(original) = body.original_model_task_id.as_deref() else {
-                return Err(GatewayFailure::BadRequest("tripo3d_original_model_task_required"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_original_model_task_required",
+                ));
             };
             if !bounded_text(original, MAX_ID_LEN) {
-                return Err(GatewayFailure::BadRequest("tripo3d_original_model_task_invalid"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_original_model_task_invalid",
+                ));
             }
             let Some(animations) = body.animations.as_ref() else {
                 return Err(GatewayFailure::BadRequest("tripo3d_animations_required"));
@@ -2610,10 +2711,14 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
         }
         Tripo3dTaskKind::ConvertModel => {
             let Some(original) = body.original_model_task_id.as_deref() else {
-                return Err(GatewayFailure::BadRequest("tripo3d_original_model_task_required"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_original_model_task_required",
+                ));
             };
             if !bounded_text(original, MAX_ID_LEN) {
-                return Err(GatewayFailure::BadRequest("tripo3d_original_model_task_invalid"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_original_model_task_invalid",
+                ));
             }
             let Some(format) = body.format.as_deref() else {
                 return Err(GatewayFailure::BadRequest("tripo3d_format_required"));
@@ -2651,7 +2756,10 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
                 return Err(GatewayFailure::BadRequest("tripo3d_model_token_unknown"));
             };
             sticky = Some(profile);
-            object.insert("file".into(), json!({"object": {"bucket": bucket, "key": key}}));
+            object.insert(
+                "file".into(),
+                json!({"object": {"bucket": bucket, "key": key}}),
+            );
         }
         Tripo3dTaskKind::TextToImage => {
             let Some(prompt) = body.prompt.as_deref().filter(|p| bounded_text(p, 1_024)) else {
@@ -2660,7 +2768,9 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
             object.insert("prompt".into(), json!(prompt));
             if let Some(negative) = body.negative_prompt.as_deref() {
                 if !bounded_text(negative, 255) {
-                    return Err(GatewayFailure::BadRequest("tripo3d_negative_prompt_invalid"));
+                    return Err(GatewayFailure::BadRequest(
+                        "tripo3d_negative_prompt_invalid",
+                    ));
                 }
                 object.insert("negative_prompt".into(), json!(negative));
             }
@@ -2715,8 +2825,13 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
                 }
                 (false, None) => {}
             }
-            if object.get("prompt").is_none() && object.get("file").is_none() && object.get("template").is_none() {
-                return Err(GatewayFailure::BadRequest("tripo3d_generate_image_input_required"));
+            if object.get("prompt").is_none()
+                && object.get("file").is_none()
+                && object.get("template").is_none()
+            {
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_generate_image_input_required",
+                ));
             }
         }
         Tripo3dTaskKind::GenerateMultiviewImage => {
@@ -2749,7 +2864,13 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
                 }
             }
             object.insert("original_task_id".into(), json!(original));
-            object.insert("prompts".into(), json!(prompts.iter().map(|edit| json!({"view": edit.view, "prompt": edit.prompt})).collect::<Vec<_>>()));
+            object.insert(
+                "prompts".into(),
+                json!(prompts
+                    .iter()
+                    .map(|edit| json!({"view": edit.view, "prompt": edit.prompt}))
+                    .collect::<Vec<_>>()),
+            );
             // 5 credits per edited image (§5.1), count-derived exact price.
             reserve_credits = tripo3d_edit_multiview_image_credits(prompts.len() as u64)
                 .ok_or(GatewayFailure::BadRequest("tripo3d_edit_prompts_invalid"))?;
@@ -2764,10 +2885,14 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
         }
         Tripo3dTaskKind::RefineModel => {
             let Some(draft) = body.draft_model_task_id.as_deref() else {
-                return Err(GatewayFailure::BadRequest("tripo3d_draft_model_task_required"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_draft_model_task_required",
+                ));
             };
             if !bounded_text(draft, MAX_ID_LEN) {
-                return Err(GatewayFailure::BadRequest("tripo3d_draft_model_task_invalid"));
+                return Err(GatewayFailure::BadRequest(
+                    "tripo3d_draft_model_task_invalid",
+                ));
             }
             object.insert("draft_model_task_id".into(), json!(draft));
         }
@@ -2782,7 +2907,10 @@ fn admit_task(gateway: &Tripo3dGateway, body: GenerationBody) -> Result<Admitted
             object.insert("face_limit".into(), json!(face_limit));
         }
     }
-    for (seed, name) in [(body.model_seed, "model_seed"), (body.texture_seed, "texture_seed")] {
+    for (seed, name) in [
+        (body.model_seed, "model_seed"),
+        (body.texture_seed, "texture_seed"),
+    ] {
         if let Some(seed) = seed {
             if options_applicable {
                 object.insert(name.into(), json!(seed));
@@ -2940,10 +3068,7 @@ fn error_response_with_retry(error: GatewayFailure, capacity_retry_after: i64) -
             Some(2),
         ),
     };
-    let mut response = json_response(
-        status,
-        json!({"error": {"type": kind, "message": message}}),
-    );
+    let mut response = json_response(status, json!({"error": {"type": kind, "message": message}}));
     if let Some(secs) = retry_after {
         if let Ok(value) = axum::http::HeaderValue::from_str(&secs.to_string()) {
             response.headers_mut().insert("retry-after", value);
@@ -2959,7 +3084,9 @@ fn json_response(status: StatusCode, value: Value) -> Response {
     let mut response = Response::builder()
         .status(status)
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec())))
+        .body(Body::from(
+            serde_json::to_vec(&value).unwrap_or_else(|_| b"{}".to_vec()),
+        ))
         .expect("Tripo3D response");
     if let Ok(value) = axum::http::HeaderValue::from_str(&crate::fresh_request_id()) {
         response.headers_mut().insert("x-request-id", value);
@@ -3042,9 +3169,12 @@ async fn plane_authz(
 }
 
 fn gateway_or_404(app: &AppState) -> Result<Arc<Tripo3dGateway>, Response> {
-    app.tripo3d
-        .clone()
-        .ok_or_else(|| json_response(StatusCode::NOT_FOUND, json!({"error": {"type": "not_found", "message": "Not Found"}})))
+    app.tripo3d.clone().ok_or_else(|| {
+        json_response(
+            StatusCode::NOT_FOUND,
+            json!({"error": {"type": "not_found", "message": "Not Found"}}),
+        )
+    })
 }
 
 /// `POST /v1/3d/generations` — create one admitted task. The response names OUR task id (the
@@ -3164,7 +3294,9 @@ async fn read_multipart_file(
             continue;
         }
         if found.is_some() {
-            return Err(error_response(GatewayFailure::BadRequest("tripo3d_multipart_invalid")));
+            return Err(error_response(GatewayFailure::BadRequest(
+                "tripo3d_multipart_invalid",
+            )));
         }
         let filename = field
             .file_name()
@@ -3175,7 +3307,9 @@ async fn read_multipart_file(
             .await
             .map_err(|_| error_response(GatewayFailure::BadRequest("tripo3d_multipart_invalid")))?;
         if bytes.is_empty() || bytes.len() > max_bytes {
-            return Err(error_response(GatewayFailure::BadRequest("tripo3d_upload_too_large")));
+            return Err(error_response(GatewayFailure::BadRequest(
+                "tripo3d_upload_too_large",
+            )));
         }
         found = Some((filename, bytes));
     }

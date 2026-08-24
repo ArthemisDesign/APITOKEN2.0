@@ -60,15 +60,15 @@ reservation and, in one transaction, changes balances, inserts the unique charge
 and marks the outbox done. Retrying the request identity cannot double-charge or duplicate a
 shortfall. Billed usage is conserved as
 `actual = collected + uncollected`, while aggregate collection cannot move the account below the
-same floor. If an explicit adjustment already recorded deeper debt while a hold was in flight, the
-pre-settle balance is the floor: settlement cannot worsen the debt, but still consumes that hold
-instead of turning it into false shortfall. Account/key spend remains full actual, so the
+same floor for leftover `hold_nano > 0` rows. New admission stores `hold_nano = 0` and does not
+debit the balance. Settlement of those tickets collects full actual with no floor, so the balance
+may go negative (customer debt). Paid work then requires a top-up that leaves `balance_nano > 0`.
+Account/key spend remains full actual, so the
 cross-authority equation is
-`balance + spent + reserved - uncollected = topup/adjust funding`. A later top-up is not used to
-repay old shortfall automatically: only commerce knows whether new money is paid, bonus or other
-funding, and reassigning it in the engine would corrupt that attribution. A zero-multiplier service
-request holds and debits zero on every provider but still commits its authoritative usage row; it
-does not create a zero-value ledger charge.
+`balance + spent + reserved - uncollected = topup/adjust funding`. A later top-up is a credit that
+raises the balance; it is not a hidden auto-debit of old shortfall. A zero-multiplier service
+request stores a zero-hold ticket and debits zero on every provider but still commits its
+authoritative usage row; it does not create a zero-value ledger charge.
 
 ## Request lifecycle
 

@@ -1661,9 +1661,10 @@ provider change is the incident signature this counter exists to expose.
 
 Query `customer_http_error` journal events for status 402 on the alerting provider and compare
 `account_balance_nano`, `account_reserved_nano`, the key lifetime limit, and the fixed error reason.
-If the key limit—not account money—bound admission, explain it as expected. Otherwise reproduce the
-quote/hold with the recorded route and fix the estimate or authority drift; never grant balance or
-lower the overdraft floor merely to suppress 402s.
+If the key limit—not account money—bound admission, explain it as expected. Otherwise compare
+`account_balance_nano` with the 402 reason: paid work requires a strictly positive balance, and
+settlement of a started request may have already created debt. Never grant balance merely to
+suppress 402s.
 
 ## PricingChargeMismatch
 
@@ -1732,7 +1733,8 @@ active single-writer engine topology before retrying.
 ## EngineExpiredLeasePresent
 
 Confirm the owning engine instance is dead/fenced and let the authority reconciliation workflow
-recover the lease. Never delete live reservations directly.
+recover the lease. Never delete live billing tickets directly. Leftover hold>0 rows still refund
+the hold; hold=0 tickets cancel with no money movement.
 
 ## BalanceDivergenceDetected
 

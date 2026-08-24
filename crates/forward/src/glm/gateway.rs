@@ -39,7 +39,9 @@ use metering::glm::{
 };
 #[cfg(test)]
 use metering::glm::{glm_credit_rates_for_served_model, glm_prices_for_served_model};
-use registry::{ExecutionAttempt, GlmTurnCalibrationEvent, GLM_5H_WINDOW_SECS, GLM_WEEKLY_WINDOW_SECS};
+use registry::{
+    ExecutionAttempt, GlmTurnCalibrationEvent, GLM_5H_WINDOW_SECS, GLM_WEEKLY_WINDOW_SECS,
+};
 use serde_json::{json, Value};
 use tokio::sync::{Mutex as AsyncMutex, Notify};
 
@@ -285,7 +287,11 @@ impl RuntimeProfile {
     /// (сырые счётчики недоказанны, манифест §6.3) — тогда селектор видит окно без доли и
     /// не выдумывает её. Reset передаём как секунды до него; rolling-окно без названного
     /// reset → `None`, и селектор держит полный вес: «неизвестно» ≠ «скоро сбросится».
-    fn window_evidence(health: &ProfileHealth, duration_secs: i64, now: i64) -> Option<WindowEvidence> {
+    fn window_evidence(
+        health: &ProfileHealth,
+        duration_secs: i64,
+        now: i64,
+    ) -> Option<WindowEvidence> {
         let tolerance = duration_secs / 10;
         let window = health
             .quota_windows
@@ -294,7 +300,9 @@ impl RuntimeProfile {
             .min_by_key(|w| (w.duration_secs - duration_secs).abs())?;
         Some(WindowEvidence {
             used_fraction_units: window.used_fraction_units,
-            reset_in_secs: window.resets_at.map(|reset| reset.saturating_sub(now).max(0)),
+            reset_in_secs: window
+                .resets_at
+                .map(|reset| reset.saturating_sub(now).max(0)),
         })
     }
 
@@ -1366,64 +1374,38 @@ impl GlmGateway {
             compiled,
             tariff_book::as_glm,
         );
-        let prices = resolved_base.prices;
-        let requested_max = bounded_requested_output(body);
-        let mut balance = i128::from(input.available_nano);
-        for _ in 0..4 {
-            let Some((effective_max, hold)) = cap_to_balance(
-                balance,
-                raw_len.max(1) as i128,
-                prices,
-                input.mult_bp,
-                requested_max,
-            ) else {
-                return Err(GatewayFailure::LowBalance);
-            };
-            match billing
-                .reserve_priced_request_for_execution(
-                    request_id,
-                    &input.account_id,
-                    &input.key,
-                    hold,
-                    execution.clone(),
-                    registry::PROVIDER_GLM,
-                    input.mult_bp,
-                )
-                .await
-                .map_err(|error| {
-                    elog::error("glm", "glm reservation failed");
-                    let _ = error;
-                    GatewayFailure::Unavailable("glm_reservation_unavailable")
-                })? {
-                Some(_) => {
-                    if effective_max < requested_max {
-                        body["max_tokens"] = json!(effective_max);
-                    }
-                    return Ok(Some(Reservation {
-                        request_id: request_id.to_string(),
-                        account_id: input.account_id.clone(),
-                        key: input.key.clone(),
-                        hold,
-                        mult_bp: input.mult_bp,
-                        priced_ts,
-                        pinned_tariff: resolved_base.pin.clone(),
-                    }));
-                }
-                None => {
-                    balance = billing
-                        .account(&input.account_id)
-                        .await
-                        .map_err(|error| {
-                            elog::error("glm", "glm balance read failed");
-                            let _ = error;
-                            GatewayFailure::Unavailable("glm_balance_unavailable")
-                        })?
-                        .map(|account| i128::from(account.balance_nano))
-                        .unwrap_or(0);
-                }
-            }
+        let _ = (body, raw_len);
+        if input.mult_bp > 0 && input.available_nano <= 0 {
+            return Err(GatewayFailure::LowBalance);
         }
-        Err(GatewayFailure::LowBalance)
+        const HOLD_NANO: i64 = 0;
+        match billing
+            .reserve_priced_request_for_execution(
+                request_id,
+                &input.account_id,
+                &input.key,
+                HOLD_NANO,
+                execution.clone(),
+                registry::PROVIDER_GLM,
+                input.mult_bp,
+            )
+            .await
+            .map_err(|error| {
+                elog::error("glm", "glm reservation failed");
+                let _ = error;
+                GatewayFailure::Unavailable("glm_reservation_unavailable")
+            })? {
+            Some(_) => Ok(Some(Reservation {
+                request_id: request_id.to_string(),
+                account_id: input.account_id.clone(),
+                key: input.key.clone(),
+                hold: HOLD_NANO,
+                mult_bp: input.mult_bp,
+                priced_ts,
+                pinned_tariff: resolved_base.pin.clone(),
+            })),
+            None => Err(GatewayFailure::LowBalance),
+        }
     }
 
     /// Native request on the profile's own console origin. The FULL Claude Code identity set

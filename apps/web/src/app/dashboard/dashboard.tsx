@@ -557,7 +557,8 @@ export const Overview = memo(function Overview({ account, user, usableKeys, tota
   let alert: { tone: "danger" | "warning"; title: string; text: string; action: "credits" | "keys" } | null = null;
   if (!engineReady) alert = { tone: "danger", title: copy.apiAccessBlocked, text: copy.engineNotReady, action: "keys" };
   else if (keysState === "ready" && totalKeys > 0 && usableKeys.length === 0) alert = { tone: "warning", title: copy.keysNeedAttentionTitle, text: copy.keysNeedAttention, action: "keys" };
-  else if (balanceNano <= 0n) alert = { tone: "danger", title: copy.balanceEmptyTitle, text: copy.balanceEmptyText, action: "credits" };
+  else if (balanceNano < 0n) alert = { tone: "danger", title: copy.balanceDebtTitle, text: copy.balanceDebtText, action: "credits" };
+  else if (balanceNano === 0n) alert = { tone: "danger", title: copy.balanceEmptyTitle, text: copy.balanceEmptyText, action: "credits" };
   else if (lowBalance) alert = { tone: "warning", title: copy.balanceLowTitle, text: copy.balanceLowText, action: "credits" };
 
   return <section className="panel overview-panel">

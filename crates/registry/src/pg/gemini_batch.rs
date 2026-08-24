@@ -9,7 +9,7 @@ use crate::gemini_batch::{
     MAX_BATCH_FILE_CHUNK_BYTES, MAX_BATCH_FILE_CHUNK_PAGE_SIZE, MAX_BATCH_NONTERMINAL_JOBS,
     MAX_BATCH_PAGE_SIZE, MAX_BATCH_REFERENCED_FILE_BYTES,
 };
-use crate::ACCOUNT_OVERDRAFT_NANO;
+
 use anyhow::{bail, Context, Result};
 use postgres::{IsolationLevel, Row, Transaction};
 use sha2::{Digest, Sha256};
@@ -319,14 +319,15 @@ impl PgStore {
         tx.commit()?;
         Ok(report)
     }
-    /// Create a complete batch and reserve its aggregate hold in one transaction.
-    /// Locks are always acquired account first and raw access key second.
+    /// Create a complete batch in one transaction. Paid work requires a strictly positive
+    /// balance; the job does not hold money. Locks are always acquired account first and raw
+    /// access key second.
     pub fn gemini_batch_create(
         &mut self,
         create: &GeminiBatchCreate,
         creator_key: &str,
     ) -> Result<GeminiBatchCreateOutcome> {
-        let aggregate_hold = create.validate()?;
+        let _aggregate_hold = create.validate()?;
         if creator_key.is_empty() {
             bail!("Gemini Batch creator key is empty")
         }
@@ -452,7 +453,6 @@ impl PgStore {
             key_row
                 .get::<_, i64>(4)
                 .checked_add(key_row.get::<_, i64>(5))
-                .and_then(|used| used.checked_add(aggregate_hold))
                 .is_some_and(|used| used <= limit)
         });
         if !active_key || !within_limit {
@@ -460,24 +460,12 @@ impl PgStore {
             return Ok(GeminiBatchCreateOutcome::RejectedFunds);
         }
 
-        let Some(account_row) = tx.query_opt(
-            "UPDATE accounts SET balance_nano=balance_nano-$1,reserved_nano=reserved_nano+$1 \
-             WHERE id=$2 AND status='active' \
-               AND balance_nano >= $1::bigint-$3::bigint RETURNING balance_nano",
-            &[&aggregate_hold, &create.account_id, &ACCOUNT_OVERDRAFT_NANO],
-        )?
+        let Some(balance_nano) =
+            super::lock_active_account_without_hold(&mut tx, &create.account_id, true)?
         else {
             tx.rollback()?;
             return Ok(GeminiBatchCreateOutcome::RejectedFunds);
         };
-        let balance_nano: i64 = account_row.get(0);
-        if tx.execute(
-            "UPDATE api_keys SET reserved_nano=reserved_nano+$1 WHERE key=$2 AND account_id=$3",
-            &[&aggregate_hold, &creator_key, &create.account_id],
-        )? != 1
-        {
-            bail!("Gemini Batch creator key disappeared while locked")
-        }
 
         tx.execute(
             "INSERT INTO gemini_batch_jobs(\

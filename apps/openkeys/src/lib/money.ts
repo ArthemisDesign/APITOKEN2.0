@@ -28,7 +28,7 @@ export function balanceToOfficialNano(balanceNano: bigint, multBp: number): bigi
   return (balanceNano * 10_000n) / BigInt(multBp);
 }
 
-/** Остаток по завершённым запросам: временный hold ещё принадлежит ключу. */
+/** Remaining official-price value. Leftover mixed-version holds still add `reservedNano`. */
 export function officialRemainingNano(
   availableNano: bigint,
   reservedNano: bigint,
@@ -38,11 +38,10 @@ export function officialRemainingNano(
 }
 
 /**
- * Разделяет доступный баланс, незакрытые холды и фактический расход.
+ * Splits available balance, leftover holds, and billed spend.
  *
- * Движок вычитает резерв из balance_nano на время запроса. Для клиентского
- * профиля остаток по завершённым запросам поэтому равен balance + reserved,
- * а не одному balance. Все операции остаются целочисленными в nanoUSD.
+ * New admission does not hold money, so remaining is the signed balance once
+ * leftover holds drain. Negative remaining is unpaid debt. Integer nanoUSD only.
  */
 export function officialBalanceBreakdown(
   availableNano: bigint,

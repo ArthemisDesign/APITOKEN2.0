@@ -2,7 +2,7 @@
 
 This document is everything you need to build a **paid website** on top of our engine **without touching Rust**.
 You write: the website (registration/account dashboard), payment acceptance, your own user database. The engine
-takes care of: serving the Claude API, subscription rotation, and **exact money accounting** (reserve/charge down to the nanodollar).
+takes care of: serving the Claude API, subscription rotation, and **exact money accounting** (charge down to the nanodollar).
 Your backend commands the engine over HTTP via the **Control API** (`/admin/*`).
 
 ---
@@ -13,7 +13,7 @@ Your backend commands the engine over HTTP via the **Control API** (`/admin/*`).
 |---|---|---|
 | Serving `POST /v1/messages` to clients | ✅ | — |
 | Subscription rotation, limits, resilience | ✅ | — |
-| **Authoritative account balance**, reserve/charge | ✅ | — |
+| **Authoritative account balance**, charge | ✅ | — |
 | Accounts/keys/journal in engine-owned PostgreSQL | ✅ | — |
 | Website, registration, account dashboard | — | ✅ |
 | Payment acceptance (Stripe/crypto/…) + webhooks | — | ✅ |
@@ -380,23 +380,26 @@ per-account invariant:
 ```
 balance + reserved + spent - uncollected = topups + adjustments
 ```
-- **balance_nano** — customer balance available to reserve; it may be negative within the shared
-  account floor, or lower after an explicit debit/clawback records debt.
-- **reserved_nano** — temporarily held for "in-flight" requests (the engine reserves a ceiling before
-  the request and returns the difference after). You don't touch this — just know that "in the moment" the balance
-  may be slightly lower by the amount of in-flight requests.
+- **balance_nano** — customer balance. New paid work requires `balance_nano > 0`. Settlement of a
+  started request charges full actual usage and may take the balance arbitrarily negative (customer
+  debt). A top-up must bring the balance strictly above zero before paid work can start again.
+  Covering debt down to exactly `0` is not enough. Service accounts (`mult_bp = 0`) are the
+  zero-charge exception and are never blocked for money.
+- **reserved_nano** — leftover in-flight holds from the previous hold-based admission binary.
+  New work stores `hold_nano = 0` and does not increase this field. Treat `0` as "nothing held".
 - **spent_nano** — total full billed usage (monotonically increasing).
-- **uncollected_nano** — the part of full billed usage the account-wide settlement floor prevented
-  the customer balance from collecting. It is explicit pool-loss evidence, not customer payment.
+- **uncollected_nano** — historical pool-loss evidence from the leftover −$1 collection floor on
+  hold>0 rows. New hold=0 settlement records `0` here and collects the full actual from the
+  customer balance, including into debt.
 - **mult_bp** — the account's payable default multiplier in basis points, bounded to `0..10000`:
   `2000 = ×0.20`. A row in `account_provider_discounts` overrides it for one canonical provider;
   otherwise this scalar prices the request. It is live state, not a migration fallback.
 
-Admission and settlement lock the same account row and atomically enforce the shared −$1 floor.
-Settlement records full delivered usage and any amount it could not collect separately, rather
-than multiplying the floor by the number of concurrent requests or silently discarding cost. An
-explicit debit/clawback can take an already-spent account lower as recorded debt; a non-positive
-account is blocked from new paid requests. Service accounts are the explicit zero-charge exception.
+Admission does not debit the balance. Paid work is refused with 402 when `balance_nano <= 0` or
+when a per-key spend limit is already exhausted. Settlement of new work collects full actual with
+no collection floor. Mixed-version leftover `hold_nano > 0` rows still release `reserved_nano` and
+keep the previous −$1 floor. An explicit debit/clawback can also record debt. Service accounts are
+the explicit zero-charge exception.
 
 ---
 

@@ -15,7 +15,7 @@
 > any later outer body poll. Stage 7 now covers the native billable Anthropic `POST /v1/messages` leaf
 > and Anthropic-plane universal OpenAI Chat `POST /v1/chat/completions` and Responses
 > `POST /v1/responses`, including stream/nonstream settlement and the configured ClaudeStore
-> Anthropic-wire fallback. The OpenAI/Codex generation slice admits facts only with PostgreSQL money reservations,
+> Anthropic-wire fallback. The OpenAI/Codex generation slice admits facts only with PostgreSQL billing tickets,
 > shares one overflow-checked count across every actual generation POST (including retries and the
 > configured ClaudeStore fallback), and seals success, provider failure, cancellation, explicit
 > downstream disconnect, and reviewed tool-call output evidence conservatively. Runner join/panic

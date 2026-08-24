@@ -463,7 +463,7 @@ async fn reserve_gemini_metered(
     execution: &registry::ExecutionAttempt,
     billable_fact: Option<(GeminiRequestFactSeed, GeminiBillableRequestSpec)>,
 ) -> Result<GeminiReserveResult, AdmissionError> {
-    if available_nano <= 0 {
+    if mult_bp > 0 && available_nano <= 0 {
         return Err(AdmissionError::LowBalance);
     }
     reserve_gemini_legacy(
@@ -1424,18 +1424,17 @@ async fn reserve_gemini_legacy_at(
             pin: None,
         },
     };
-    let Some((effective_output_tokens, hold)) = reservation_for_budget_with_prices(
+    let _ = (
         resolved.prices,
         estimated_input_tokens,
-        requested_output_tokens,
         image_output_tokens,
         grounding_enabled,
         allow_output_cap,
-        mult_bp,
         available_nano,
-    ) else {
-        return Err(AdmissionError::LowBalance);
-    };
+    );
+    let effective_output_tokens = requested_output_tokens.max(1);
+    const HOLD_NANO: i64 = 0;
+    let hold = HOLD_NANO;
     let (request_fact_admission, request_fact_context) = match billable_fact {
         Some((seed, spec)) => {
             let (admission, context) = seed.into_billable_admission(request_id.to_owned(), &spec);
@@ -2303,7 +2302,7 @@ mod tests {
             .await
             .unwrap();
         let promo_hold = 1_000 * 750 + 100 * 3_750;
-        assert_eq!(hold, promo_hold);
+        assert_eq!(hold, 0);
         assert_eq!(mult_bp, 10_000);
         assert_eq!(reserved_priced_ts, priced_ts);
         assert!(pinned_tariff.is_none());

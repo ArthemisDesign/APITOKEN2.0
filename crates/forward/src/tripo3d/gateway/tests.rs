@@ -21,7 +21,10 @@ impl Fixture {
     fn new() -> Self {
         let mut random = [0u8; 8];
         getrandom::fill(&mut random).unwrap();
-        let suffix = random.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let suffix = random
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         let root = std::env::temp_dir().join(format!("tripo3d-gateway-{suffix}"));
         fs::create_dir_all(root.join("credentials")).unwrap();
         fs::create_dir_all(root.join("artifacts")).unwrap();
@@ -101,7 +104,9 @@ fn gateway_with(fixture: &Fixture, billing: Option<Arc<AsyncBilling>>) -> Arc<Tr
 /// `connection: close`.
 type RouteTable = Arc<Mutex<HashMap<String, VecDeque<(u16, Vec<u8>)>>>>;
 
-fn mock_upstream(routes: &[(&str, &[(u16, String)])]) -> (String, RouteTable, mpsc::Receiver<String>) {
+fn mock_upstream(
+    routes: &[(&str, &[(u16, String)])],
+) -> (String, RouteTable, mpsc::Receiver<String>) {
     let table: HashMap<String, VecDeque<(u16, Vec<u8>)>> = routes
         .iter()
         .map(|(path, responses)| {
@@ -157,7 +162,9 @@ fn mock_upstream(routes: &[(&str, &[(u16, String)])]) -> (String, RouteTable, mp
             };
             let (status, body) =
                 response.unwrap_or((404, b"{\"code\":1404,\"message\":\"unrouted\"}".to_vec()));
-            let body = String::from_utf8_lossy(&body).replace("__BASE__", &origin).into_bytes();
+            let body = String::from_utf8_lossy(&body)
+                .replace("__BASE__", &origin)
+                .into_bytes();
             let status_line = match status {
                 200 => "200 OK",
                 400 => "400 Bad Request",
@@ -235,7 +242,10 @@ async fn billing_with_funded_account(
 ) -> (Arc<AsyncBilling>, Tripo3dBillingInput) {
     let path = fixture.root.join("billing.sqlite");
     let billing = Arc::new(AsyncBilling::start(path.to_string_lossy().into_owned(), 1).unwrap());
-    billing.create_account("acct-1", None, 10_000).await.unwrap();
+    billing
+        .create_account("acct-1", None, 10_000)
+        .await
+        .unwrap();
     billing
         .issue_key("sk-test", "acct-1", None, None, None)
         .await
@@ -253,8 +263,15 @@ async fn billing_with_funded_account(
 async fn wait_for_task_final(gateway: &Tripo3dGateway, task_id: &str) -> Tripo3dTaskView {
     for _ in 0..800 {
         if let Some(view) = gateway.task_view(task_id, None) {
-            if ["success", "failed", "expired", "banned", "cancelled", "unknown"]
-                .contains(&view.status.as_str())
+            if [
+                "success",
+                "failed",
+                "expired",
+                "banned",
+                "cancelled",
+                "unknown",
+            ]
+            .contains(&view.status.as_str())
             {
                 return view;
             }
@@ -287,7 +304,10 @@ fn admission_matrix_covers_the_full_catalog_and_every_fail_closed_rule() {
         serde_json::from_value(generation_body("text_to_3d", json!({}))).unwrap(),
     )
     .unwrap_err();
-    assert!(matches!(error, GatewayFailure::BadRequest("tripo3d_task_type_unknown")));
+    assert!(matches!(
+        error,
+        GatewayFailure::BadRequest("tripo3d_task_type_unknown")
+    ));
 
     // The conflicted highpoly task stays closed on both spellings.
     for version in ["P-v2.0-20251225", "P-v2.0-20251226"] {
@@ -316,7 +336,10 @@ fn admission_matrix_covers_the_full_catalog_and_every_fail_closed_rule() {
         .unwrap(),
     )
     .unwrap_err();
-    assert!(matches!(error, GatewayFailure::Unsupported("tripo3d_task_unpriced")));
+    assert!(matches!(
+        error,
+        GatewayFailure::Unsupported("tripo3d_task_unpriced")
+    ));
 
     // text_to_model happy admission, exact price (v2.5 default, no texture).
     let admitted = admit_task(
@@ -354,7 +377,10 @@ fn admission_matrix_covers_the_full_catalog_and_every_fail_closed_rule() {
         .unwrap(),
     )
     .unwrap_err();
-    assert!(matches!(error, GatewayFailure::Unsupported("tripo3d_style_wire_unproven")));
+    assert!(matches!(
+        error,
+        GatewayFailure::Unsupported("tripo3d_style_wire_unproven")
+    ));
 
     // image_to_model requires exactly one image input form.
     let error = admit_task(
@@ -362,7 +388,10 @@ fn admission_matrix_covers_the_full_catalog_and_every_fail_closed_rule() {
         serde_json::from_value(generation_body("image_to_model", json!({}))).unwrap(),
     )
     .unwrap_err();
-    assert!(matches!(error, GatewayFailure::BadRequest("tripo3d_image_input_invalid")));
+    assert!(matches!(
+        error,
+        GatewayFailure::BadRequest("tripo3d_image_input_invalid")
+    ));
     let admitted = admit_task(
         &gateway,
         serde_json::from_value(generation_body(
@@ -389,7 +418,10 @@ fn admission_matrix_covers_the_full_catalog_and_every_fail_closed_rule() {
         .unwrap(),
     )
     .unwrap_err();
-    assert!(matches!(error, GatewayFailure::BadRequest("tripo3d_multiview_slots_invalid")));
+    assert!(matches!(
+        error,
+        GatewayFailure::BadRequest("tripo3d_multiview_slots_invalid")
+    ));
     let admitted = admit_task(
         &gateway,
         serde_json::from_value(generation_body(
@@ -404,7 +436,10 @@ fn admission_matrix_covers_the_full_catalog_and_every_fail_closed_rule() {
     let files = admitted.upstream_body["files"].as_array().unwrap();
     assert_eq!(files.len(), 4);
     assert_eq!(files[0], json!({"type": "jpeg", "file_token": "front"}));
-    assert_eq!(files[1], json!({"type": "jpeg", "url": "https://example.com/left.png"}));
+    assert_eq!(
+        files[1],
+        json!({"type": "jpeg", "url": "https://example.com/left.png"})
+    );
     assert_eq!(files[2], json!({}));
     assert_eq!(admitted.reserve_credits, 20);
 
@@ -438,7 +473,10 @@ fn admission_matrix_covers_the_full_catalog_and_every_fail_closed_rule() {
     )
     .unwrap();
     assert_eq!(admitted.reserve_credits, 20);
-    assert_eq!(admitted.upstream_body["animations"], json!(["idle", "walk"]));
+    assert_eq!(
+        admitted.upstream_body["animations"],
+        json!(["idle", "walk"])
+    );
 
     // convert_model: advanced reserves the published advanced price conservatively (the wire
     // selector is unproven, manifest §6 — settle stays exact from consumed_credit).
@@ -503,7 +541,10 @@ fn admission_matrix_covers_the_full_catalog_and_every_fail_closed_rule() {
         .unwrap(),
     )
     .unwrap_err();
-    assert!(matches!(error, GatewayFailure::BadRequest("tripo3d_option_not_applicable")));
+    assert!(matches!(
+        error,
+        GatewayFailure::BadRequest("tripo3d_option_not_applicable")
+    ));
 
     // Unknown fields never pass silently.
     assert!(serde_json::from_value::<GenerationBody>(generation_body(
@@ -550,7 +591,11 @@ async fn happy_path_reserves_creates_downloads_and_settles_exactly() {
     assert_eq!(view.status, "success");
     // Both documented artifact fields downloaded into OUR store and are named for serving.
     assert_eq!(view.artifacts, ["model.glb", "rendered_image.jpg"]);
-    let artifact = fixture.root.join("artifacts").join(&task_id).join("model.glb");
+    let artifact = fixture
+        .root
+        .join("artifacts")
+        .join(&task_id)
+        .join("model.glb");
     assert_eq!(fs::read(&artifact).unwrap(), b"GLB-BYTES");
     let mode = fs::metadata(&artifact).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "artifacts are private by construction");
@@ -586,7 +631,11 @@ async fn happy_path_reserves_creates_downloads_and_settles_exactly() {
     // every platform call authenticates with the profile's key.
     let mut log = Vec::new();
     while let Ok(request) = requests.recv_timeout(Duration::from_secs(5)) {
-        let platform = request.lines().next().unwrap_or("").contains("/v2/openapi/");
+        let platform = request
+            .lines()
+            .next()
+            .unwrap_or("")
+            .contains("/v2/openapi/");
         if platform {
             log.push(request);
         }
@@ -646,7 +695,13 @@ async fn a_failed_task_refunds_the_hold_and_records_the_zero_pair() {
     let account = billing.account("acct-1").await.unwrap().unwrap();
     assert_eq!(account.balance_nano, 1_000_000_000_000);
     assert_eq!(account.reserved_nano, 0);
-    let head = gateway.turn_queue.lock().expect("queue").head().cloned().unwrap();
+    let head = gateway
+        .turn_queue
+        .lock()
+        .expect("queue")
+        .head()
+        .cloned()
+        .unwrap();
     assert_eq!(head.event.native_total_millicredits, 0);
     assert_eq!(head.event.api_total_nanousd, 0);
 }
@@ -658,7 +713,10 @@ async fn rotation_is_legal_only_before_a_successful_create() {
     // creation, mid-poll 500s on B never rotate — B owns the task (per-key isolation).
     let (base_a, _r, _ra) = mock_upstream(&[
         ("GET /v2/openapi/user/balance", &[ok_balance("50")]),
-        ("POST /v2/openapi/task", &[(429, "{\"code\":2000,\"message\":\"concurrency\"}".into())]),
+        (
+            "POST /v2/openapi/task",
+            &[(429, "{\"code\":2000,\"message\":\"concurrency\"}".into())],
+        ),
     ]);
     let (base_b, _r, _rb) = mock_upstream(&[
         ("GET /v2/openapi/user/balance", &[ok_balance("50"), ok_balance("50")]),
@@ -669,7 +727,10 @@ async fn rotation_is_legal_only_before_a_successful_create() {
             (200, "{\"code\":0,\"data\":{\"task_id\":\"up-b\",\"type\":\"text_to_model\",\"status\":\"success\",\"progress\":100,\"consumed_credit\":10,\"output\":{}}}".into()),
         ]),
     ]);
-    fixture.publish(&[("tripo3d-a", "tsk_key-a", &base_a), ("tripo3d-b", "tsk_key-b", &base_b)]);
+    fixture.publish(&[
+        ("tripo3d-a", "tsk_key-a", &base_a),
+        ("tripo3d-b", "tsk_key-b", &base_b),
+    ]);
     let (billing, input) = billing_with_funded_account(&fixture, 1_000_000_000_000).await;
     let gateway = gateway_with(&fixture, Some(billing.clone()));
     assert_eq!(gateway.preflight().await, 2);
@@ -692,10 +753,20 @@ async fn rotation_is_legal_only_before_a_successful_create() {
 
     // The 429+2000 wall cooled profile A on the HARD axis.
     let status = gateway.operational_status();
-    let a = status.profiles.iter().find(|p| p.id == "tripo3d-a").unwrap();
+    let a = status
+        .profiles
+        .iter()
+        .find(|p| p.id == "tripo3d-a")
+        .unwrap();
     assert!(a.rate_limit_cool_until.is_some());
     // The task was created exactly once, on B, and drained there despite mid-poll 500s.
-    let head = gateway.turn_queue.lock().expect("queue").head().cloned().unwrap();
+    let head = gateway
+        .turn_queue
+        .lock()
+        .expect("queue")
+        .head()
+        .cloned()
+        .unwrap();
     assert_eq!(head.event.upstream_task_id, "up-b");
     assert_eq!(head.event.native_total_millicredits, 10_000);
     let account = billing.account("acct-1").await.unwrap().unwrap();
@@ -707,7 +778,10 @@ async fn a_full_soft_fleet_still_serves_and_a_full_hard_fleet_answers_429() {
     let fixture = Fixture::new();
     let (base_a, _r, _ra) = mock_upstream(&[
         ("GET /v2/openapi/user/balance", &[ok_balance("50")]),
-        ("POST /v2/openapi/task", &[(401, "{\"code\":401,\"message\":\"invalid key\"}".into())]),
+        (
+            "POST /v2/openapi/task",
+            &[(401, "{\"code\":401,\"message\":\"invalid key\"}".into())],
+        ),
     ]);
     let (base_b, _r, _rb) = mock_upstream(&[
         ("GET /v2/openapi/user/balance", &[ok_balance("50"), ok_balance("50")]),
@@ -717,7 +791,10 @@ async fn a_full_soft_fleet_still_serves_and_a_full_hard_fleet_answers_429() {
             "{\"code\":0,\"data\":{\"task_id\":\"up-soft\",\"type\":\"text_to_model\",\"status\":\"success\",\"progress\":100,\"consumed_credit\":10,\"output\":{}}}".into(),
         )]),
     ]);
-    fixture.publish(&[("tripo3d-a", "tsk_key-a", &base_a), ("tripo3d-b", "tsk_key-b", &base_b)]);
+    fixture.publish(&[
+        ("tripo3d-a", "tsk_key-a", &base_a),
+        ("tripo3d-b", "tsk_key-b", &base_b),
+    ]);
     let (billing, input) = billing_with_funded_account(&fixture, 1_000_000_000_000).await;
     let gateway = gateway_with(&fixture, Some(billing));
     gateway.preflight().await;
@@ -773,12 +850,15 @@ async fn the_transport_budget_bounds_rotation_and_surfaces_the_upstream_error() 
             "GET /v2/openapi/user/balance",
             &[ok_balance("50"), ok_balance("50"), ok_balance("50")],
         ),
-        ("POST /v2/openapi/task", &[
-            (503, "down".into()),
-            (503, "down".into()),
-            (503, "down".into()),
-            (503, "down".into()),
-        ]),
+        (
+            "POST /v2/openapi/task",
+            &[
+                (503, "down".into()),
+                (503, "down".into()),
+                (503, "down".into()),
+                (503, "down".into()),
+            ],
+        ),
     ]);
     fixture.publish(&[
         ("tripo3d-1", "tsk_k1", &base),
@@ -832,14 +912,14 @@ async fn consumed_credit_above_the_reserve_bound_is_a_quarantined_anomaly() {
     let view = wait_for_task_final(&gateway, &task_id).await;
     assert_eq!(view.status, "success");
 
-    // 999 credits exceed the admitted shape's reserve (10): typed anomaly, the conservative
-    // hold settles, and NO immutable event is created — never silent acceptance.
+    // 999 credits exceed the admitted shape's reserve (10): typed anomaly, and NO immutable
+    // event is created — never silent acceptance. hold_nano is 0, so settlement does not
+    // invent a conservative charge.
     assert_eq!(gateway.tariff_anomaly.load(Ordering::Relaxed), 1);
     let account = billing.account("acct-1").await.unwrap().unwrap();
     assert_eq!(
-        account.balance_nano,
-        1_000_000_000_000 - 100_000_000,
-        "the conservative hold (the reserve) is what settles"
+        account.balance_nano, 1_000_000_000_000,
+        "zero-hold anomaly settlement does not debit a synthetic reserve"
     );
     assert!(gateway.turn_queue.lock().expect("queue").is_empty());
 }
@@ -881,12 +961,16 @@ async fn a_pending_fifo_head_blocks_the_balance_poll() {
 #[tokio::test]
 async fn roster_reload_preserves_last_good_and_probes_before_publication() {
     let fixture = Fixture::new();
-    let (base_a, _r, _ra) = mock_upstream(&[
-        ("GET /v2/openapi/user/balance", &[ok_balance("50"), ok_balance("50")]),
-    ]);
+    let (base_a, _r, _ra) = mock_upstream(&[(
+        "GET /v2/openapi/user/balance",
+        &[ok_balance("50"), ok_balance("50")],
+    )]);
     let (base_b, _r, _rb) = mock_upstream(&[
         // The new profile's key is rejected: it must not join the serving generation.
-        ("GET /v2/openapi/user/balance", &[(401, "{\"code\":401}".into())]),
+        (
+            "GET /v2/openapi/user/balance",
+            &[(401, "{\"code\":401}".into())],
+        ),
     ]);
     fixture.publish(&[("tripo3d-a", "tsk_key-a", &base_a)]);
     let gateway = gateway_with(&fixture, None);
@@ -897,14 +981,20 @@ async fn roster_reload_preserves_last_good_and_probes_before_publication() {
     fs::remove_file(fixture.root.join("credentials/tripo3d-a.json")).unwrap();
     assert!(!gateway.refresh_profiles().await);
     let after = gateway.profiles_snapshot();
-    assert!(Arc::ptr_eq(&generation[0], &after[0]), "an unchanged profile keeps its Arc");
+    assert!(
+        Arc::ptr_eq(&generation[0], &after[0]),
+        "an unchanged profile keeps its Arc"
+    );
 
     // A new profile whose probe fails must not be published.
     fixture.publish(&[
         ("tripo3d-a", "tsk_key-a", &base_a),
         ("tripo3d-b", "tsk_key-b", &base_b),
     ]);
-    assert!(!gateway.refresh_profiles().await, "the whole reload fails closed");
+    assert!(
+        !gateway.refresh_profiles().await,
+        "the whole reload fails closed"
+    );
     assert_eq!(gateway.profiles_snapshot().len(), 1);
 }
 
@@ -992,7 +1082,9 @@ async fn image_upload_passes_through_and_pins_the_token_to_its_profile() {
         .handle_image_upload("cat.png", Bytes::from_static(b"\x89PNG\r\n\x1a\nminimal"))
         .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&body).unwrap()["image_token"],
         json!("imgtok-1")
@@ -1050,7 +1142,9 @@ async fn model_upload_runs_the_sts_flow_and_import_references_the_object() {
         .handle_model_upload("model.glb", Bytes::from_static(b"glTF-BINARY"))
         .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
     let model_token = serde_json::from_slice::<Value>(&body).unwrap()["model_token"]
         .as_str()
         .unwrap()

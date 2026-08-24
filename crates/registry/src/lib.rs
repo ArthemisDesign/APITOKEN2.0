@@ -2182,9 +2182,17 @@ pub enum HotOp<'a> {
     },
 }
 
-/// Shared post-reserve account floor for both registry backends. This deliberately mirrors
-/// `metering::OVERDRAFT_NANO` without introducing an upward dependency from registry to metering.
+/// Shared leftover-hold settlement floor for mixed-version hold>0 rows. New admission stores
+/// `hold_nano = 0` and does not use this floor. The constant still mirrors
+/// `metering::OVERDRAFT_NANO` without an upward dependency from registry to metering.
 pub const ACCOUNT_OVERDRAFT_NANO: i64 = 1_000_000_000;
+
+/// Paid work starts only while the authoritative balance is strictly positive.
+/// A zero-multiplier (service) request is admitted without a money gate.
+/// Unpriced callers are treated as paid.
+pub fn paid_admission_requires_positive_balance(payable_multiplier_bp: Option<i64>) -> bool {
+    payable_multiplier_bp.unwrap_or(1) > 0
+}
 
 /// Применить пачку reserve/settle в ОДНОЙ транзакции (group-commit): амортизирует стоимость коммита
 /// под нагрузкой. Команды применяются ПОСЛЕДОВАТЕЛЬНО — атомарный reserve видит эффекты предыдущих
@@ -2220,10 +2228,21 @@ pub fn apply_hot_batch(conn: &Connection, ops: &[HotOp]) -> Result<Vec<Option<i6
     Ok(out)
 }
 
-/// АТОМАРНО зарезервировать `hold` по АККАУНТУ, если post-balance не пересекает общий overdraft
-/// floor и аккаунт активен. Кошелёк — общий на профиль (все ключи юзера тратят из него).
+/// Admit an active account. `hold_nano = 0` does not move money. `hold_nano > 0` is the leftover
+/// mixed-version debit that still uses the −$1 overdraft floor.
 pub fn account_reserve(conn: &Connection, id: &str, hold_nano: i64) -> Result<Option<i64>> {
     let hold = hold_nano.max(0);
+    if hold == 0 {
+        return match conn.query_row(
+            "SELECT balance_nano FROM accounts WHERE id=?1 AND status='active'",
+            rusqlite::params![id],
+            |r| r.get::<_, i64>(0),
+        ) {
+            Ok(bal) => Ok(Some(bal)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        };
+    }
     match conn.query_row(
         "UPDATE accounts SET balance_nano = balance_nano - ?1, reserved_nano = reserved_nano + ?1 \
          WHERE id = ?2 AND status = 'active' AND balance_nano >= ?1 - ?3 RETURNING balance_nano",
@@ -2236,7 +2255,8 @@ pub fn account_reserve(conn: &Connection, id: &str, hold_nano: i64) -> Result<Op
     }
 }
 
-/// Reserve against both the shared account balance and one key's lifetime spending policy.
+/// Admit against both the shared account and one key's lifetime spending policy.
+/// `hold_nano = 0` does not move money; `hold_nano > 0` is leftover mixed-version debit.
 pub fn account_reserve_for_key(
     conn: &Connection,
     id: &str,
@@ -2245,38 +2265,76 @@ pub fn account_reserve_for_key(
 ) -> Result<Option<i64>> {
     let hold = hold_nano.max(0);
     conn.execute_batch("SAVEPOINT key_policy_reserve")?;
-    let balance = match conn.query_row(
-        "UPDATE accounts SET balance_nano=balance_nano-?1, reserved_nano=reserved_nano+?1 \
-         WHERE id=?2 AND status='active' AND balance_nano>=?1-?3 RETURNING balance_nano",
-        rusqlite::params![hold, id, ACCOUNT_OVERDRAFT_NANO],
-        |r| r.get::<_, i64>(0),
-    ) {
-        Ok(value) => value,
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            conn.execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve")?;
-            return Ok(None);
+    let balance = if hold == 0 {
+        match conn.query_row(
+            "SELECT balance_nano FROM accounts WHERE id=?1 AND status='active'",
+            rusqlite::params![id],
+            |r| r.get::<_, i64>(0),
+        ) {
+            Ok(value) => value,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                conn.execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve")?;
+                return Ok(None);
+            }
+            Err(error) => {
+                let _ = conn
+                    .execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve");
+                return Err(error.into());
+            }
         }
-        Err(error) => {
-            let _ =
-                conn.execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve");
-            return Err(error.into());
+    } else {
+        match conn.query_row(
+            "UPDATE accounts SET balance_nano=balance_nano-?1, reserved_nano=reserved_nano+?1 \
+             WHERE id=?2 AND status='active' AND balance_nano>=?1-?3 RETURNING balance_nano",
+            rusqlite::params![hold, id, ACCOUNT_OVERDRAFT_NANO],
+            |r| r.get::<_, i64>(0),
+        ) {
+            Ok(value) => value,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                conn.execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve")?;
+                return Ok(None);
+            }
+            Err(error) => {
+                let _ = conn
+                    .execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve");
+                return Err(error.into());
+            }
         }
     };
-    let updated = match conn.execute(
-        "UPDATE api_keys SET reserved_nano=reserved_nano+?1 \
-         WHERE key=?2 AND account_id=?3 AND COALESCE(status,'active')='active' \
-           AND (expires_ts IS NULL OR expires_ts>CAST(strftime('%s','now') AS INTEGER)) \
-           AND (spend_limit_nano IS NULL OR spent_nano+reserved_nano+?1<=spend_limit_nano)",
-        rusqlite::params![hold, key, id],
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            let _ =
-                conn.execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve");
-            return Err(error.into());
+    let key_ok = if hold == 0 {
+        match conn.query_row(
+            "SELECT 1 FROM api_keys \
+             WHERE key=?1 AND account_id=?2 AND COALESCE(status,'active')='active' \
+               AND (expires_ts IS NULL OR expires_ts>CAST(strftime('%s','now') AS INTEGER)) \
+               AND (spend_limit_nano IS NULL OR spent_nano+reserved_nano<=spend_limit_nano)",
+            rusqlite::params![key, id],
+            |_| Ok(()),
+        ) {
+            Ok(()) => true,
+            Err(rusqlite::Error::QueryReturnedNoRows) => false,
+            Err(error) => {
+                let _ = conn
+                    .execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve");
+                return Err(error.into());
+            }
+        }
+    } else {
+        match conn.execute(
+            "UPDATE api_keys SET reserved_nano=reserved_nano+?1 \
+             WHERE key=?2 AND account_id=?3 AND COALESCE(status,'active')='active' \
+               AND (expires_ts IS NULL OR expires_ts>CAST(strftime('%s','now') AS INTEGER)) \
+               AND (spend_limit_nano IS NULL OR spent_nano+reserved_nano+?1<=spend_limit_nano)",
+            rusqlite::params![hold, key, id],
+        ) {
+            Ok(value) => value == 1,
+            Err(error) => {
+                let _ = conn
+                    .execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve");
+                return Err(error.into());
+            }
         }
     };
-    if updated != 1 {
+    if !key_ok {
         conn.execute_batch("ROLLBACK TO key_policy_reserve; RELEASE key_policy_reserve")?;
         return Ok(None);
     }
@@ -2333,20 +2391,29 @@ pub fn account_settle_in(
         Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    // Legacy/group-commit callers do not carry a request identity, so an overlapping reconcile can
-    // already have released part of the aggregate hold. Refund only what remains, but serialize the
-    // collection on this account and never cross the shared admission floor.
-    let released = hold.min(reserved_before);
-    let collection_floor = i128::from(balance_before).min(-i128::from(ACCOUNT_OVERDRAFT_NANO));
-    let collectable = (i128::from(balance_before) + i128::from(released) - collection_floor)
-        .max(0)
-        .min(i128::from(actual));
-    let collected = i64::try_from(collectable).context("SQLite collected amount overflow")?;
-    let uncollected = actual
-        .checked_sub(collected)
-        .context("SQLite collection exceeds billed amount")?;
-    let balance = i64::try_from(i128::from(balance_before) + i128::from(released) - collectable)
-        .context("SQLite balance overflow during settlement")?;
+    // hold=0 is the current admission ticket: debit full actual with no floor.
+    // hold>0 is leftover mixed-version money. Legacy/group-commit callers do not carry a request
+    // identity, so an overlapping reconcile can already have released part of that aggregate hold.
+    let (released, _collected, uncollected, balance) = if hold == 0 {
+        let collected = actual;
+        let balance = i64::try_from(i128::from(balance_before) - i128::from(actual))
+            .context("SQLite balance overflow during settlement")?;
+        (0i64, collected, 0i64, balance)
+    } else {
+        let released = hold.min(reserved_before);
+        let collection_floor = i128::from(balance_before).min(-i128::from(ACCOUNT_OVERDRAFT_NANO));
+        let collectable = (i128::from(balance_before) + i128::from(released) - collection_floor)
+            .max(0)
+            .min(i128::from(actual));
+        let collected = i64::try_from(collectable).context("SQLite collected amount overflow")?;
+        let uncollected = actual
+            .checked_sub(collected)
+            .context("SQLite collection exceeds billed amount")?;
+        let balance =
+            i64::try_from(i128::from(balance_before) + i128::from(released) - collectable)
+                .context("SQLite balance overflow during settlement")?;
+        (released, collected, uncollected, balance)
+    };
     let spent = i64::try_from(i128::from(spent_before) + i128::from(actual))
         .context("SQLite account spend overflow during settlement")?;
     let account_uncollected =
@@ -2444,19 +2511,26 @@ fn account_settle_request_in(
         Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if reserved_before < hold {
+    if hold > 0 && reserved_before < hold {
         anyhow::bail!("reservation/account aggregate invariant failed");
     }
-    let collection_floor = i128::from(balance_before).min(-i128::from(ACCOUNT_OVERDRAFT_NANO));
-    let collectable = (i128::from(balance_before) + i128::from(hold) - collection_floor)
-        .max(0)
-        .min(i128::from(actual));
-    let collected = i64::try_from(collectable).context("SQLite collected amount overflow")?;
-    let uncollected = actual
-        .checked_sub(collected)
-        .context("SQLite collection exceeds billed amount")?;
-    let balance = i64::try_from(i128::from(balance_before) + i128::from(hold) - collectable)
-        .context("SQLite balance overflow during settlement")?;
+    let (collected, uncollected, balance, reserved_after) = if hold == 0 {
+        let balance = i64::try_from(i128::from(balance_before) - i128::from(actual))
+            .context("SQLite balance overflow during settlement")?;
+        (actual, 0i64, balance, reserved_before)
+    } else {
+        let collection_floor = i128::from(balance_before).min(-i128::from(ACCOUNT_OVERDRAFT_NANO));
+        let collectable = (i128::from(balance_before) + i128::from(hold) - collection_floor)
+            .max(0)
+            .min(i128::from(actual));
+        let collected = i64::try_from(collectable).context("SQLite collected amount overflow")?;
+        let uncollected = actual
+            .checked_sub(collected)
+            .context("SQLite collection exceeds billed amount")?;
+        let balance = i64::try_from(i128::from(balance_before) + i128::from(hold) - collectable)
+            .context("SQLite balance overflow during settlement")?;
+        (collected, uncollected, balance, reserved_before - hold)
+    };
     let spent = i64::try_from(i128::from(spent_before) + i128::from(actual))
         .context("SQLite account spend overflow during settlement")?;
     let account_uncollected =
@@ -2465,13 +2539,7 @@ fn account_settle_request_in(
     conn.execute(
         "UPDATE accounts SET balance_nano=?1,spent_nano=?2,reserved_nano=?3,uncollected_nano=?4 \
          WHERE id=?5",
-        rusqlite::params![
-            balance,
-            spent,
-            reserved_before - hold,
-            account_uncollected,
-            id
-        ],
+        rusqlite::params![balance, spent, reserved_after, account_uncollected, id],
     )?;
 
     let key_aggregate = conn.query_row(
@@ -3381,6 +3449,15 @@ fn sqlite_reserve_request_for_execution_with_pricing(
     }
 
     let Some(balance) = account_reserve_for_key(&tx, account_id, key, hold_nano)? else {
+        tx.rollback()?;
+        return Ok(None);
+    };
+    if hold_nano == 0
+        && paid_admission_requires_positive_balance(
+            pricing.map(|value| value.payable_multiplier_bp),
+        )
+        && balance <= 0
+    {
         tx.rollback()?;
         return Ok(None);
     };
