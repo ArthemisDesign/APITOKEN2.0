@@ -9,7 +9,7 @@ Cmnd_Alias APITOKEN_STAGE_CTL = /usr/local/lib/apitoken-watchdog/stage-eligible-
     /usr/local/lib/apitoken-watchdog/stage-promotion-helper.sh attest [0-9a-f]* *, \
     /usr/local/lib/apitoken-watchdog/stage-promotion-helper.sh sync [0-9a-f]*, \
     /usr/local/lib/apitoken-watchdog/stage-live-control.sh enable [0-9]* [0-9]* [A-Za-z0-9_.-]*, \
-    /usr/local/lib/apitoken-watchdog/stage-live-control.sh probe [A-Za-z0-9._:-]* [A-Za-z0-9_.-]*, \
+    /usr/local/lib/apitoken-watchdog/stage-live-control.sh probe * *, \
     /usr/local/lib/apitoken-watchdog/stage-live-control.sh disable [A-Za-z0-9_.-]*, \
     /usr/local/lib/apitoken-watchdog/stage-ctl-helper.sh reseed, \
     /usr/local/lib/apitoken-watchdog/stage-seed.sh reseed

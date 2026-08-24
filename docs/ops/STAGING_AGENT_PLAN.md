@@ -1884,7 +1884,7 @@ Payment/OAuth/mail vendor egress stays forbidden. `STAGING_ENVIRONMENT.md` §11.
 ### Execution log
 
 ### 2026-08-24 — Phase 8 budgeted live-endpoint foundation
-SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+SHA: `3e284d377b1713d7456f39de70d1b73818f65e2d`   watchdog: RED
 Result: Add a root-owned controller that issues a distinct production `stage-live` account/key with
 an explicit 100,000..100,000,000 nanoUSD lifetime cap and 5-minute..24-hour TTL. A fixed host bridge
 exposes only `/v1/messages` on the private veth. A stage-netns client validates a closed non-stream
@@ -1894,8 +1894,20 @@ provider credential, OAuth envelope, production `CONTROL_KEY`, or arbitrary URL 
 Checks actually run: `bash deploy/staging-phase8.test.sh`; `bash deploy/staging-foundation.test.sh`;
 `bash -n deploy/*.sh`; `./deploy/host-image-gate.sh`; `git diff --check`.
 Deviation from this plan / from STAGING_ENVIRONMENT.md: owner selected §5.3.1 option 2. No §11.3 lock changed.
-Next: merge to stage, owner-attest, promote, enable a cents-scale key, run one minimal probe, disable,
-and close Phase 8 from live evidence.
+Next: repair stage-ctl sudoers syntax and both installed policy copies.
+
+### 2026-08-24 — Phase 8 stage-ctl sudoers repair v2
+SHA: *(this commit; exact SHA recorded after merge)*   watchdog: pending
+Result: Sudoers parses `:` inside the model argv glob as syntax. Use two broad argv globs at the
+sudoers layer; the fixed root-owned helper still enforces the strict model/actor regex and exact
+argument count before action. The invalid installed policy also caused every sudo to print parser
+errors, which made trusted Git object validation fail. Owner authorized one repair of both fixed
+policy copies; both now parse and the unprivileged validator reads the object store again.
+Checks actually run: disposable Ubuntu `visudo -cf`; `bash deploy/staging-phase8.test.sh`;
+`bash deploy/staging-foundation.test.sh`; `./deploy/host-image-gate.sh`; live `visudo -c`; live
+`sudo -u apitoken-ci git ... cat-file --batch-all-objects`.
+Deviation from this plan / from STAGING_ENVIRONMENT.md: forward fix after RED installer acceptance.
+Next: merge on GREEN, enable a cents-scale key, run one minimal probe, disable, and close Phase 8.
 
 ---
 
