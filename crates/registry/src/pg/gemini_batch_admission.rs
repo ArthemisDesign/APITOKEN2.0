@@ -425,7 +425,7 @@ impl PgStore {
              client_key,request_digest,input_file_id,hold_nano,payable_multiplier_bp,priced_ts,tariff_family,\
              tariff_version,tariff_schedule_id,state,creator_key_id,created_ts,updated_ts)\
              SELECT $2,item_index,request_id,logical_request_id,execution_group_id,client_key,request_digest,\
-             input_file_id,hold_nano,payable_multiplier_bp,priced_ts,tariff_family,tariff_version,\
+             input_file_id,0::bigint,payable_multiplier_bp,priced_ts,tariff_family,tariff_version,\
              tariff_schedule_id,'queued',$3,created_ts,created_ts FROM gemini_batch_admission_items \
              WHERE admission_id=$1 ORDER BY item_index",
             &[&admission_id, &job_id, &creator_key_id],
@@ -551,7 +551,7 @@ mod tests {
         let row=pg.client.query_one("SELECT (SELECT COUNT(*) FROM gemini_batch_items WHERE job_id=$1),(SELECT COUNT(*) FROM gemini_batch_blobs WHERE job_id=$1),(SELECT reserved_nano FROM accounts WHERE id=$2),(SELECT COUNT(*) FROM gemini_batch_admission_items WHERE admission_id=$3)",&[&job,&account,&id]).unwrap();
         assert_eq!(row.get::<_, i64>(0), 100000);
         assert_eq!(row.get::<_, i64>(1), 100000);
-        assert_eq!(row.get::<_, i64>(2), 10000000);
+        assert_eq!(row.get::<_, i64>(2), 0);
         assert_eq!(row.get::<_, i64>(3), 0);
         pg.client.batch_execute("DELETE FROM gemini_batch_blobs WHERE job_id='stage100k-job';DELETE FROM gemini_batch_items WHERE job_id='stage100k-job';DELETE FROM gemini_batch_jobs WHERE job_id='stage100k-job';DELETE FROM gemini_batch_admissions WHERE admission_id='stage100k-admission';DELETE FROM api_keys WHERE key='stage100k-key';DELETE FROM accounts WHERE id='stage100k-account';").unwrap();
         lock.client

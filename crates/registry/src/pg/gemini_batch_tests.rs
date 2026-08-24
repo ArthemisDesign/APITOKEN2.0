@@ -361,7 +361,7 @@ fn stage2_authority_postgres_matrix() {
     );
     assert!(matches!(
         pg.gemini_batch_create(&c, "stage2-key").unwrap(),
-        crate::GeminiBatchCreateOutcome::Created { balance_nano: 900 }
+        crate::GeminiBatchCreateOutcome::Created { balance_nano: 1000 }
     ));
     assert!(matches!(
         pg.gemini_batch_create(&c, "stage2-key").unwrap(),
@@ -397,7 +397,7 @@ fn stage2_authority_postgres_matrix() {
         .unwrap();
     assert_eq!(claimed.public_model, "gemini-2.5-flash");
     assert_eq!(claimed.request_blob.kind, "request");
-    assert_eq!(claimed.hold_nano, 100);
+    assert_eq!(claimed.hold_nano, 0);
     assert_eq!(claimed.payable_multiplier_bp, 5000);
     assert_eq!(claimed.tariff_version, 1);
     assert!(format!("{claimed:?}").contains("[REDACTED]"));

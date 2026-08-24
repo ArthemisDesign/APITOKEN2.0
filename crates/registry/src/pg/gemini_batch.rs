@@ -507,7 +507,7 @@ impl PgStore {
                     &item.client_key,
                     &&item.request_digest[..],
                     &item.input_file_id,
-                    &item.hold_nano,
+                    &0i64,
                     &item.payable_multiplier_bp,
                     &item.priced_ts,
                     &item.tariff_family,
