@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>apiToken — AI API-инфраструктура</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/landing/fonts.css">
+<link rel="stylesheet" href="/landing/styles.css">
+<link rel="stylesheet" href="/landing/motion.css">
+</head>
+<body>
+
+<a class="skip" href="#main">К содержимому</a>
+
+<!-- ================= HEADER ================= -->
+<header class="hdr" id="hdr">
+  <div class="hdr__in grid">
+    <a class="brand c1-3" href="#"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
+    <nav class="nav c4-9">
+      <a href="#models">Модели</a>
+      <a href="#explorer">Решения</a>
+      <a href="#calc">Цены</a>
+      <a href="#integrations">Интеграции</a>
+      <a href="#learn">Гайды</a>
+      <a href="/landing/docs.html">Доки</a>
+    </nav>
+    <div class="hdr__acts c10-13">
+      <div class="lang" aria-label="Language switcher">
+        <a class="lang__link is-active" href="/landing/index.html" aria-current="page">RU</a>
+        <a class="lang__link" href="/landing/en.html">EN</a>
+      </div>
+      <a class="lnk" href="#">Войти</a>
+      <a class="btn" href="/dashboard">Для бизнеса</a>
+      <button class="burger" id="burger" aria-label="Меню"><span></span><span></span></button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ================= HERO ================= -->
+<section class="hero">
+
+  <div class="plate">
+    <div class="plate__grid" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+
+    <div class="plate__mark" aria-hidden="true">
+      <svg viewBox="0 0 680 520" preserveAspectRatio="xMidYMid meet">
+        <path d="M300 46 C 196 46, 252 234, 150 260 C 252 286, 196 474, 300 474"/>
+        <path d="M400 46 C 504 46, 448 234, 550 260 C 448 286, 504 474, 400 474"/>
+      </svg>
+    </div>
+
+    <div class="plate__in">
+      <div class="plate__labels">
+        <span class="meta">Система</span>
+        <span class="meta">Осн. 2026</span>
+        <div class="plate__claim">
+          <span class="claim__val">−50<em>%</em></span>
+          <span class="claim__lab">к стоимости прямых API</span>
+        </div>
+      </div>
+
+      <h1 class="display display--xxl plate__h">
+        <span>Все модели.</span>
+        <span>Один&nbsp;API.</span>
+      </h1>
+
+      <div class="plate__foot">
+        <p class="lead">Единая инфраструктура для работы с ведущими AI-моделями — через один ключ и один баланс.</p>
+        <div class="hero__cta ctas">
+          <a class="btn btn--solid" href="#calc">Получить B2B предложение</a>
+          <a class="btn" href="#start">Начать работу</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- full-bleed schematic band -->
+  <figure class="band reveal">
+    <div class="netwrap" id="netwrap">
+
+      <svg class="net" viewBox="0 0 1120 460" role="img" aria-label="Схема маршрутизации: провайдеры сходятся в apiToken и уходят одной линией в ваш продукт">
+
+        <!-- converging bus · each line lands on its own point of the
+             router's left edge, so nothing pinches into a single dot -->
+        <g class="net__links">
+          <path pathLength="100" d="M234 70  C 322 70,  342 180, 430 180"/>
+          <path pathLength="100" d="M234 134 C 322 134, 342 200, 430 200"/>
+          <path pathLength="100" d="M234 198 C 322 198, 342 220, 430 220"/>
+          <path pathLength="100" d="M234 262 C 322 262, 342 240, 430 240"/>
+          <path pathLength="100" d="M234 326 C 322 326, 342 260, 430 260"/>
+          <path pathLength="100" d="M234 390 C 322 390, 342 280, 430 280"/>
+        </g>
+        <g class="net__flow">
+          <path pathLength="100" d="M234 70  C 322 70,  342 180, 430 180"/>
+          <path pathLength="100" d="M234 134 C 322 134, 342 200, 430 200"/>
+          <path pathLength="100" d="M234 198 C 322 198, 342 220, 430 220"/>
+          <path pathLength="100" d="M234 262 C 322 262, 342 240, 430 240"/>
+          <path pathLength="100" d="M234 326 C 322 326, 342 260, 430 260"/>
+          <path pathLength="100" d="M234 390 C 322 390, 342 280, 430 280"/>
+        </g>
+
+        <!-- providers -->
+        <g class="node"><rect x="24" y="50"  width="210" height="40" rx="20"/><text x="48" y="76">OpenAI</text><text class="n-count" x="210" y="76">12</text></g>
+        <g class="node"><rect x="24" y="114" width="210" height="40" rx="20"/><text x="48" y="140">Anthropic</text><text class="n-count" x="210" y="140">8</text></g>
+        <g class="node"><rect x="24" y="178" width="210" height="40" rx="20"/><text x="48" y="204">Google</text><text class="n-count" x="210" y="204">7</text></g>
+        <g class="node"><rect x="24" y="242" width="210" height="40" rx="20"/><text x="48" y="268">Kimi</text><text class="n-count" x="210" y="268">4</text></g>
+        <g class="node"><rect x="24" y="306" width="210" height="40" rx="20"/><text x="48" y="332">Mistral</text><text class="n-count" x="210" y="332">6</text></g>
+        <g class="node node--more"><rect x="24" y="370" width="210" height="40" rx="20"/><text x="48" y="396">+ провайдеры</text></g>
+
+        <!-- router · horizontal card, type reads straight -->
+        <g class="core">
+          <rect x="430" y="156" width="230" height="148" rx="26"/>
+          <text class="c-name" x="545" y="224">apiToken</text>
+          <text class="c-tick" id="ticker" x="545" y="256">claude-opus-5</text>
+        </g>
+
+        <!-- single outbound line -->
+        <g class="net__out">
+          <path d="M660 230 L 744 230"/>
+          <path class="net__head" d="M736 222 L 748 230 L 736 238"/>
+        </g>
+
+        <!-- product -->
+        <g class="prodcard">
+          <rect x="752" y="148" width="344" height="164" rx="22"/>
+          <text class="p-name" x="784" y="200">Ваш продукт</text>
+          <text class="p-code" x="784" y="234">POST /v1/messages</text>
+          <text class="p-note" x="784" y="268">один ключ · один баланс</text>
+        </g>
+      </svg>
+
+      <!-- narrow screens: explicit vertical flow -->
+      <div class="netmob">
+        <div class="netmob__group">
+          <span class="netmob__label">Провайдеры</span>
+          <ul class="netmob__list">
+            <li>OpenAI<b>12</b></li>
+            <li>Anthropic<b>8</b></li>
+            <li>Google<b>7</b></li>
+            <li>Kimi<b>4</b></li>
+            <li>Mistral<b>6</b></li>
+          </ul>
+          <span class="netmob__more">+ другие провайдеры</span>
+        </div>
+        <span class="netmob__arrow" aria-hidden="true">
+          <span class="netmob__flow"></span>
+          <span class="netmob__head">↓</span>
+        </span>
+        
+        <div class="netmob__core">
+          <span class="netmob__name">apiToken</span>
+          <span class="netmob__tick" id="tickerMobile">claude-opus-5</span>
+        </div>
+        
+        <span class="netmob__arrow" aria-hidden="true">
+          <span class="netmob__flow"></span>
+          <span class="netmob__head">↓</span>
+        </span>
+        
+        <div class="netmob__product">
+          <span class="netmob__name">Ваш продукт</span>
+          <span class="netmob__code">POST /v1/messages</span>
+          <span class="netmob__note">один ключ · один баланс</span>
+        </div>
+      </div>
+    </div>
+    <figcaption class="cap grid">
+      <span class="c1-8">Схема маршрутизации запросов · Чертёж №: 00.01.00</span>
+      <span class="c9-13 ta-r">Масштаб 1:1</span>
+    </figcaption>
+  </figure>
+</section>
+
+<!-- ================= 01 MODELS ================= -->
+<section class="sec" id="models">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">01</span>
+      <span class="meta c3-6">Модели</span>
+      <h2 class="display c1-13">Один API.<br><span class="ghost">Десятки моделей.</span></h2>
+      <p class="c8-13 secdesc">Модели разных провайдеров через одну инфраструктуру. Каталог расширяется без изменений на вашей стороне.</p>
+    </header>
+
+    <div class="filters reveal" id="filters"></div>
+    <div class="universe" id="universe"></div>
+    <p class="cap cap--free reveal">Цены за 1M токенов с учётом скидки · Каталог обновляется автоматически</p>
+  </div>
+</section>
+
+<!-- ================= 02 GET STARTED ================= -->
+<section class="sec" id="start">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">02</span>
+      <span class="meta c3-6">Начало работы</span>
+      <h2 class="display c1-8">От ключа<br><span class="ghost">до запроса.</span></h2>
+      <div class="c9-13 sechead__aside">
+        <p class="secdesc">Весь процесс подключения — от создания ключа до первого работающего AI-запроса.</p>
+        <span class="pill">≈ 2 минуты</span>
+      </div>
+    </header>
+
+    <div class="reveal" data-video data-label="Инструкция 01 / Подключение" data-duration="2:04"></div>
+
+    <ol class="steps grid reveal">
+      <li class="c1-3"><span>01</span>Регистрация</li>
+      <li class="c4-6"><span>02</span>Получение ключа</li>
+      <li class="c7-9"><span>03</span>Настройка endpoint</li>
+      <li class="c10-11"><span>04</span>Выбор модели</li>
+      <li class="c12-13"><span>05</span>Запрос</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ================= 03 ПОЧЕМУ APITOKEN ================= -->
+<section class="sec sec--accent" id="value">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">03</span>
+      <span class="meta c3-6">Почему apiToken</span>
+    </header>
+
+    <div class="numbers">
+      <div class="num grid reveal">
+        <span class="num__val c1-6" data-count="50" data-suffix="%">0%</span>
+        <span class="num__lab c7-9">ниже стоимость AI API</span>
+        <p class="num__desc c10-13">Снижайте стоимость AI-инфраструктуры без изменения продукта.</p>
+      </div>
+      <div class="num grid reveal">
+        <span class="num__val c1-6" data-count="1">0</span>
+        <span class="num__lab c7-9">API</span>
+        <p class="num__desc c10-13">Один endpoint вместо отдельных интеграций с каждым провайдером.</p>
+      </div>
+      <div class="num grid reveal">
+        <span class="num__val c1-6" data-count="1">0</span>
+        <span class="num__lab c7-9">баланс</span>
+        <p class="num__desc c10-13">Централизованная работа с расходами по всем моделям сразу.</p>
+      </div>
+      <div class="num grid reveal">
+        <span class="num__val c1-6" data-count="40" data-suffix="+">0+</span>
+        <span class="num__lab c7-9">моделей</span>
+        <p class="num__desc c10-13">Свободный выбор модели под конкретную задачу.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 04 ПОДБОР МОДЕЛИ ================= -->
+<section class="sec" id="explorer">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">04</span>
+      <span class="meta c3-6">Подбор модели</span>
+      <h2 class="display c1-13">Нужная модель<br><span class="ghost">под каждую задачу.</span></h2>
+    </header>
+
+    <div class="ask reveal">
+      <span class="ask__q">Что вы строите?</span>
+      <div class="ask__opts" id="askOpts"></div>
+    </div>
+    <div class="picks" id="picks"></div>
+  </div>
+</section>
+
+<!-- ================= 05 ИНТЕГРАЦИИ ================= -->
+<section class="sec sec--dark" id="integrations">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">05</span>
+      <span class="meta c3-6">Интеграции</span>
+      <h2 class="display c1-8">Работает с тем,<br><span class="ghost">чем вы пользуетесь.</span></h2>
+      <p class="c9-13 secdesc">Подключение к привычным AI-инструментам без перестройки рабочего процесса.</p>
+    </header>
+
+    <div class="tabs reveal" id="intTabs"></div>
+    <div id="intVideo" class="reveal"></div>
+    <div class="intsteps" id="intSteps"></div>
+    <a class="lnk lnk--arrow reveal" href="#learn">Полный гайд</a>
+  </div>
+</section>
+
+<!-- ================= 06 ГИБКОСТЬ ================= -->
+<section class="sec" id="switch">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">06</span>
+      <span class="meta c3-6">Гибкость</span>
+      <h2 class="display c1-13">Меняйте модель.<br><span class="ghost">Не инфраструктуру.</span></h2>
+    </header>
+
+    <div class="grid switch">
+      <div class="c1-5 switch__side reveal">
+        <p class="secdesc">Один и тот же запрос. Меняется одна строка — остальной код остаётся прежним.</p>
+        <div class="switch__pick" id="switchPick"></div>
+      </div>
+      <div class="c6-13 switch__demo reveal">
+        <div class="term">
+          <div class="term__bar"><span id="termName">request.js</span></div>
+          <pre class="term__body"><code>{
+  model: <span class="c-s" id="swModel">"claude-opus-5"</span>,
+  messages: [{ role: <span class="c-s">"user"</span>, content: <span class="c-s">"Сравни два подхода"</span> }]
+}</code></pre>
+          <div class="term__out">
+            <span class="term__meta"><b id="swProvider">Anthropic</b> · <span id="swLatency">1.2s</span> · <span id="swCost">$0.0042</span></span>
+            <p id="swAnswer">…</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 07 КАЛЬКУЛЯТОР ================= -->
+<section class="sec" id="calc">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">07</span>
+      <span class="meta c3-6">Калькулятор</span>
+      <h2 class="display c1-13">Сколько сэкономит<br><span class="ghost">ваша компания?</span></h2>
+    </header>
+
+    <div class="grid calc reveal">
+      <div class="c1-7 calc__in">
+        <div class="calc__step">
+          <span class="calc__q">Кто вы?</span>
+          <div class="calc__opts" id="calcProfiles"></div>
+        </div>
+        <div class="calc__step" id="calcParams"></div>
+        <div class="calc__step">
+          <span class="calc__q">Или укажите текущие расходы</span>
+          <div class="calc__spend"><span>$</span><input type="text" id="spendInput" inputmode="numeric" value="20 000"><em>/ мес</em></div>
+        </div>
+      </div>
+
+      <div class="c8-13 calc__out">
+        <div class="calc__line"><span class="calc__lab">Сейчас</span><span class="calc__val" id="resNow">$20 000</span></div>
+        <div class="calc__line"><span class="calc__lab">С apiToken</span><span class="calc__val" id="resNew">$10 000</span></div>
+        <div class="calc__save">
+          <span class="calc__lab">Экономия</span>
+          <span class="calc__big" id="resMo">$10 000</span>
+          <span class="calc__year" id="resYr">$120 000 в год</span>
+        </div>
+        <a class="btn btn--solid btn--full" href="#calc">Получить B2B предложение</a>
+        <button class="lnk lnk--arrow" id="advToggle">Расширенный калькулятор</button>
+        <div class="adv" id="adv" hidden>
+          <div class="adv__grid">
+            <label>Входные токены<input type="text" value="12 000 000"></label>
+            <label>Выходные токены<input type="text" value="3 000 000"></label>
+            <label>Кэш<input type="text" value="40%"></label>
+            <label>Модель<input type="text" value="claude-opus-5"></label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 08 ОБУЧЕНИЕ ================= -->
+<section class="sec" id="learn">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">08</span>
+      <span class="meta c3-6">Обучение</span>
+      <h2 class="display c1-13">Посмотрите,<br><span class="ghost">как это работает.</span></h2>
+    </header>
+    <div class="lib" id="lib"></div>
+    <a class="lnk lnk--arrow reveal" href="#">Все гайды</a>
+  </div>
+</section>
+
+<!-- ================= 09 КАТАЛОГ ================= -->
+<section class="sec sec--accent" id="grow">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">09</span>
+      <span class="meta c3-6">Каталог</span>
+      <h2 class="display c1-13">Новые модели.<br><span class="ghost">Тот же API.</span></h2>
+      <p class="c9-13 secdesc">Каталог развивается вместе с рынком. Новая модель доступна без новой инфраструктуры на вашей стороне.</p>
+    </header>
+    <div class="grow" id="growField"></div>
+  </div>
+</section>
+
+<!-- ================= FAQ ================= -->
+<section class="sec" id="faq">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">10</span>
+      <span class="meta c3-6">Вопросы</span>
+      <h2 class="display c1-13">Коротко о главном.</h2>
+    </header>
+    <div class="acc" id="acc"></div>
+  </div>
+</section>
+
+<!-- ================= FINAL ================= -->
+<section class="final sec--dark">
+  <div class="bleed">
+    <h2 class="display display--xxl reveal"><span>Ваш AI-стек.</span><span class="ghost">Один API.</span></h2>
+    <div class="rule grid">
+      <span class="c1-7 final__sub reveal">Экономьте до 50% на стоимости AI API</span>
+      <div class="c8-13 ctas reveal">
+        <a class="btn btn--solid" href="#calc">Получить B2B предложение</a>
+        <a class="btn" href="#">Начать работу</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ================= FOOTER ================= -->
+<footer class="ftr sec--dark">
+  <div class="bleed">
+
+    <div class="grid ftr__top">
+      <div class="c1-5 ftr__brand">
+        <a class="brand" href="#"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
+        <p>Платформа доступа к Claude, GPT и Gemini API для разработчиков.</p>
+      </div>
+      <div class="ftr__col">
+        <span class="ftr__h">Продукт</span>
+        <a href="#models">Модели</a>
+        <a href="#calc">Цены</a>
+        <a href="#integrations">Интеграции</a>
+        <a href="#learn">Гайды</a>
+      </div>
+      <div class="ftr__col">
+        <span class="ftr__h">Разработчикам</span>
+        <a href="/landing/docs.html">Документация</a>
+        <a href="/landing/docs.html">Быстрый старт</a>
+        <a href="/landing/docs.html">API-справочник</a>
+        <a href="https://github.com/ArthemisDesign/APITOKEN">GitHub</a>
+      </div>
+      <div class="ftr__col">
+        <span class="ftr__h">Поддержка</span>
+        <a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a>
+        <a href="#">Статус</a>
+        <a href="#">Коды ошибок</a>
+      </div>
+      <div class="ftr__col">
+        <span class="ftr__h">Правовое</span>
+        <a href="#">Пользовательское соглашение</a>
+        <a href="#">Политика конфиденциальности</a>
+      </div>
+    </div>
+
+    <div class="ftr__bottom">
+      <span>© 2026 apiToken® — независимая платформа, не аффилированная с Anthropic, PBC или OpenAI и не одобренная ими.</span>
+    </div>
+
+  </div>
+</footer>
+
+<script src="/landing/vendor/gsap.min.js"></script>
+<script src="/landing/vendor/ScrollTrigger.min.js"></script>
+<script src="/landing/vendor/lenis.min.js"></script>
+<script src="/landing/vendor/split-type.min.js"></script>
+<script src="/landing/app.js"></script>
+<script src="/landing/motion.js"></script>
+</body>
+</html>

@@ -1,0 +1,110 @@
+/* =========================================================
+   motion.css — structural layer only.
+   All timing now lives in motion.js (GSAP). This file just
+   provides the boxes those animations need: masks, overlays,
+   rails, hover swaps. Nothing here animates on its own.
+   ========================================================= */
+
+/* ---------------------------------------------------------
+   1 · LINE MASKS  (built by SplitType, wrapped by motion.js)
+   --------------------------------------------------------- */
+.ln{
+  display:block;overflow:hidden;
+  padding-bottom:.14em;margin-bottom:-.14em;   /* keep descenders visible */
+}
+.ln__i{display:block;will-change:transform}
+
+/* neutralise the old CSS fade — GSAP owns these now */
+.mo-ready .reveal{opacity:1!important;transform:none!important;transition:none!important}
+
+/* prevent the pre-paint flash before GSAP sets its start state */
+html:not(.mo-ready) .display,
+html:not(.mo-ready) .final__h,
+html:not(.mo-ready) .claim__val{opacity:0}
+
+/* ---------------------------------------------------------
+   2 · DRAFTING GRID
+   --------------------------------------------------------- */
+.mo-grid{
+  position:fixed;inset:0;z-index:5;pointer-events:none;opacity:0;
+  max-width:var(--maxw);margin:0 auto;padding:0 var(--margin);
+  display:grid;grid-template-columns:repeat(var(--cols),1fr);gap:var(--gutter);
+}
+.mo-grid i{display:block;height:100%;border-left:1px solid rgba(128,128,128,.2)}
+.mo-grid i:last-child{border-right:1px solid rgba(128,128,128,.2)}
+
+/* ---------------------------------------------------------
+   3 · VERTICAL SECTION MARKER
+   --------------------------------------------------------- */
+.mo-vlabel{position:absolute;left:6px;top:0;height:100%;width:22px;pointer-events:none;z-index:4}
+.mo-vlabel span{
+  position:sticky;top:50vh;display:block;white-space:nowrap;
+  transform:rotate(-90deg) translateX(-50%);transform-origin:left center;
+  font-family:var(--mono);font-size:10px;letter-spacing:.22em;
+  text-transform:uppercase;color:var(--muted);opacity:.65;
+}
+.mo-vlabel b{color:var(--accent);font-weight:400}
+@media (max-width:1500px){.mo-vlabel{display:none}}
+
+.mo-rot{
+  display:inline-block;width:7px;height:7px;margin-right:9px;
+  border:1px solid var(--accent);vertical-align:middle;
+}
+
+/* ---------------------------------------------------------
+   4 · LABEL SWAP ON HOVER
+   --------------------------------------------------------- */
+.btn .sw,.nav a .sw,.lnk--arrow .sw{position:relative;display:block;overflow:hidden}
+.sw i{display:block;font-style:normal;transition:transform .55s cubic-bezier(.53,0,0,1)}
+.sw i:last-child{position:absolute;left:0;top:0;transform:translateY(105%)}
+.btn:hover .sw i:first-child,
+.nav a:hover .sw i:first-child,
+.lnk--arrow:hover .sw i:first-child{transform:translateY(-105%)}
+.btn:hover .sw i:last-child,
+.nav a:hover .sw i:last-child,
+.lnk--arrow:hover .sw i:last-child{transform:translateY(0)}
+.nav a .sw i:last-child{color:var(--accent)}
+
+/* ---------------------------------------------------------
+   5 · (removed) schematic corner ticks
+   They read as drafting marks on square frames; the panel is
+   rounded now, so sharp corner brackets no longer fit.
+   --------------------------------------------------------- */
+
+/* ---------------------------------------------------------
+   6 · MARQUEE BAND
+   --------------------------------------------------------- */
+.mo-marquee{
+  overflow:hidden;white-space:nowrap;
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  padding:26px 0;
+}
+.mo-marquee__row{display:inline-flex;gap:52px;will-change:transform}
+.mo-marquee__row span{
+  font-size:clamp(26px,3.4vw,58px);font-weight:600;letter-spacing:-.04em;
+  color:var(--g200);display:inline-flex;align-items:center;gap:52px;
+}
+.mo-marquee__row span::after{
+  content:"";width:9px;height:9px;background:var(--accent);flex:none;
+}
+
+/* ---------------------------------------------------------
+   7 · PROGRESS RAIL
+   --------------------------------------------------------- */
+.mo-rail{position:fixed;left:0;top:0;height:2px;width:100%;z-index:70;pointer-events:none}
+.mo-rail i{display:block;height:100%;width:100%;background:var(--accent);transform:scaleX(0);transform-origin:left center}
+
+/* ---------------------------------------------------------
+   8 · REDUCED MOTION
+   --------------------------------------------------------- */
+@media (prefers-reduced-motion:reduce){
+  .mo-grid,.mo-rail,.mo-marquee{display:none}
+  html:not(.mo-ready) .display,
+  html:not(.mo-ready) .final__h,
+  html:not(.mo-ready) .claim__val{opacity:1}
+}
+
+/* Line masks clipped anything rising above the line box — the
+   superscript % in "−50%" lost its top. Open the mask upward too;
+   the negative margin keeps the rhythm between lines unchanged. */
+.ln{padding-top:.2em;margin-top:-.2em}

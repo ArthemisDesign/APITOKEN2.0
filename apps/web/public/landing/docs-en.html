@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API Documentation — apiToken</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/landing/fonts.css">
+<link rel="stylesheet" href="/landing/styles.css">
+<link rel="stylesheet" href="/landing/motion.css">
+<link rel="stylesheet" href="/landing/docs.css">
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<!-- ================= HEADER ================= -->
+<header class="hdr" id="hdr">
+  <div class="hdr__in grid">
+    <a class="brand c1-3" href="/landing/en.html"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
+    <nav class="nav c4-9">
+      <a href="/landing/en.html#models">Models</a>
+      <a href="/landing/en.html#explorer">Solutions</a>
+      <a href="/landing/en.html#calc">Pricing</a>
+      <a href="/landing/en.html#integrations">Integrations</a>
+      <a href="/landing/en.html#learn">Guides</a>
+      <a href="/landing/docs-en.html" aria-current="page">Docs</a>
+    </nav>
+    <div class="hdr__acts c10-13">
+      <div class="lang" aria-label="Language switcher">
+        <a class="lang__link" href="/landing/docs.html">RU</a>
+        <a class="lang__link is-active" href="/landing/docs-en.html" aria-current="page">EN</a>
+      </div>
+      <a class="lnk" href="#">Log in</a>
+      <a class="btn" href="/dashboard">For business</a>
+      <button class="burger" id="burger" aria-label="Menu"><span></span><span></span></button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ================= DOCS HERO ================= -->
+<section class="sec docs-hero">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">00</span>
+      <span class="meta c3-6">Documentation</span>
+      <h1 class="display c1-13">API Documentation — Claude and GPT</h1>
+      <p class="c8-13 secdesc">Model setup, endpoints, request examples, response codes, file uploads and caching.</p>
+    </header>
+
+    <div class="docs-intro grid reveal">
+      <div class="c1-7">
+        <h2 class="docs-h2">Connecting models</h2>
+        <p class="lead">One API key, one endpoint, all available models — native Anthropic, OpenAI and Gemini protocols plus an OpenAI-compatible API for any client.</p>
+      </div>
+      <div class="c8-13 docs-cta">
+        <a class="btn btn--solid" href="https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md" target="_blank" rel="noopener">SKILL.md for AI agent</a>
+        <a class="btn" href="https://t.me/apitokensale" target="_blank" rel="noopener">Help on Telegram</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= QUICK START ================= -->
+<section class="sec sec--dark" id="quickstart">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">01</span>
+      <span class="meta c3-6">Quick start</span>
+      <h2 class="display c1-13">Connect apiToken to your coding agent.</h2>
+    </header>
+
+    <div class="grid reveal">
+      <div class="c1-5">
+        <p class="secdesc">Pick a stack and the exact instructions appear below. The key stays only in this terminal session.</p>
+      </div>
+      <div class="c6-13">
+        <div class="docs-tabs">
+          <button class="tab on" data-tab="claude">Claude Code</button>
+          <button class="tab" data-tab="curl">cURL</button>
+          <button class="tab" data-tab="openai">OpenAI SDK</button>
+        </div>
+
+        <div class="docs-panel active" data-panel="claude">
+          <div class="docs-card">
+            <span class="docs-card__meta">Claude Code · macOS / Linux · zsh · bash · Claude Opus 5</span>
+            <div class="docs-row"><span class="docs-row__lab">Endpoint</span><code>https://router.apitoken.sale</code></div>
+            <p class="docs-note">Run this in the terminal from which you launch Claude Code. An explicit model flag prevents picking up a model from an old login.</p>
+            <pre class="code"><code>unset ANTHROPIC_AUTH_TOKEN
+export ANTHROPIC_BASE_URL="https://router.apitoken.sale"
+export ANTHROPIC_API_KEY="sk-pool-•••"
+
+claude --model claude-opus-5</code></pre>
+            <p class="docs-note">In Claude Code/status you should see apiToken.sale as the Anthropic base URL and ANTHROPIC_API_KEY as the key source.</p>
+          </div>
+        </div>
+
+        <div class="docs-panel" data-panel="curl">
+          <div class="docs-card">
+            <span class="docs-card__meta">Anthropic Messages API · cURL</span>
+            <div class="docs-row"><span class="docs-row__lab">Endpoint</span><code>https://router.apitoken.sale</code></div>
+            <p class="docs-note">Keep the key on the server: an environment variable or secrets manager, never a browser bundle.</p>
+            <pre class="code"><code>export APITOKEN_API_KEY="sk-pool-•••"
+
+curl https://router.apitoken.sale/v1/messages \
+  -H "x-api-key: $APITOKEN_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-opus-5",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Reply with exactly: connected"}]
+  }'</code></pre>
+          </div>
+        </div>
+
+        <div class="docs-panel" data-panel="openai">
+          <div class="docs-card">
+            <span class="docs-card__meta">OpenAI-compatible API · Python</span>
+            <div class="docs-row"><span class="docs-row__lab">Endpoint</span><code>https://router.apitoken.sale/v1/chat/completions</code></div>
+            <pre class="code"><code>from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://router.apitoken.sale/v1",
+    api_key="sk-pool-•••"
+)
+
+res = client.chat.completions.create(
+    model="claude-opus-5",
+    messages=[{"role": "user", "content": "Hello"}]
+)
+print(res.choices[0].message.content)</code></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= ENDPOINTS ================= -->
+<section class="sec" id="endpoints">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">02</span>
+      <span class="meta c3-6">Endpoints</span>
+      <h2 class="display c1-13">One endpoint, all protocols.</h2>
+    </header>
+
+    <div class="grid reveal">
+      <div class="c1-5">
+        <p class="secdesc"><code>router.apitoken.sale</code> is the single entry point. Coding agents and official SDKs get native byte-for-byte APIs; any OpenAI-compatible client works with the whole catalog through one universal route.</p>
+      </div>
+      <div class="c6-13">
+        <div class="docs-endpoints">
+          <div class="docs-endpoint">
+            <span class="docs-endpoint__method">POST</span>
+            <code>/v1/messages</code>
+            <span class="docs-endpoint__prov">Anthropic</span>
+          </div>
+          <div class="docs-endpoint">
+            <span class="docs-endpoint__method">POST</span>
+            <code>/v1/responses</code>
+            <span class="docs-endpoint__prov">OpenAI</span>
+          </div>
+          <div class="docs-endpoint">
+            <span class="docs-endpoint__method">POST</span>
+            <code>/v1beta/models/{model}:generateContent</code>
+            <span class="docs-endpoint__prov">Gemini</span>
+          </div>
+          <div class="docs-endpoint">
+            <span class="docs-endpoint__method">POST</span>
+            <code>/v1/chat/completions</code>
+            <span class="docs-endpoint__prov">OpenAI-compatible</span>
+          </div>
+          <div class="docs-endpoint">
+            <span class="docs-endpoint__method">GET</span>
+            <code>/v1/models</code>
+            <span class="docs-endpoint__prov">Unified catalog</span>
+          </div>
+        </div>
+        <p class="docs-footnote">Per-provider endpoints api.apitoken.sale, openai.api.apitoken.sale/v1 and gemini.api.apitoken.sale are still supported with the same key and balance — the unified router is recommended for new integrations.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= MODELS & PRICES ================= -->
+<section class="sec sec--dark" id="models">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">03</span>
+      <span class="meta c3-6">Models and pricing</span>
+      <h2 class="display c1-13">All providers, all models, exact rates.</h2>
+    </header>
+
+    <div class="docs-tables reveal">
+      <h3 class="docs-h3">Claude · Anthropic Messages API</h3>
+      <div class="docs-table-wrap">
+        <table class="docs-table">
+          <thead>
+            <tr><th>Model</th><th>ID</th><th>Context</th><th>Max output</th><th>Input</th><th>Cached input</th><th>Cache write</th><th>Output</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Claude Opus 5</td><td>claude-opus-5</td><td>1M</td><td>128K</td><td>$2.5 / $5</td><td>$0.25 / $0.5</td><td>$3.125 / $6.25</td><td>$12.5 / $25</td></tr>
+            <tr><td>Claude Fable 5</td><td>claude-fable-5</td><td>1M</td><td>128K</td><td>$5 / $10</td><td>$0.5 / $1</td><td>$6.25 / $12.5</td><td>$25 / $50</td></tr>
+            <tr><td>Claude Sonnet 5</td><td>claude-sonnet-5</td><td>1M</td><td>128K</td><td>$1.5 / $3</td><td>$0.15 / $0.3</td><td>$1.875 / $3.75</td><td>$7.5 / $15</td></tr>
+            <tr><td>Claude Haiku 4.5</td><td>claude-haiku-4-5</td><td>200K</td><td>64K</td><td>$0.5 / $1</td><td>$0.05 / $0.1</td><td>$0.625 / $1.25</td><td>$2.5 / $5</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="docs-h3">GPT · OpenAI Responses API</h3>
+      <div class="docs-table-wrap">
+        <table class="docs-table">
+          <thead>
+            <tr><th>Model</th><th>ID</th><th>Context</th><th>Max output</th><th>Input</th><th>Cached input</th><th>Cache write</th><th>Output</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>GPT-5.6 Sol</td><td>gpt-5.6-sol</td><td>400K</td><td>128K</td><td>$2.5 / $5</td><td>$0.25 / $0.5</td><td>$3.125 / $6.25</td><td>$15 / $30</td></tr>
+            <tr><td>GPT-5.6 Terra</td><td>gpt-5.6-terra</td><td>400K</td><td>128K</td><td>$1 / $2</td><td>$0.1 / $0.2</td><td>$1.25 / $2.5</td><td>$6 / $12</td></tr>
+            <tr><td>GPT-5.6 Luna</td><td>gpt-5.6-luna</td><td>400K</td><td>128K</td><td>$0.1 / $0.2</td><td>$0.01 / $0.02</td><td>$0.125 / $0.25</td><td>$0.6 / $1.2</td></tr>
+            <tr><td>GPT Image 2</td><td>gpt-image-2</td><td>per request</td><td>1 image</td><td>$2.5 / $5</td><td>$0.625 / $1.25</td><td>$0 / $0</td><td>$15 / $30</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="docs-h3">Gemini · Google Gemini API</h3>
+      <div class="docs-table-wrap">
+        <table class="docs-table">
+          <thead>
+            <tr><th>Model</th><th>ID</th><th>Context</th><th>Max output</th><th>Input</th><th>Cached input</th><th>Cache write</th><th>Output</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Gemini 3.7 Flash</td><td>gemini-3.7-flash</td><td>1M</td><td>64K</td><td>$0.375 / $0.75</td><td>$0.038 / $0.075</td><td>—</td><td>$1.875 / $3.75</td></tr>
+            <tr><td>Gemini 3.6 Flash</td><td>gemini-3.6-flash</td><td>1M</td><td>64K</td><td>$0.75 / $1.5</td><td>$0.075 / $0.15</td><td>—</td><td>$3.75 / $7.5</td></tr>
+            <tr><td>Gemini 3.5 Flash</td><td>gemini-3.5-flash</td><td>1M</td><td>64K</td><td>$0.75 / $1.5</td><td>$0.075 / $0.15</td><td>—</td><td>$4.5 / $9</td></tr>
+            <tr><td>Gemini 3.1 Pro Preview</td><td>gemini-3.1-pro-preview</td><td>1M</td><td>64K</td><td>$1 / $2</td><td>$0.1 / $0.2</td><td>—</td><td>$6 / $12</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="docs-example grid reveal">
+      <div class="c1-5">
+        <span class="meta">Example · Claude Opus 4.8</span>
+      </div>
+      <div class="c6-13">
+        <div class="docs-calc">
+          <div class="docs-calc__row"><span>2M input × $5</span><b>$10</b></div>
+          <div class="docs-calc__row"><span>400K output × $25</span><b>$10</b></div>
+          <div class="docs-calc__row docs-calc__row--total"><span>Official total</span><b>$20</b></div>
+          <div class="docs-calc__row docs-calc__row--save"><span>You pay</span><b>$10</b></div>
+        </div>
+        <p class="docs-footnote">A $100 top-up gives $200 of official API usage on any model. Rates are per 1M tokens; actual tokens are billed at official rates, then the flat 50% discount is applied.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= FILES IN GEMINI ================= -->
+<section class="sec" id="files">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">04</span>
+      <span class="meta c3-6">Files in Gemini</span>
+      <h2 class="display c1-13">How to send files.</h2>
+    </header>
+
+    <div class="grid reveal">
+      <div class="c1-5">
+        <p class="secdesc">Gemini is served from a pool of subscriptions, so the file must travel inside the request itself. There is no separate upload step: the Files API is not available.</p>
+      </div>
+      <div class="c6-13">
+        <div class="docs-table-wrap">
+          <table class="docs-table docs-table--simple">
+            <thead>
+              <tr><th>Data type</th><th>Supported</th><th>How to send</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Images (PNG, JPEG, WebP)</td><td>Yes</td><td><code>inline_data</code> with mime_type and base64. Up to ~23 MB source file.</td></tr>
+              <tr><td>PDF documents</td><td>Yes</td><td><code>inline_data</code> with <code>application/pdf</code>.</td></tr>
+              <tr><td>Text files</td><td>Yes</td><td><code>inline_data</code> with <code>text/plain</code> or just put it in <code>text</code>.</td></tr>
+              <tr><td>Audio</td><td>One model</td><td>Only <code>gemini-3-flash-preview</code>, inline <code>audio/wav</code>.</td></tr>
+              <tr><td>Files API (file_uri)</td><td>No</td><td>Not available. Pass contents inline.</td></tr>
+              <tr><td>cachedContent</td><td>No</td><td>Not available. Pass contents inline.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <pre class="code"><code>{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        { "text": "Describe this file" },
+        { "inline_data": { "mime_type": "image/png", "data": "<base64>" } }
+      ]
+    }
+  ]
+}</code></pre>
+        <p class="docs-footnote">Data the gateway cannot accept is rejected before reaching the subscription — 400 INVALID_ARGUMENT. Every error includes an <code>x-request-id</code> header; mention it to support.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= RESPONSE CODES ================= -->
+<section class="sec sec--dark" id="codes">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">05</span>
+      <span class="meta c3-6">Response codes</span>
+      <h2 class="display c1-13">Common response codes.</h2>
+    </header>
+
+    <div class="grid reveal">
+      <div class="c1-5">
+        <p class="secdesc">Each protocol keeps its own error format. 401 and 402 require fixing account state; only retry temporary 429 and 5xx errors automatically.</p>
+      </div>
+      <div class="c6-13">
+        <div class="docs-codes">
+          <div class="docs-code docs-code--bad">
+            <b>401</b>
+            <span>API key missing, invalid or revoked</span>
+            <p>Pass an active sk-pool key in x-api-key. Do not retry with a revoked key.</p>
+          </div>
+          <div class="docs-code docs-code--bad">
+            <b>402</b>
+            <span>Insufficient prepaid balance</span>
+            <p>Top up the account, confirm the balance is credited, then retry.</p>
+          </div>
+          <div class="docs-code docs-code--retry">
+            <b>429</b>
+            <span>Rate limit or temporary provider capacity shortage</span>
+            <p>Respect Retry-After; use bounded exponential backoff with jitter.</p>
+          </div>
+          <div class="docs-code docs-code--retry">
+            <b>5xx</b>
+            <span>Temporary gateway or provider infrastructure error</span>
+            <p>Retry with bounded exponential backoff. Save the request ID.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= CACHING ================= -->
+<section class="sec" id="cache">
+  <div class="bleed">
+    <header class="sechead grid reveal">
+      <span class="secnum c1-2">06</span>
+      <span class="meta c3-6">Caching</span>
+      <h2 class="display c1-13">Cache the prefix — pay 10% per read.</h2>
+    </header>
+
+    <div class="grid reveal">
+      <div class="c1-5">
+        <h3 class="docs-h3">Claude — explicit cache_control</h3>
+        <p class="secdesc">Cache points are passed through to Anthropic unchanged. Cache write costs 1.25× input price (TTL 5 min) or 2× (TTL 1 hour).</p>
+      </div>
+      <div class="c6-13">
+        <pre class="code"><code>{
+  "model": "claude-opus-4-8",
+  "max_tokens": 1024,
+  "system": [
+    {
+      "type": "text",
+      "text": "Long stable instructions…",
+      "cache_control": { "type": "ephemeral" }
+    }
+  ],
+  "messages": [{ "role": "user", "content": "Short varying question" }]
+}</code></pre>
+      </div>
+    </div>
+
+    <div class="grid reveal docs-row--second">
+      <div class="c1-5">
+        <h3 class="docs-h3">GPT — automatic</h3>
+        <p class="secdesc">Nothing to enable: repeated prefixes are cached server-side. usage.prompt_tokens_details.cached_tokens is billed at 10% of input price.</p>
+      </div>
+      <div class="c6-13">
+        <pre class="code"><code>{
+  "usage": {
+    "prompt_tokens": 5120,
+    "prompt_tokens_details": { "cached_tokens": 4096 },
+    "completion_tokens": 128
+  }
+}</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= FINAL ================= -->
+<section class="final sec--dark">
+  <div class="bleed">
+    <h2 class="display display--xxl reveal"><span>All set.</span><span class="ghost">Time to connect.</span></h2>
+    <div class="rule grid">
+      <span class="c1-7 final__sub reveal">Start with Claude Code or cURL — the first request takes under a minute.</span>
+      <div class="c8-13 ctas reveal">
+        <a class="btn btn--solid" href="/landing/en.html#calc">Get a B2B quote</a>
+        <a class="btn" href="https://t.me/apitokensale" target="_blank" rel="noopener">Contact support</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ================= FOOTER ================= -->
+<footer class="ftr sec--dark">
+  <div class="bleed">
+
+    <div class="grid ftr__top">
+      <div class="c1-5 ftr__brand">
+        <a class="brand" href="#"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
+        <p>A platform for access to Claude, GPT and Gemini APIs for developers.</p>
+      </div>
+      <div class="ftr__col">
+        <span class="ftr__h">Product</span>
+        <a href="/landing/en.html#models">Models</a>
+        <a href="/landing/en.html#calc">Pricing</a>
+        <a href="/landing/en.html#integrations">Integrations</a>
+        <a href="/landing/en.html#learn">Guides</a>
+      </div>
+      <div class="ftr__col">
+        <span class="ftr__h">Developers</span>
+        <a href="/landing/docs-en.html">Documentation</a>
+        <a href="/landing/docs-en.html">Quick start</a>
+        <a href="/landing/docs-en.html">API reference</a>
+        <a href="https://github.com/ArthemisDesign/APITOKEN">GitHub</a>
+      </div>
+      <div class="ftr__col">
+        <span class="ftr__h">Support</span>
+        <a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a>
+        <a href="#">Status</a>
+        <a href="#">Error codes</a>
+      </div>
+      <div class="ftr__col">
+        <span class="ftr__h">Legal</span>
+        <a href="#">Terms of Service</a>
+        <a href="#">Privacy Policy</a>
+      </div>
+    </div>
+
+    <div class="ftr__bottom">
+      <span>© 2026 apiToken® — an independent platform, not affiliated with or endorsed by Anthropic, PBC or OpenAI.</span>
+    </div>
+
+  </div>
+</footer>
+
+<script src="/landing/vendor/gsap.min.js"></script>
+<script src="/landing/vendor/ScrollTrigger.min.js"></script>
+<script src="/landing/vendor/lenis.min.js"></script>
+<script src="/landing/vendor/split-type.min.js"></script>
+<script src="/landing/docs.js"></script>
+<script src="/landing/motion.js"></script>
+</body>
+</html>

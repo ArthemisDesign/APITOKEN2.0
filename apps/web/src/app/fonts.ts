@@ -1,4 +1,15 @@
+import { Inter_Tight } from "next/font/google";
 import localFont from "next/font/local";
+
+export const interTight = Inter_Tight({
+  variable: "--font-inter-tight",
+  subsets: ["latin", "cyrillic"],
+  weight: ["300", "400", "500", "600", "700", "800"],
+  style: "normal",
+  display: "swap",
+  preload: true,
+  fallback: ["system-ui", "-apple-system", "Segoe UI", "sans-serif"],
+});
 
 export const jetBrainsMono = localFont({
   src: "./fonts/jetbrains-mono-variable.woff2",
@@ -32,4 +43,4 @@ export const bitcountGrid = localFont({
   adjustFontFallback: false,
 });
 
-export const fontVariables = `${jetBrainsMono.variable} ${handjet.variable} ${bitcountGrid.variable}`;
+export const fontVariables = `${interTight.variable} ${jetBrainsMono.variable}`;

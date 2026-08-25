@@ -14,7 +14,7 @@
 .docs-site button,.docs-site a{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
 .docs-header{position:sticky;top:0;z-index:40;height:60px;display:flex;align-items:center;justify-content:space-between;gap:24px;
   padding:0 26px;background:var(--nav-bg);backdrop-filter:blur(16px);border-bottom:1px solid var(--line)}
-.docs-brand{display:flex;align-items:center;gap:10px;color:var(--txt);font-family:var(--font-ui);font-size:18px;font-weight:720;letter-spacing:-.02em;white-space:nowrap}
+.docs-brand{display:flex;align-items:center;gap:10px;color:var(--txt);font-family:var(--font-display);font-size:18px;font-weight:600;letter-spacing:-.02em;white-space:nowrap}
 .docs-brand i{font-family:var(--font-ui);font-style:normal;font-size:12px;font-weight:600;letter-spacing:.02em;
   color:var(--accent);padding-left:12px;border-left:1px solid var(--line)}
 .docs-header-actions{display:flex;align-items:center;gap:10px}
@@ -30,7 +30,7 @@
 .docs-main section{padding:0;border:0;scroll-margin-top:92px}
 .docs-hero{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:20px 24px;margin-bottom:26px;max-width:940px;font-family:var(--font-ui)}
 .docs-hero>div{min-width:0;max-width:100%}
-.docs-hero h1{margin:0 0 8px;font-family:var(--font-ui);font-size:clamp(34px,4.2vw,48px);font-weight:680;line-height:1.08;letter-spacing:-.035em;text-wrap:balance}
+.docs-hero h1{margin:0 0 8px;font-family:var(--font-display);font-size:clamp(34px,4.2vw,48px);font-weight:600;line-height:1.02;letter-spacing:-.035em;text-wrap:balance}
 .docs-hero p{max-width:900px;margin:0;color:var(--txt-2);font-size:18px;line-height:1.55}
 .docs-copy-page{flex:none;gap:7px;margin-top:6px}
 .docs-section{margin-bottom:72px!important}
@@ -39,7 +39,7 @@
    a compact callout: info icon + dark chip with the one-line prompt and small
    copy / guide icon buttons. The full setup lives in the skill repo it references. */
 .docs-connect-section{margin-bottom:16px!important}
-.docs-agent-label{margin:0 0 12px;font-family:var(--font-ui);font-size:21px;font-weight:680;letter-spacing:-.02em;color:var(--txt)}
+.docs-agent-label{margin:0 0 12px;font-family:var(--font-display);font-size:21px;font-weight:600;letter-spacing:-.02em;color:var(--txt)}
 .docs-agent-card{display:flex;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--accent-line);border-radius:16px;
   background:var(--accent-soft);box-shadow:var(--shadow)}
 .docs-agent-card>svg{flex:none;width:20px;height:20px;color:var(--accent)}
@@ -52,7 +52,7 @@
 .docs-connect-support{display:grid;grid-template-columns:44px minmax(250px,1fr) auto;gap:16px 18px;align-items:center;padding:21px 24px;border:1px solid var(--line);border-radius:18px;font-family:var(--font-ui);
   background:var(--bg-card);box-shadow:var(--shadow)}
 .docs-support-icon{display:grid;place-items:center;width:44px;height:44px;border-radius:13px;background:var(--accent);color:#fff}
-.docs-support-copy h2{margin:0 0 4px;font-family:var(--font-ui);font-size:22px;font-weight:680;line-height:1.18;letter-spacing:-.02em}
+.docs-support-copy h2{margin:0 0 4px;font-family:var(--font-display);font-size:22px;font-weight:600;line-height:1.12;letter-spacing:-.02em}
 .docs-support-copy p{margin:0;color:var(--txt-2);font-size:14px;line-height:1.4}
 .docs-support-actions{display:grid;grid-template-columns:max-content;gap:7px 9px;justify-items:end}
 .docs-support-actions .btn{min-height:42px;padding:8px 13px;font-family:var(--font-ui);font-size:13px;font-weight:650;letter-spacing:-.005em}
@@ -88,7 +88,7 @@
 .docs-integration-builder{overflow:clip;border:1px solid var(--line);border-radius:16px;background:var(--bg-card);font-family:var(--font-ui)}
 .ib-head{padding:28px 32px 26px;border-bottom:1px solid var(--line)}
 .ib-eyebrow{display:block;margin-bottom:8px;color:var(--accent);font-size:11.5px;font-weight:650;letter-spacing:.09em;text-transform:uppercase}
-.ib-head h3{margin:0 0 7px;font-family:var(--font-ui);font-size:29px;font-weight:650;line-height:1.16;letter-spacing:-.025em;text-wrap:balance}
+.ib-head h3{margin:0 0 7px;font-family:var(--font-display);font-size:29px;font-weight:600;line-height:1.08;letter-spacing:-.028em;text-wrap:balance}
 .ib-head p{max-width:720px;margin:0;color:var(--txt-3);font-size:15px;line-height:1.5}
 .ib-layout{display:grid;grid-template-columns:372px minmax(0,1fr);align-items:stretch}
 .ib-controls{min-width:0;padding:26px 24px 28px;border-right:1px solid var(--line)}

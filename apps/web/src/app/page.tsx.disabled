@@ -127,7 +127,7 @@ export default function HomePage() {
           <T k={item.answer} as="p" className="ans">{item.a}</T>
         </details>)}</div>
       </div></section>
-      <section className="cta-band"><div className="wrap cta-row reveal">
+      <section className="cta-band sec--dark"><div className="wrap cta-row reveal">
         <T k="cta_h2" as="h2">Ready to start building?</T>
         <div className="cta-actions">
           <LocalizedLink className="btn btn-primary" href="/register"><T k="hero_cta1">Get API key</T></LocalizedLink>

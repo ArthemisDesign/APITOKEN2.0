@@ -49,7 +49,6 @@ const nextConfig: NextConfig = {
   async redirects() {
     return [
       ...(previewFixtures ? [
-        { source: "/", destination: "/dashboard", permanent: false },
         { source: "/login", destination: "/dashboard", permanent: false },
         { source: "/register", destination: "/dashboard", permanent: false },
         { source: "/forgot-password", destination: "/dashboard", permanent: false },
@@ -72,6 +71,14 @@ const nextConfig: NextConfig = {
       // Учёт по коду всё равно работает — ErrorAnchorBeacon читает location.hash
       // (Метрика срезает хеш только из отчётного URL, но не из того, что видит JS).
       { source: "/e/:code", destination: "/docs/errors#e-:code", permanent: false },
+    ];
+  },
+  async rewrites() {
+    // The static marketing landing lives in public/landing and is served at / and /landing
+    // without changing the browser URL.
+    return [
+      { source: "/", destination: "/landing/index.html" },
+      { source: "/landing", destination: "/landing/index.html" },
     ];
   },
   async headers() {
