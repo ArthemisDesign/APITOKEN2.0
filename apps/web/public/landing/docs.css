@@ -145,6 +145,17 @@
 .docs-code--bad{border-color:rgba(255,89,73,.35)}
 .docs-code--retry{border-color:rgba(240,239,235,.18)}
 
+/* dark theme — code/table/calc cards drop to the dark surface, text goes light */
+[data-theme="dark"] .docs-code{background:var(--surface);border-color:var(--line)}
+[data-theme="dark"] .docs-code span{color:var(--fg)}
+[data-theme="dark"] .docs-code p{color:var(--muted)}
+[data-theme="dark"] .docs-calc{background:var(--surface);border-color:var(--line)}
+[data-theme="dark"] .docs-calc__row{color:var(--muted)}
+[data-theme="dark"] .docs-calc__row b,[data-theme="dark"] .docs-calc__row--save span{color:var(--fg)}
+[data-theme="dark"] .docs-table-wrap{background:var(--surface);border-color:var(--line)}
+[data-theme="dark"] .docs-table th{background:rgba(240,239,235,.05);color:var(--muted)}
+[data-theme="dark"] .docs-table td{color:var(--fg)}
+
 /* second row spacing */
 .docs-row--second{margin-top:clamp(40px,4vw,70px)}
 
