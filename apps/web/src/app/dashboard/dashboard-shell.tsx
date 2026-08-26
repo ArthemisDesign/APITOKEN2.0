@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { memo, useCallback, type MouseEvent as ReactMouseEvent } from "react";
 import type { AccountView, AuthUser } from "@/lib/api";
@@ -40,10 +39,6 @@ function NavIcon({ id }: { id: NavIconId }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true">{NAV_ICONS[id]}</svg>;
 }
 
-function BrandImages() {
-  return <><Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" /><Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" /></>;
-}
-
 type DashboardSidebarProps = {
   activeSection: DashboardSection;
   copy: DashboardCopy;
@@ -79,7 +74,9 @@ export const DashboardSidebar = memo(function DashboardSidebar({
   }, [onNavigate]);
 
   return <aside className={`side ${sideOpen ? "open" : ""}`} data-lang={language}>
-    <Link className="brand side-brand" href={localeHref("/", language)}><BrandImages />apiToken.sale</Link>
+    <Link className="brand side-brand" href={localeHref("/", language)} aria-label="apiToken home">
+      <span className="side-brand__mark" aria-hidden="true" />apiToken<sup>®</sup>
+    </Link>
     <nav className="side-nav">
       {navigation.map((item, index) => <div key={`${item.label}-${index}`} className="side-nav-item">
         {item.group && <span className="side-group">{copy[item.group]}</span>}
@@ -119,9 +116,6 @@ export const DashboardTopBar = memo(function DashboardTopBar({ activeSection, ac
   return <header className="app-top">
     <div className="app-top-in">
       <button className="app-burger" onClick={onMenu} aria-label={copy.menu}>☰</button>
-      <Link className="app-top-brand" href={localeHref("/", locale === "ru" ? "ru" : "en")} aria-label="apiToken home">
-        <span className="app-top-brand__mark" aria-hidden="true" />apiToken<sup>®</sup>
-      </Link>
       <div className="app-top-h"><div className="app-title">{copy[titleKey]}</div></div>
       <div className="app-top-actions">
         <button className="app-top-bal" onClick={onOpenCredits} title={copy.navTopUp}>

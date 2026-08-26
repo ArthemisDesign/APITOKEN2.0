@@ -426,7 +426,12 @@
 /* bg-card base: on desktop it fills the sidebar's grid column below the sticky 100vh <aside> so the
    sidebar surface reads full-height (light theme showed a bg-soft gap below the fold). On mobile the
    single-column .app-main paints bg-soft over it, so this is invisible there. */
+/* The sidebar head and the top bar form one continuous accent strip across the
+   full viewport width, matching the landing hero plate. The strip background
+   lives on the shell's ::before so it reaches the very left edge. */
 .app{display:grid;grid-template-columns:264px minmax(0,1fr);min-height:100vh;position:relative;z-index:2;background:var(--bg-card)}
+.app::before{content:"";position:absolute;left:0;right:0;top:0;height:72px;background:var(--accent);
+  border-bottom:1px solid rgba(12,11,17,.18);z-index:4;pointer-events:none}
 /* No double-tap-zoom delay on dashboard controls; panning/pinch stay intact. */
 .app button,.app a,.app summary,.app select,.app .btn{touch-action:manipulation}
 /* App-shell scroll model: the sidebar itself never scrolls — only the nav does (min-height:0
@@ -434,8 +439,13 @@
    at the bottom of the 100vh column regardless of nav/legal height; previously a tall nav pushed
    the footer into the sidebar's own scroll area and the avatar got sliced at compact widths. */
 .side{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
-  background:var(--bg-card);border-right:1px solid var(--line);padding:24px 18px;overflow:hidden;overscroll-behavior:contain}
-.side-brand{margin:2px 10px 24px;font-size:18px}
+  background:var(--bg-card);border-right:1px solid var(--line);padding:0 18px 24px;overflow:hidden;overscroll-behavior:contain}
+/* Sidebar brand sits on the accent strip; its own background merges into the strip. */
+.side-brand{position:relative;z-index:5;display:inline-flex;align-items:center;gap:9px;
+  margin:0 -18px 22px;padding:0 28px;min-height:72px;
+  font-family:var(--font-display);font-weight:600;font-size:17px;letter-spacing:-.03em;color:#0C0B11}
+.side-brand sup{font-size:.5em;font-weight:500;vertical-align:super}
+.side-brand__mark{width:14px;height:14px;background:#0C0B11;flex:none}
 .side-nav{display:flex;flex-direction:column;gap:3px;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-bottom:10px}
 .side-nav button{display:flex;align-items:center;gap:12px;width:100%;min-height:38px;padding:10px 12px;
   border:1px solid transparent;background:transparent;border-radius:8px;cursor:pointer;text-align:left;
@@ -471,15 +481,10 @@
     var(--bg-soft)}
 [data-theme="dark"] .app-main{
   --overview-shadow:0 1px 2px rgba(12,11,17,.04),0 18px 46px -34px rgba(12,11,17,.28)}
-.app-top{position:sticky;top:0;z-index:5;min-height:72px;padding:0 40px;
+.app-top{position:sticky;top:0;z-index:5;min-height:72px;padding:0 40px;margin-left:-1px;
   background:var(--accent);border-bottom:1px solid rgba(12,11,17,.18)}
 .app-top-in{display:flex;align-items:center;gap:14px;width:100%;max-width:1360px;min-height:71px;margin:0 auto}
 .app-burger{display:none;background:none;border:0;font-size:22px;color:#0C0B11;cursor:pointer}
-/* Brand block mirrors the landing hero plate: red square mark + tight wordmark. */
-.app-top-brand{display:inline-flex;align-items:center;gap:9px;flex:none;
-  font-family:var(--font-display);font-weight:600;font-size:17px;letter-spacing:-.03em;color:#0C0B11}
-.app-top-brand sup{font-size:.5em;font-weight:500;vertical-align:super}
-.app-top-brand__mark{width:14px;height:14px;background:#0C0B11;flex:none}
 /* Keep every section title on one line; truncate instead of growing the sticky top bar. */
 .app-title{font-family:var(--font-display);font-weight:600;font-size:22px;letter-spacing:-.025em;flex:1;min-width:0;color:#0C0B11;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
