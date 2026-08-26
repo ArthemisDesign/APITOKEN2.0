@@ -43,6 +43,7 @@ const csp = [
   "frame-ancestors 'none'",
 ].join("; ");
 
+// Landing + dashboard build. Static landing is served from public/landing via rewrites.
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   env: { NEXT_PUBLIC_PREVIEW_FIXTURES: previewFixtures ? "1" : "" },
