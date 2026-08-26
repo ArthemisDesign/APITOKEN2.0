@@ -1106,8 +1106,11 @@ body.app-body .bg-decor{display:none!important}
   /* Long section headings stack above their supporting note on narrow screens. */
   .dsec-head{flex-direction:column;align-items:flex-start;gap:6px}
   .app-top{min-height:64px;padding:0 16px}
-  .app-top-in{min-height:63px}
+  .app-top-in{min-height:63px;gap:10px}
   .app-title{font-size:20px}
+  /* On narrow screens keep the top bar compact: balance pill shows icon+value only. */
+  .app-top-bal{padding:8px 12px}
+  .app-top-bal .atb-label{display:none}
   .app-body-in{padding:18px 16px 40px}
   .page-heading{margin-bottom:22px}
   .p-h1{font-size:26px}

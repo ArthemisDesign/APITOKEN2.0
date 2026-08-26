@@ -143,6 +143,9 @@ body::before{
 .brand{display:inline-flex;align-items:center;gap:9px;font-weight:600;font-size:17px;letter-spacing:-.03em}
 .brand__mark{width:14px;height:14px;background:var(--accent);flex:none}
 .nav{display:flex;gap:clamp(14px,2vw,32px);align-items:center;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+/* The dashboard shortcut lives only in the mobile menu; the desktop header
+   already has its own solid dashboard button. */
+.nav__dash{display:none}
 .nav a{color:var(--muted);transition:color .2s}
 .nav a:hover{color:var(--fg)}
 .hdr__acts{display:flex;align-items:center;justify-content:flex-end;gap:14px}
@@ -1343,6 +1346,11 @@ body{line-height:1.5}
   .nav.open{display:flex}
   .nav a{width:100%;padding:12px 0;font-size:13px;border-bottom:1px solid var(--line-soft)}
   .nav a:last-child{border-bottom:0}
+  .nav__dash{display:inline-flex;justify-content:center;align-items:center;
+    width:100%;margin-top:14px;padding:13px 22px;border:1px solid var(--ink);
+    border-radius:8px;background:var(--ink);color:var(--paper);
+    font-family:var(--sans);font-size:13px;font-weight:500;letter-spacing:-.01em;
+    text-transform:none;border-bottom:1px solid var(--ink)}
 
   /* hero */
   .plate{min-height:0;padding-bottom:0}
@@ -1415,6 +1423,9 @@ body{line-height:1.5}
   .acc__a p{padding:0 18px 22px;font-size:14px}
 
   /* footer */
-  .ftr__top .ftr__col{grid-column:1/5;margin-top:18px}
+  .ftr__top .ftr__col{grid-column:auto/span 2;margin-top:22px}
+  .ftr__top .ftr__col:nth-child(odd){grid-column:1/3}
+  .ftr__top .ftr__col:nth-child(even){grid-column:3/5}
+  .ftr__brand{grid-column:1/5}
   .ftr__bottom{display:block;text-transform:none;letter-spacing:.02em;font-size:11px}
 }
