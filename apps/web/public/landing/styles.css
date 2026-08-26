@@ -353,7 +353,7 @@ body::before{
 .hero{padding-top:0}
 .hero .display--xxl{margin:clamp(30px,4vw,64px) 0}
 .hero__claim{display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-start}
-.claim__val{font-size:clamp(52px,7vw,124px);line-height:.86;letter-spacing:-.05em;font-weight:600;color:var(--ink)}
+.claim__val{font-size:clamp(52px,7vw,124px);line-height:.86;letter-spacing:-.05em;font-weight:600;color:#fff}
 .claim__val em{font-style:normal;font-size:.45em;vertical-align:super}
 .claim__lab{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-top:12px}
 .hero__cta{margin-top:34px;align-items:center}
@@ -1285,7 +1285,7 @@ body{line-height:1.5}
   position:relative;
   min-height:92svh;
   background:var(--accent);
-  color:var(--ink);
+  color:#fff;
   overflow:hidden;
   display:flex;
   border-bottom:1px solid rgba(17,17,17,.08);
@@ -1316,7 +1316,7 @@ body{line-height:1.5}
 }
 .plate__mark svg{width:100%;height:100%;display:block}
 .plate__mark path{
-  fill:none;stroke:var(--ink);
+  fill:none;stroke:#fff;
   stroke-width:36;stroke-linecap:round;stroke-linejoin:round;
 }
 
@@ -1332,12 +1332,12 @@ body{line-height:1.5}
   padding-bottom:clamp(40px,5vw,80px);
 }
 .plate__labels .meta{
-  color:rgba(17,17,17,.55);
+  color:rgba(255,255,255,.72);
   font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
 }
 
 .plate__h{
-  color:var(--ink);
+  color:#fff;
   font-size:clamp(58px,9vw,156px);
   line-height:.9;letter-spacing:-.055em;
   max-width:12ch;
@@ -1351,15 +1351,15 @@ body{line-height:1.5}
   max-width:min(46ch,42vw);
 }
 .plate__foot .lead{
-  color:rgba(17,17,17,.75);
+  color:rgba(255,255,255,.82);
   font-size:clamp(16px,1.4vw,22px);line-height:1.45;max-width:none;font-weight:400;
 }
 .plate__foot .btn{
-  border-color:rgba(17,17,17,.32);color:var(--ink);background:transparent;
+  border-color:rgba(255,255,255,.45);color:#fff;background:transparent;
 }
-.plate__foot .btn:hover{border-color:var(--ink);background:rgba(255,255,255,.18)}
-.plate__foot .btn--solid{background:var(--ink);border-color:var(--ink);color:var(--paper)}
-.plate__foot .btn--solid:hover{background:transparent;color:var(--ink)}
+.plate__foot .btn:hover{border-color:#fff;background:rgba(255,255,255,.14)}
+.plate__foot .btn--solid{background:#fff;border-color:#fff;color:var(--accent)}
+.plate__foot .btn--solid:hover{background:transparent;color:#fff}
 
 .plate__claim{
   position:relative;right:auto;top:auto;
@@ -1377,46 +1377,42 @@ body{line-height:1.5}
 .hdr{--hdr-h:84px}
 .hdr:not(.small){background:transparent;backdrop-filter:none}
 .hdr:not(.small) .hdr__in{border-bottom-color:transparent}
-.hdr:not(.small) .brand{color:var(--ink)}
-.hdr:not(.small) .brand__mark{background:var(--ink)}
-.hdr:not(.small) .nav a{color:rgba(17,17,17,.65)}
-.hdr:not(.small) .nav a:hover{color:var(--ink)}
-.hdr:not(.small) .lnk{color:rgba(17,17,17,.65)}
-.hdr:not(.small) .lnk:hover{color:var(--ink)}
-.hdr:not(.small) .btn{background:var(--ink);border-color:var(--ink);color:var(--paper)}
-.hdr:not(.small) .btn:hover{background:transparent;color:var(--ink)}
-.hdr:not(.small) .burger span{background:var(--ink)}
+.hdr:not(.small) .brand{color:#fff}
+.hdr:not(.small) .brand__mark{background:#fff}
+.hdr:not(.small) .nav a{color:rgba(255,255,255,.78)}
+.hdr:not(.small) .nav a:hover{color:#fff}
+.hdr:not(.small) .lnk{color:rgba(255,255,255,.78)}
+.hdr:not(.small) .lnk:hover{color:#fff}
+.hdr:not(.small) .btn{background:#fff;border-color:#fff;color:var(--accent)}
+.hdr:not(.small) .btn:hover{background:transparent;color:#fff}
+.hdr:not(.small) .burger span{background:#fff}
 
-/* In the dark theme the header sits on the ink page, not on a light plate —
-   keep its brand, links and ghost button paper-on-ink until it scrolls. */
-[data-theme="dark"] .hdr:not(.small){background:transparent;backdrop-filter:none}
-[data-theme="dark"] .hdr:not(.small) .hdr__in{border-bottom-color:transparent}
-[data-theme="dark"] .hdr:not(.small) .brand{color:var(--fg)}
-[data-theme="dark"] .hdr:not(.small) .brand__mark{background:var(--accent)}
-[data-theme="dark"] .hdr:not(.small) .nav a{color:var(--g200)}
-[data-theme="dark"] .hdr:not(.small) .nav a:hover{color:var(--fg)}
-[data-theme="dark"] .hdr:not(.small) .lnk{color:var(--g200)}
-[data-theme="dark"] .hdr:not(.small) .lnk:hover{color:var(--fg)}
-[data-theme="dark"] .hdr:not(.small) .btn{background:var(--fg);border-color:var(--fg);color:var(--ink)}
-[data-theme="dark"] .hdr:not(.small) .btn:hover{background:transparent;color:var(--fg)}
-[data-theme="dark"] .hdr:not(.small) .burger span{background:var(--fg)}
-
-/* In the dark theme the hero plate drops to the ink page: the coral becomes an
-   outline/label accent instead of a full bleed, so the header and nav stop
-   sitting dark-on-red. Plate text flips to paper-on-ink. */
-[data-theme="dark"] .plate{background:var(--ink);color:var(--fg);border-bottom-color:var(--line)}
-[data-theme="dark"] .plate::before{background:var(--line)}
-[data-theme="dark"] .plate__h{color:var(--fg)}
-[data-theme="dark"] .plate__labels .meta{color:var(--g300)}
-[data-theme="dark"] .plate__foot .lead{color:var(--g200)}
-[data-theme="dark"] .plate__foot .btn{border-color:var(--line);color:var(--fg);background:transparent}
-[data-theme="dark"] .plate__foot .btn:hover{border-color:var(--fg);background:var(--surface-2)}
-[data-theme="dark"] .plate__foot .btn--solid{background:var(--fg);border-color:var(--fg);color:var(--ink)}
-[data-theme="dark"] .plate__foot .btn--solid:hover{background:transparent;color:var(--fg)}
-[data-theme="dark"] .plate__claim .claim__val{color:var(--accent)}
-[data-theme="dark"] .plate__claim .claim__lab{color:var(--muted)}
-[data-theme="dark"] .plate__mark path{stroke:var(--accent)}
-[data-theme="dark"] .claim__val{color:var(--accent)}
+/* In the dark theme the hero plate keeps the coral bleed but carries dark ink
+   text (the page around it is ink, so the plate reads as the single hot panel).
+   The light theme below uses white text on the same coral. */
+[data-theme="dark"] .plate{background:var(--accent);color:var(--ink);border-bottom-color:rgba(12,11,17,.18)}
+[data-theme="dark"] .plate::before{background:rgba(255,255,255,.18)}
+[data-theme="dark"] .plate__h{color:var(--ink)}
+[data-theme="dark"] .plate__labels .meta{color:rgba(12,11,17,.6)}
+[data-theme="dark"] .plate__foot .lead{color:rgba(12,11,17,.78)}
+[data-theme="dark"] .plate__foot .btn{border-color:rgba(12,11,17,.32);color:var(--ink);background:transparent}
+[data-theme="dark"] .plate__foot .btn:hover{border-color:var(--ink);background:rgba(255,255,255,.18)}
+[data-theme="dark"] .plate__foot .btn--solid{background:var(--ink);border-color:var(--ink);color:var(--accent)}
+[data-theme="dark"] .plate__foot .btn--solid:hover{background:transparent;color:var(--ink)}
+[data-theme="dark"] .plate__claim .claim__val{color:var(--ink)}
+[data-theme="dark"] .plate__claim .claim__lab{color:rgba(12,11,17,.6)}
+[data-theme="dark"] .plate__mark path{stroke:var(--ink)}
+[data-theme="dark"] .claim__val{color:var(--ink)}
+/* header over the coral plate in the dark theme — dark ink, like on light */
+[data-theme="dark"] .hdr:not(.small) .brand{color:var(--ink)}
+[data-theme="dark"] .hdr:not(.small) .brand__mark{background:var(--ink)}
+[data-theme="dark"] .hdr:not(.small) .nav a{color:rgba(12,11,17,.65)}
+[data-theme="dark"] .hdr:not(.small) .nav a:hover{color:var(--ink)}
+[data-theme="dark"] .hdr:not(.small) .lnk{color:rgba(12,11,17,.65)}
+[data-theme="dark"] .hdr:not(.small) .lnk:hover{color:var(--ink)}
+[data-theme="dark"] .hdr:not(.small) .btn{background:var(--ink);border-color:var(--ink);color:var(--accent)}
+[data-theme="dark"] .hdr:not(.small) .btn:hover{background:transparent;color:var(--ink)}
+[data-theme="dark"] .hdr:not(.small) .burger span{background:var(--ink)}
 
 /* the schematic band returns to paper right after the plate */
 .hero .band{padding-top:clamp(80px,9vw,140px)}
