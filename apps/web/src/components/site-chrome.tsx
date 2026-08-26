@@ -104,7 +104,7 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
 }
 
 export function ThemeToggle() {
-  const [theme, setTheme] = useState<SavedTheme>("dark");
+  const [theme, setTheme] = useState<SavedTheme>("light");
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
     // Тема по умолчанию — тёмная; светлая только если пользователь её явно сохранил.

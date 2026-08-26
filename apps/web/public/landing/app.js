@@ -155,6 +155,27 @@ addEventListener('scroll', () => hdr.classList.toggle('small', scrollY > 40), { 
 $('#burger')?.addEventListener('click', () => $('.nav').classList.toggle('open'));
 
 /* ---------------------------------------------------------
+   THEME TOGGLE — light (warm paper) ↔ dark (deep ink), persisted
+   --------------------------------------------------------- */
+(() => {
+  const KEY = 'apitoken-theme';
+  const root = document.documentElement;
+  const btn = $('#themeTgl');
+  const apply = (t) => {
+    if (t === 'dark') root.dataset.theme = 'dark'; else delete root.dataset.theme;
+    if (btn) btn.textContent = t === 'dark' ? '☀' : '☾';
+  };
+  let saved = 'light';
+  try { saved = localStorage.getItem(KEY) === 'dark' ? 'dark' : 'light'; } catch {}
+  apply(saved);
+  btn?.addEventListener('click', () => {
+    saved = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem(KEY, saved); } catch {}
+    apply(saved);
+  });
+})();
+
+/* ---------------------------------------------------------
    REVEAL ON SCROLL
    --------------------------------------------------------- */
 const io = new IntersectionObserver(entries => {

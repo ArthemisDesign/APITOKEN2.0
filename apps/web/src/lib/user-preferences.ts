@@ -36,9 +36,9 @@ export function saveLanguage(storage: WritableStorage | null, language: SavedLan
 export function readSavedTheme(storage: ReadableStorage | null): SavedTheme {
   try {
     const saved = storage?.getItem(THEME_STORAGE_KEY) ?? storage?.getItem(LEGACY_THEME_STORAGE_KEY);
-    return saved === "light" ? "light" : "dark";
+    return saved === "dark" ? "dark" : "light";
   } catch {
-    return "dark";
+    return "light";
   }
 }
 
@@ -50,4 +50,4 @@ export function saveTheme(storage: WritableStorage | null, theme: SavedTheme): v
   }
 }
 
-export const themeBootstrapScript = `(()=>{try{const s=localStorage.getItem('${THEME_STORAGE_KEY}')??localStorage.getItem('${LEGACY_THEME_STORAGE_KEY}');const t=s==='light'?'light':'dark';if(t==='dark')document.documentElement.dataset.theme='dark';else delete document.documentElement.dataset.theme}catch{document.documentElement.dataset.theme='dark'}})()`;
+export const themeBootstrapScript = `(()=>{try{const s=localStorage.getItem('${THEME_STORAGE_KEY}')??localStorage.getItem('${LEGACY_THEME_STORAGE_KEY}');const t=s==='dark'?'dark':'light';if(t==='dark')document.documentElement.dataset.theme='dark';else delete document.documentElement.dataset.theme}catch{delete document.documentElement.dataset.theme}})()`;

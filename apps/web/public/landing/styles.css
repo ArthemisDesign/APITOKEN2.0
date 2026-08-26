@@ -52,6 +52,71 @@
   --sec:clamp(84px,9vw,160px);
 }
 
+/* ---- DARK theme — deep ink surfaces, warm paper text, same coral accent ---- */
+[data-theme="dark"]{
+  /* surfaces invert: ink becomes the page, paper becomes the text */
+  --bg:var(--ink);
+  --fg:var(--paper);
+  --line:rgba(240,239,235,.14);
+  --line-soft:rgba(240,239,235,.08);
+  --muted:var(--g200);
+  --accent:#FF6A5A;
+  --accent-2:#FF5949;
+  --accent-glow:rgba(255,106,90,.30);
+
+  --shadow-xs:0 1px 2px rgba(0,0,0,.2);
+  --shadow-s:0 2px 8px rgba(0,0,0,.25);
+  --shadow-m:0 10px 30px rgba(0,0,0,.35);
+  --shadow-l:0 20px 60px rgba(0,0,0,.45);
+  --shadow-xl:0 36px 90px rgba(0,0,0,.55);
+  --shadow-accent:0 10px 34px rgba(255,106,90,.35);
+}
+
+/* Elements that hard-code light surfaces follow the theme through these
+   broad overrides — the dark palette already lives in the tokens above. */
+[data-theme="dark"] body{background:var(--bg);color:var(--fg)}
+[data-theme="dark"] .sec--accent{background:var(--accent)}
+[data-theme="dark"] .hdr:not(.small){background:transparent}
+[data-theme="dark"] .hdr{background:var(--bg)}
+[data-theme="dark"] .hdr .brand,
+[data-theme="dark"] .hdr .nav a,
+[data-theme="dark"] .hdr .lnk{color:var(--fg)}
+[data-theme="dark"] .hdr .brand__mark{background:var(--accent)}
+[data-theme="dark"] .hdr:not(.small) .btn{background:var(--paper);border-color:var(--paper);color:var(--ink)}
+[data-theme="dark"] .hdr:not(.small) .btn:hover{background:transparent;color:var(--paper)}
+[data-theme="dark"] .lang{border-color:var(--line)}
+[data-theme="dark"] .lang__link{color:var(--muted)}
+[data-theme="dark"] .lang__link.is-active{background:var(--paper);color:var(--ink)}
+[data-theme="dark"] .chip{background:transparent;color:var(--fg);border-color:var(--line)}
+[data-theme="dark"] .chip.on{background:var(--paper);color:var(--ink);border-color:var(--paper)}
+[data-theme="dark"] .calc__in,
+[data-theme="dark"] .ent__form,
+[data-theme="dark"] .mcard,
+[data-theme="dark"] .tut,
+[data-theme="dark"] .pick,
+[data-theme="dark"] .prov,
+[data-theme="dark"] .acc__q,
+[data-theme="dark"] .docs-calc,
+[data-theme="dark"] .docs-code,
+[data-theme="dark"] .switch__pick,
+[data-theme="dark"] .calc__opts{background:var(--ink-2);border-color:var(--line)}
+[data-theme="dark"] .vid{background:var(--ink-2)}
+[data-theme="dark"] input,
+[data-theme="dark"] .calc__spend input,
+[data-theme="dark"] .adv input,
+[data-theme="dark"] .ent__form input{color:var(--fg)}
+[data-theme="dark"] .btn{border-color:var(--line);color:var(--fg)}
+[data-theme="dark"] .btn:hover{border-color:var(--fg);background:var(--ink-3)}
+[data-theme="dark"] .btn--solid{background:var(--paper);border-color:var(--paper);color:var(--ink)}
+[data-theme="dark"] .btn--solid:hover{background:transparent;color:var(--paper)}
+[data-theme="dark"] .btn.btn--dark,.btn.btn--dark:hover{background:var(--paper);border-color:var(--paper);color:var(--ink)}
+[data-theme="dark"] .hdr:not(.small) .btn.btn--dark,.hdr:not(.small) .btn.btn--dark:hover{background:var(--paper);border-color:var(--paper);color:var(--ink)}
+[data-theme="dark"] .nav__dash,.nav__dash:hover{background:var(--paper);border-color:var(--paper);color:var(--ink)}
+[data-theme="dark"] .nav a.nav__dash,.nav a.nav__dash:hover,
+[data-theme="dark"] .hdr:not(.small) .nav a.nav__dash,.hdr:not(.small) .nav a.nav__dash:hover{color:var(--ink)}
+[data-theme="dark"] .nav{background:var(--bg)}
+[data-theme="dark"] .theme-tgl{color:var(--fg);border-color:var(--line)}
+
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
 body{
@@ -174,6 +239,11 @@ body::before{
 .lnk--arrow:hover::after{transform:translateX(6px)}
 .burger{display:none;flex-direction:column;gap:4px;cursor:pointer;padding:6px}
 .burger span{width:16px;height:1px;background:var(--fg)}
+/* theme toggle — small mono icon button next to the language switcher */
+.theme-tgl{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;
+  border:1px solid var(--line);border-radius:8px;color:var(--fg);cursor:pointer;font-size:15px;line-height:1;
+  background:transparent;transition:border-color .2s,background .2s}
+.theme-tgl:hover{border-color:var(--fg)}
 
 /* ---------- buttons ---------- */
 .btn{
@@ -1275,6 +1345,20 @@ body{line-height:1.5}
 .hdr:not(.small) .btn{background:var(--ink);border-color:var(--ink);color:var(--paper)}
 .hdr:not(.small) .btn:hover{background:transparent;color:var(--ink)}
 .hdr:not(.small) .burger span{background:var(--ink)}
+
+/* In the dark theme the header sits on the ink page, not on a light plate —
+   keep its brand, links and ghost button paper-on-ink until it scrolls. */
+[data-theme="dark"] .hdr:not(.small){background:transparent;backdrop-filter:none}
+[data-theme="dark"] .hdr:not(.small) .hdr__in{border-bottom-color:transparent}
+[data-theme="dark"] .hdr:not(.small) .brand{color:var(--paper)}
+[data-theme="dark"] .hdr:not(.small) .brand__mark{background:var(--accent)}
+[data-theme="dark"] .hdr:not(.small) .nav a{color:var(--g200)}
+[data-theme="dark"] .hdr:not(.small) .nav a:hover{color:var(--paper)}
+[data-theme="dark"] .hdr:not(.small) .lnk{color:var(--g200)}
+[data-theme="dark"] .hdr:not(.small) .lnk:hover{color:var(--paper)}
+[data-theme="dark"] .hdr:not(.small) .btn{background:var(--paper);border-color:var(--paper);color:var(--ink)}
+[data-theme="dark"] .hdr:not(.small) .btn:hover{background:transparent;color:var(--paper)}
+[data-theme="dark"] .hdr:not(.small) .burger span{background:var(--paper)}
 
 /* the schematic band returns to paper right after the plate */
 .hero .band{padding-top:clamp(80px,9vw,140px)}
