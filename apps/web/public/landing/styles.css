@@ -286,8 +286,10 @@ body::before{
   border:1px solid var(--line);border-radius:8px;color:var(--fg);cursor:pointer;font-size:15px;line-height:1;
   background:transparent;transition:border-color .2s,background .2s}
 .theme-tgl:hover{border-color:var(--fg)}
-/* theme toggle on the coral plate (and on the ink page after scroll) stays dark */
-[data-theme="dark"] .theme-tgl,[data-theme="dark"] .theme-tgl:hover{color:var(--ink);border-color:rgba(12,11,17,.4)}
+/* dark theme: on the coral hero plate the toggle is dark ink; once the header
+   sits on the dark page (scrolled / .small, or anywhere off the plate) it turns red */
+[data-theme="dark"] .theme-tgl,[data-theme="dark"] .theme-tgl:hover{color:var(--accent);border-color:var(--accent-line,rgba(255,106,90,.4))}
+[data-theme="dark"] .hdr:not(.small) .theme-tgl,[data-theme="dark"] .hdr:not(.small) .theme-tgl:hover{color:var(--ink);border-color:rgba(12,11,17,.4)}
 
 /* ---------- buttons ---------- */
 .btn{
