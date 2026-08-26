@@ -105,7 +105,8 @@
 [data-theme="dark"] .intsteps,
 [data-theme="dark"] .ask__opts,
 [data-theme="dark"] .calc__opts{background:var(--surface);border-color:var(--line)}
-[data-theme="dark"] .vid{background:var(--surface)}
+[data-theme="dark"] .vid{background:transparent;border-color:var(--line)}
+[data-theme="dark"] .vid__stage{background:var(--surface)}
 [data-theme="dark"] input,
 [data-theme="dark"] .calc__spend input,
 [data-theme="dark"] .adv input,
