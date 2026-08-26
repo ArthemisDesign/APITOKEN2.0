@@ -163,7 +163,7 @@ $('#burger')?.addEventListener('click', () => $('.nav').classList.toggle('open')
   const btn = $('#themeTgl');
   const apply = (t) => {
     if (t === 'dark') root.dataset.theme = 'dark'; else delete root.dataset.theme;
-    if (btn) btn.textContent = t === 'dark' ? '☀' : '☾';
+    if (btn) btn.textContent = t === 'dark' ? '☾' : '☀';
   };
   let saved = 'light';
   try { saved = localStorage.getItem(KEY) === 'dark' ? 'dark' : 'light'; } catch {}

@@ -121,7 +121,7 @@ export function ThemeToggle() {
     else delete document.documentElement.dataset.theme;
     saveTheme(browserStorage(), theme);
   }, [mounted, theme]);
-  return <button className="theme-tgl" aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}>{theme === "dark" ? "☀" : "☾"}</button>;
+  return <button className="theme-tgl" aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}>{theme === "dark" ? "☾" : "☀"}</button>;
 }
 
 export function SiteFooter({ full = false }: { full?: boolean }) {

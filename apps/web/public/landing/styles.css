@@ -54,9 +54,12 @@
 
 /* ---- DARK theme — deep ink surfaces, warm paper text, same coral accent ---- */
 [data-theme="dark"]{
-  /* surfaces invert: ink becomes the page, paper becomes the text */
+  /* page inverts to ink; dark surfaces live on dedicated tokens so that
+     --paper/--ink keep their literal meaning (light / dark) everywhere */
   --bg:var(--ink);
-  --fg:var(--paper);
+  --surface:#18161D;
+  --surface-2:#24222A;
+  --fg:#F4F3EF;
   --line:rgba(240,239,235,.14);
   --line-soft:rgba(240,239,235,.08);
   --muted:var(--g200);
@@ -82,13 +85,11 @@
 [data-theme="dark"] .hdr .nav a,
 [data-theme="dark"] .hdr .lnk{color:var(--fg)}
 [data-theme="dark"] .hdr .brand__mark{background:var(--accent)}
-[data-theme="dark"] .hdr:not(.small) .btn{background:var(--paper);border-color:var(--paper);color:var(--ink)}
-[data-theme="dark"] .hdr:not(.small) .btn:hover{background:transparent;color:var(--paper)}
 [data-theme="dark"] .lang{border-color:var(--line)}
 [data-theme="dark"] .lang__link{color:var(--muted)}
-[data-theme="dark"] .lang__link.is-active{background:var(--paper);color:var(--ink)}
+[data-theme="dark"] .lang__link.is-active{background:var(--surface);color:var(--fg)}
 [data-theme="dark"] .chip{background:transparent;color:var(--fg);border-color:var(--line)}
-[data-theme="dark"] .chip.on{background:var(--paper);color:var(--ink);border-color:var(--paper)}
+[data-theme="dark"] .chip.on{background:var(--surface);color:var(--fg);border-color:var(--surface)}
 [data-theme="dark"] .calc__in,
 [data-theme="dark"] .ent__form,
 [data-theme="dark"] .mcard,
@@ -96,26 +97,63 @@
 [data-theme="dark"] .pick,
 [data-theme="dark"] .prov,
 [data-theme="dark"] .acc__q,
+[data-theme="dark"] .acc__item,
 [data-theme="dark"] .docs-calc,
 [data-theme="dark"] .docs-code,
 [data-theme="dark"] .switch__pick,
-[data-theme="dark"] .calc__opts{background:var(--ink-2);border-color:var(--line)}
-[data-theme="dark"] .vid{background:var(--ink-2)}
+[data-theme="dark"] .tabs,
+[data-theme="dark"] .intsteps,
+[data-theme="dark"] .ask__opts,
+[data-theme="dark"] .calc__opts{background:var(--surface);border-color:var(--line)}
+[data-theme="dark"] .vid{background:var(--surface)}
 [data-theme="dark"] input,
 [data-theme="dark"] .calc__spend input,
 [data-theme="dark"] .adv input,
 [data-theme="dark"] .ent__form input{color:var(--fg)}
+[data-theme="dark"] .calc__spend{background:var(--surface-2)}
 [data-theme="dark"] .btn{border-color:var(--line);color:var(--fg)}
-[data-theme="dark"] .btn:hover{border-color:var(--fg);background:var(--ink-3)}
-[data-theme="dark"] .btn--solid{background:var(--paper);border-color:var(--paper);color:var(--ink)}
-[data-theme="dark"] .btn--solid:hover{background:transparent;color:var(--paper)}
-[data-theme="dark"] .btn.btn--dark,.btn.btn--dark:hover{background:var(--paper);border-color:var(--paper);color:var(--ink)}
-[data-theme="dark"] .hdr:not(.small) .btn.btn--dark,.hdr:not(.small) .btn.btn--dark:hover{background:var(--paper);border-color:var(--paper);color:var(--ink)}
-[data-theme="dark"] .nav__dash,.nav__dash:hover{background:var(--paper);border-color:var(--paper);color:var(--ink)}
+[data-theme="dark"] .btn:hover{border-color:var(--fg);background:var(--surface-2)}
+[data-theme="dark"] .btn--solid{background:var(--fg);border-color:var(--fg);color:var(--ink)}
+[data-theme="dark"] .btn--solid:hover{background:transparent;color:var(--fg)}
+[data-theme="dark"] .btn.btn--dark,.btn.btn--dark:hover{background:var(--fg);border-color:var(--fg);color:var(--ink)}
+[data-theme="dark"] .nav__dash,.nav__dash:hover{background:var(--fg);border-color:var(--fg);color:var(--ink)}
 [data-theme="dark"] .nav a.nav__dash,.nav a.nav__dash:hover,
 [data-theme="dark"] .hdr:not(.small) .nav a.nav__dash,.hdr:not(.small) .nav a.nav__dash:hover{color:var(--ink)}
 [data-theme="dark"] .nav{background:var(--bg)}
+/* text that referenced the old light --paper must now read as --fg on dark */
+[data-theme="dark"] .final,
+[data-theme="dark"] .sec--dark,
+[data-theme="dark"] .ftr,
+[data-theme="dark"] .calc__out{color:var(--fg)}
+[data-theme="dark"] .acc__q:hover{color:var(--accent);background:var(--surface-2)}
+[data-theme="dark"] .chip:hover,
+[data-theme="dark"] .tab:hover{color:var(--fg);background:var(--surface-2)}
 [data-theme="dark"] .theme-tgl{color:var(--fg);border-color:var(--line)}
+
+/* hard-coded #fff surfaces drop to the raised dark surface in the dark theme */
+[data-theme="dark"] .ask__opts,
+[data-theme="dark"] .tabs,
+[data-theme="dark"] .intsteps,
+[data-theme="dark"] .switch__pick,
+[data-theme="dark"] .acc__item,
+[data-theme="dark"] .tut,
+[data-theme="dark"] .docs-calc,
+[data-theme="dark"] .docs-code,
+[data-theme="dark"] .node,
+[data-theme="dark"] .core{background:var(--surface);border-color:var(--line);box-shadow:none}
+[data-theme="dark"] .tut:hover{border-color:var(--g300);background:var(--surface-2)}
+[data-theme="dark"] .case__vis{background:var(--surface)}
+/* accent hover fills keep the label readable: ink text on the coral fill */
+[data-theme="dark"] .mcard:hover,
+[data-theme="dark"] .pick:hover{color:var(--ink)}
+[data-theme="dark"] .mcard:hover .mcard__name,.mcard:hover .pick__name,
+[data-theme="dark"] .mcard:hover .mcard__id,.mcard:hover .mcard__row,.mcard:hover .mcard__badge,
+[data-theme="dark"] .pick:hover .pick__prov,.pick:hover .pick__specs,.pick:hover .pick__why,.pick:hover .pick__role,.pick:hover .pick__cta,
+[data-theme="dark"] .mcard:hover .mcard__name,.mcard:hover .mcard__id,.mcard:hover .mcard__row,.mcard:hover .mcard__badge,
+[data-theme="dark"] .pick:hover .pick__prov,.pick:hover .pick__specs,.pick:hover .pick__why,.pick:hover .pick__role,.pick:hover .pick__cta,
+[data-theme="dark"] .mcard:hover .mcard__row b{color:var(--ink)}
+[data-theme="dark"] .mcard:hover .mcard__row,.pick:hover .pick__specs div,
+[data-theme="dark"] .mcard:hover .tag{border-color:rgba(12,11,17,.4);color:var(--ink)}
 
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
@@ -1350,15 +1388,15 @@ body{line-height:1.5}
    keep its brand, links and ghost button paper-on-ink until it scrolls. */
 [data-theme="dark"] .hdr:not(.small){background:transparent;backdrop-filter:none}
 [data-theme="dark"] .hdr:not(.small) .hdr__in{border-bottom-color:transparent}
-[data-theme="dark"] .hdr:not(.small) .brand{color:var(--paper)}
+[data-theme="dark"] .hdr:not(.small) .brand{color:var(--fg)}
 [data-theme="dark"] .hdr:not(.small) .brand__mark{background:var(--accent)}
 [data-theme="dark"] .hdr:not(.small) .nav a{color:var(--g200)}
-[data-theme="dark"] .hdr:not(.small) .nav a:hover{color:var(--paper)}
+[data-theme="dark"] .hdr:not(.small) .nav a:hover{color:var(--fg)}
 [data-theme="dark"] .hdr:not(.small) .lnk{color:var(--g200)}
-[data-theme="dark"] .hdr:not(.small) .lnk:hover{color:var(--paper)}
-[data-theme="dark"] .hdr:not(.small) .btn{background:var(--paper);border-color:var(--paper);color:var(--ink)}
-[data-theme="dark"] .hdr:not(.small) .btn:hover{background:transparent;color:var(--paper)}
-[data-theme="dark"] .hdr:not(.small) .burger span{background:var(--paper)}
+[data-theme="dark"] .hdr:not(.small) .lnk:hover{color:var(--fg)}
+[data-theme="dark"] .hdr:not(.small) .btn{background:var(--fg);border-color:var(--fg);color:var(--ink)}
+[data-theme="dark"] .hdr:not(.small) .btn:hover{background:transparent;color:var(--fg)}
+[data-theme="dark"] .hdr:not(.small) .burger span{background:var(--fg)}
 
 /* the schematic band returns to paper right after the plate */
 .hero .band{padding-top:clamp(80px,9vw,140px)}
