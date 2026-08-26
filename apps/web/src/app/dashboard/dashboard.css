@@ -471,26 +471,29 @@
     var(--bg-soft)}
 [data-theme="dark"] .app-main{
   --overview-shadow:0 1px 2px rgba(12,11,17,.04),0 18px 46px -34px rgba(12,11,17,.28)}
-.app-top{position:sticky;top:0;z-index:5;min-height:72px;padding:0 40px;border-bottom:1px solid var(--line);
-  background:color-mix(in srgb,var(--bg-card) 92%,transparent);backdrop-filter:blur(16px)}
+.app-top{position:sticky;top:0;z-index:5;min-height:72px;padding:0 40px;
+  background:var(--accent);border-bottom:1px solid rgba(12,11,17,.18)}
 .app-top-in{display:flex;align-items:center;gap:14px;width:100%;max-width:1360px;min-height:71px;margin:0 auto}
-.app-burger{display:none;background:none;border:0;font-size:22px;color:var(--txt);cursor:pointer}
+.app-burger{display:none;background:none;border:0;font-size:22px;color:#0C0B11;cursor:pointer}
+/* Brand block mirrors the landing hero plate: red square mark + tight wordmark. */
+.app-top-brand{display:inline-flex;align-items:center;gap:9px;flex:none;
+  font-family:var(--font-display);font-weight:600;font-size:17px;letter-spacing:-.03em;color:#0C0B11}
+.app-top-brand sup{font-size:.5em;font-weight:500;vertical-align:super}
+.app-top-brand__mark{width:14px;height:14px;background:#0C0B11;flex:none}
 /* Keep every section title on one line; truncate instead of growing the sticky top bar. */
-.app-title{font-family:var(--font-display);font-weight:600;font-size:22px;letter-spacing:-.025em;flex:1;min-width:0;
+.app-title{font-family:var(--font-display);font-weight:600;font-size:22px;letter-spacing:-.025em;flex:1;min-width:0;color:#0C0B11;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .app-top-actions{display:flex;align-items:center;gap:12px}
 .app-top-bal{display:inline-flex;align-items:center;gap:9px;padding:8px 15px;border-radius:11px;
-  background:linear-gradient(180deg,var(--bg-card),var(--bg-soft));border:1px solid var(--accent-line);
-  cursor:pointer;font-family:var(--font-mono);box-shadow:0 1px 2px rgba(10,10,10,.05);
-  transition:border-color .18s ease,background-color .18s ease,box-shadow .2s ease,transform .12s ease}
-.app-top-bal:hover{border-color:var(--accent);background:var(--accent-soft);transform:translateY(-1px);
-  box-shadow:0 10px 24px -12px color-mix(in srgb,var(--accent) 65%,transparent)}
+  background:rgba(244,243,239,.16);border:1px solid rgba(12,11,17,.32);
+  cursor:pointer;font-family:var(--font-mono);
+  transition:border-color .18s ease,background-color .18s ease,transform .12s ease}
+.app-top-bal:hover{border-color:#0C0B11;background:rgba(244,243,239,.28);transform:translateY(-1px)}
 .app-top-bal:active{transform:translateY(0) scale(.98)}
-.app-top-bal .atb-ic{width:15px;height:15px;border-radius:50%;flex:none;
-  background:radial-gradient(circle at 34% 30%, color-mix(in srgb,var(--accent) 55%,#fff), var(--accent) 78%);
-  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 35%,transparent),0 1px 2px color-mix(in srgb,var(--accent) 45%,transparent)}
-.app-top-bal .atb-label{font-size:11px;color:var(--txt-4);text-transform:uppercase;letter-spacing:.07em}
-.app-top-bal .atb-val{font-size:15px;font-weight:700;color:var(--txt);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.app-top-bal .atb-ic{width:15px;height:15px;border-radius:50%;flex:none;background:#0C0B11;
+  box-shadow:inset 0 0 0 1px rgba(12,11,17,.2)}
+.app-top-bal .atb-label{font-size:11px;color:rgba(12,11,17,.6);text-transform:uppercase;letter-spacing:.07em}
+.app-top-bal .atb-val{font-size:15px;font-weight:700;color:#0C0B11;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
 .app-top-bal .atb-val.atb-neg{color:var(--danger,#d6455d)}
 .app-body-in{width:100%;max-width:1440px;margin:0 auto;padding:32px 40px 64px}
 .panel{animation:panelIn .25s ease;font-family:var(--font-ui);font-size:14px;line-height:1.5}

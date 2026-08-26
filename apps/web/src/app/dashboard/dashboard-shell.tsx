@@ -119,6 +119,9 @@ export const DashboardTopBar = memo(function DashboardTopBar({ activeSection, ac
   return <header className="app-top">
     <div className="app-top-in">
       <button className="app-burger" onClick={onMenu} aria-label={copy.menu}>☰</button>
+      <Link className="app-top-brand" href={localeHref("/", locale === "ru" ? "ru" : "en")} aria-label="apiToken home">
+        <span className="app-top-brand__mark" aria-hidden="true" />apiToken<sup>®</sup>
+      </Link>
       <div className="app-top-h"><div className="app-title">{copy[titleKey]}</div></div>
       <div className="app-top-actions">
         <button className="app-top-bal" onClick={onOpenCredits} title={copy.navTopUp}>
