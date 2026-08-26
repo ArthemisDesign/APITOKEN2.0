@@ -191,6 +191,10 @@ body::before{
 .calc__out .btn:hover{background:transparent}
 .btn--solid{background:var(--ink);border-color:var(--ink);color:var(--paper)}
 .btn--solid:hover{background:transparent;color:var(--ink)}
+/* Always-black button (dashboard shortcut in the header): keeps ink fill and
+   paper text on hover instead of inverting to a transparent outline. */
+.btn.btn--dark,.btn.btn--dark:hover,
+.hdr:not(.small) .btn.btn--dark,.hdr:not(.small) .btn.btn--dark:hover{background:var(--ink);border-color:var(--ink);color:var(--paper)}
 /* on dark sections the transparent hover would leave the label ink-on-ink —
    keep the fill and invert to paper instead */
 .sec--dark .btn--solid:hover,
@@ -1351,6 +1355,14 @@ body{line-height:1.5}
     border-radius:8px;background:var(--ink);color:var(--paper);
     font-family:var(--sans);font-size:13px;font-weight:500;letter-spacing:-.01em;
     text-transform:none;border-bottom:1px solid var(--ink)}
+  /* The label-swap motion splits the caption into two offset lines; on touch
+     devices there is no hover to bring the second line back, so the caption
+     could slide out of view. Pin both lines in place on the dashboard button. */
+  .nav__dash,.nav__dash:hover{background:var(--ink);color:var(--paper)}
+  .nav a.nav__dash,.nav a.nav__dash:hover,
+  .hdr:not(.small) .nav a.nav__dash,.hdr:not(.small) .nav a.nav__dash:hover{color:var(--paper)}
+  .nav__dash .sw i{transform:none!important;transition:none}
+  .nav__dash .sw i:last-child{display:none}
 
   /* hero */
   .plate{min-height:0;padding-bottom:0}
