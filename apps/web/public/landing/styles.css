@@ -1398,6 +1398,23 @@ body{line-height:1.5}
 [data-theme="dark"] .hdr:not(.small) .btn:hover{background:transparent;color:var(--fg)}
 [data-theme="dark"] .hdr:not(.small) .burger span{background:var(--fg)}
 
+/* In the dark theme the hero plate drops to the ink page: the coral becomes an
+   outline/label accent instead of a full bleed, so the header and nav stop
+   sitting dark-on-red. Plate text flips to paper-on-ink. */
+[data-theme="dark"] .plate{background:var(--ink);color:var(--fg);border-bottom-color:var(--line)}
+[data-theme="dark"] .plate::before{background:var(--line)}
+[data-theme="dark"] .plate__h{color:var(--fg)}
+[data-theme="dark"] .plate__labels .meta{color:var(--g300)}
+[data-theme="dark"] .plate__foot .lead{color:var(--g200)}
+[data-theme="dark"] .plate__foot .btn{border-color:var(--line);color:var(--fg);background:transparent}
+[data-theme="dark"] .plate__foot .btn:hover{border-color:var(--fg);background:var(--surface-2)}
+[data-theme="dark"] .plate__foot .btn--solid{background:var(--fg);border-color:var(--fg);color:var(--ink)}
+[data-theme="dark"] .plate__foot .btn--solid:hover{background:transparent;color:var(--fg)}
+[data-theme="dark"] .plate__claim .claim__val{color:var(--accent)}
+[data-theme="dark"] .plate__claim .claim__lab{color:var(--muted)}
+[data-theme="dark"] .plate__mark path{stroke:var(--accent)}
+[data-theme="dark"] .claim__val{color:var(--accent)}
+
 /* the schematic band returns to paper right after the plate */
 .hero .band{padding-top:clamp(80px,9vw,140px)}
 
