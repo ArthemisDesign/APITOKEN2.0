@@ -94,7 +94,6 @@
 [data-theme="dark"] .ent__form,
 [data-theme="dark"] .tut,
 [data-theme="dark"] .pick,
-[data-theme="dark"] .prov,
 [data-theme="dark"] .acc__q,
 [data-theme="dark"] .acc__item,
 [data-theme="dark"] .docs-calc,
@@ -104,9 +103,10 @@
 [data-theme="dark"] .intsteps,
 [data-theme="dark"] .ask__opts,
 [data-theme="dark"] .calc__opts{background:var(--surface);border-color:var(--line)}
-/* model cards stay transparent in the dark theme — only the outline shows,
-   so they don't read as a grey slab on the ink page */
+/* model cards and provider blocks stay transparent in the dark theme — only
+   the outline/rule shows, so they don't read as a grey slab on the ink page */
 [data-theme="dark"] .mcard{background:transparent;border-color:var(--line)}
+[data-theme="dark"] .prov{background:transparent}
 [data-theme="dark"] .vid{background:transparent;border-color:var(--line)}
 [data-theme="dark"] .vid__stage{background:var(--surface)}
 [data-theme="dark"] input,
