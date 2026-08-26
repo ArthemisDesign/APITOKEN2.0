@@ -122,7 +122,9 @@
 [data-theme="dark"] .nav__dash,.nav__dash:hover{background:var(--fg);border-color:var(--fg);color:var(--ink)}
 [data-theme="dark"] .nav a.nav__dash,.nav a.nav__dash:hover,
 [data-theme="dark"] .hdr:not(.small) .nav a.nav__dash,.hdr:not(.small) .nav a.nav__dash:hover{color:var(--ink)}
-[data-theme="dark"] .nav{background:var(--bg)}
+/* the nav background belongs only to the mobile dropdown — on desktop the
+   header is transparent over the coral plate */
+[data-theme="dark"] .nav{background:transparent}
 /* text that referenced the old light --paper must now read as --fg on dark */
 [data-theme="dark"] .final,
 [data-theme="dark"] .sec--dark,
@@ -131,7 +133,6 @@
 [data-theme="dark"] .acc__q:hover{color:var(--accent);background:var(--surface-2)}
 [data-theme="dark"] .chip:hover,
 [data-theme="dark"] .tab:hover{color:var(--fg);background:var(--surface-2)}
-[data-theme="dark"] .theme-tgl{color:var(--fg);border-color:var(--line)}
 
 /* hard-coded #fff surfaces drop to the raised dark surface in the dark theme */
 [data-theme="dark"] .ask__opts,
@@ -285,6 +286,8 @@ body::before{
   border:1px solid var(--line);border-radius:8px;color:var(--fg);cursor:pointer;font-size:15px;line-height:1;
   background:transparent;transition:border-color .2s,background .2s}
 .theme-tgl:hover{border-color:var(--fg)}
+/* theme toggle on the coral plate (and on the ink page after scroll) stays dark */
+[data-theme="dark"] .theme-tgl,[data-theme="dark"] .theme-tgl:hover{color:var(--ink);border-color:rgba(12,11,17,.4)}
 
 /* ---------- buttons ---------- */
 .btn{
@@ -1486,6 +1489,7 @@ body{line-height:1.5}
     flex-direction:column;align-items:flex-start;gap:0;padding:12px var(--margin);
   }
   .nav.open{display:flex}
+  [data-theme="dark"] .nav{background:var(--ink);border-bottom-color:var(--line)}
   .nav a{width:100%;padding:12px 0;font-size:13px;border-bottom:1px solid var(--line-soft)}
   .nav a:last-child{border-bottom:0}
   .nav__dash{display:inline-flex;justify-content:center;align-items:center;
