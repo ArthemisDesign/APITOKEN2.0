@@ -535,16 +535,41 @@ $('#b2bForm')?.addEventListener('submit', e => {
   const tick = (now) => {
     const dt = Math.min((now - last) / 1000, 0.05); last = now;
     const fw = field.clientWidth, fh = field.clientHeight;
+    // integrate + wall bounce
     for (const b of balls) {
-      let x = parseFloat(b.el.style.left) / 100 * fw + b.vx * dt;
-      let y = parseFloat(b.el.style.top) / 100 * fh + b.vy * dt;
-      const bw = b.el.offsetWidth, bh = b.el.offsetHeight;
-      if (x <= 0) { x = 0; b.vx = Math.abs(b.vx); }
-      if (x + bw >= fw) { x = fw - bw; b.vx = -Math.abs(b.vx); }
-      if (y <= 0) { y = 0; b.vy = Math.abs(b.vy); }
-      if (y + bh >= fh) { y = fh - bh; b.vy = -Math.abs(b.vy); }
-      b.el.style.left = (x / fw * 100) + '%';
-      b.el.style.top = (y / fh * 100) + '%';
+      b.w = b.el.offsetWidth; b.h = b.el.offsetHeight;
+      b.x = parseFloat(b.el.style.left) / 100 * fw + b.vx * dt;
+      b.y = parseFloat(b.el.style.top) / 100 * fh + b.vy * dt;
+      if (b.x <= 0) { b.x = 0; b.vx = Math.abs(b.vx); }
+      if (b.x + b.w >= fw) { b.x = fw - b.w; b.vx = -Math.abs(b.vx); }
+      if (b.y <= 0) { b.y = 0; b.vy = Math.abs(b.vy); }
+      if (b.y + b.h >= fh) { b.y = fh - b.h; b.vy = -Math.abs(b.vy); }
+    }
+    // chip↔chip collision: push apart and swap the velocity component along the
+    // contact normal so they bounce off each other
+    for (let i = 0; i < balls.length; i++) {
+      for (let j = i + 1; j < balls.length; j++) {
+        const a = balls[i], b = balls[j];
+        const acx = a.x + a.w / 2, acy = a.y + a.h / 2;
+        const bcx = b.x + b.w / 2, bcy = b.y + b.h / 2;
+        const dx = bcx - acx, dy = bcy - acy;
+        // approximate each chip as a circle with radius = half the smaller side
+        const ra = Math.min(a.w, a.h) / 2, rb = Math.min(b.w, b.h) / 2;
+        const dist = Math.hypot(dx, dy), min = ra + rb;
+        if (dist > 0 && dist < min) {
+          const nx = dx / dist, ny = dy / dist, overlap = (min - dist) / 2;
+          a.x -= nx * overlap; a.y -= ny * overlap;
+          b.x += nx * overlap; b.y += ny * overlap;
+          // reflect velocities along the normal (equal-mass elastic bounce)
+          const avn = a.vx * nx + a.vy * ny, bvn = b.vx * nx + b.vy * ny;
+          a.vx += (bvn - avn) * nx; a.vy += (bvn - avn) * ny;
+          b.vx += (avn - bvn) * nx; b.vy += (avn - bvn) * ny;
+        }
+      }
+    }
+    for (const b of balls) {
+      b.el.style.left = (Math.max(0, Math.min(b.x, fw - b.w)) / fw * 100) + '%';
+      b.el.style.top = (Math.max(0, Math.min(b.y, fh - b.h)) / fh * 100) + '%';
     }
     requestAnimationFrame(tick);
   };
