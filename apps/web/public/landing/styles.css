@@ -776,22 +776,27 @@ input[type=range]::-moz-range-thumb{width:18px;height:18px;border:0;border-radiu
    13 · GROW
    ========================================================= */
 .grow{
-  position:relative;height:clamp(260px,34vw,440px);
+  position:relative;height:clamp(300px,38vw,520px);
   border:1px solid var(--line);border-radius:20px;
   overflow:hidden;margin-top:20px;
   background:var(--paper-2);
+  /* faint engineering grid behind the chips */
+  background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:44px 44px;
 }
 /* the pop-in keyframes were never defined, so the chips stayed invisible */
 @keyframes pop{to{opacity:1;transform:scale(1)}}
 .grow span{
-  position:absolute;padding:10px 16px;border:1px solid var(--line);
-  font-family:var(--mono);font-size:11px;letter-spacing:.05em;color:var(--ink);white-space:nowrap;
+  position:absolute;padding:13px 20px;border:1px solid var(--line);
+  font-family:var(--mono);font-size:14px;letter-spacing:.04em;color:var(--ink);white-space:nowrap;
   opacity:0;transform:scale(.92);animation:pop .8s ease forwards;
   border-radius:999px;background:#fff;
+  box-shadow:var(--shadow-xs);will-change:transform;
 }
 .grow span.new{background:var(--ink);color:#fff;border-color:var(--ink)}
 /* dark theme: the field returns to the deep ink panel */
-[data-theme="dark"] .grow{background:var(--ink-2)}
+[data-theme="dark"] .grow{background-color:var(--ink-2);
+  background-image:linear-gradient(rgba(240,239,235,.08) 1px,transparent 1px),linear-gradient(90deg,rgba(240,239,235,.08) 1px,transparent 1px)}
 [data-theme="dark"] .grow span{border-color:rgba(255,255,255,.25);color:#fff;background:rgba(255,255,255,.05)}
 [data-theme="dark"] .grow span.new{background:#fff;color:var(--accent);border-color:#fff}
 

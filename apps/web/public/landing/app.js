@@ -508,6 +508,7 @@ $('#b2bForm')?.addEventListener('submit', e => {
   const field = $('#growField');
   if (!field) return;
   const seen = new Set();
+  const balls = [];
   const place = (txt, i, isNew) => {
     const s = el('span', isNew ? 'new' : '', txt);
     let x, y, tries = 0;
@@ -521,8 +522,32 @@ $('#b2bForm')?.addEventListener('submit', e => {
     s.style.top = y + '%';
     s.style.animationDelay = (i * .16) + 's';
     field.appendChild(s);
+    // random slow drift velocity (px/s)
+    const ang = Math.random() * Math.PI * 2;
+    const speed = 14 + Math.random() * 16;
+    balls.push({ el: s, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed });
   };
-  const start = () => GROW_ITEMS.forEach((t, i) => place(t, i, t.startsWith('+')));
+  const start = () => {
+    GROW_ITEMS.forEach((t, i) => place(t, i, t.startsWith('+')));
+    requestAnimationFrame(tick);
+  };
+  let last = 0;
+  const tick = (now) => {
+    const dt = Math.min((now - last) / 1000, 0.05); last = now;
+    const fw = field.clientWidth, fh = field.clientHeight;
+    for (const b of balls) {
+      let x = parseFloat(b.el.style.left) / 100 * fw + b.vx * dt;
+      let y = parseFloat(b.el.style.top) / 100 * fh + b.vy * dt;
+      const bw = b.el.offsetWidth, bh = b.el.offsetHeight;
+      if (x <= 0) { x = 0; b.vx = Math.abs(b.vx); }
+      if (x + bw >= fw) { x = fw - bw; b.vx = -Math.abs(b.vx); }
+      if (y <= 0) { y = 0; b.vy = Math.abs(b.vy); }
+      if (y + bh >= fh) { y = fh - bh; b.vy = -Math.abs(b.vy); }
+      b.el.style.left = (x / fw * 100) + '%';
+      b.el.style.top = (y / fh * 100) + '%';
+    }
+    requestAnimationFrame(tick);
+  };
   new IntersectionObserver((es, ob) => {
     es.forEach(e => { if (e.isIntersecting) { start(); ob.disconnect(); } });
   }, { threshold: .3 }).observe(field);
