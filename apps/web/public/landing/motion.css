@@ -64,6 +64,11 @@ html:not(.mo-ready) .claim__val{opacity:0}
 .nav a:hover .sw i:last-child,
 .lnk--arrow:hover .sw i:last-child{transform:translateY(0)}
 .nav a .sw i:last-child{color:var(--accent)}
+/* on the coral hero plate the swap-in line must not be coral-on-coral */
+.hdr:not(.small) .nav a .sw i:last-child{color:#fff}
+[data-theme="dark"] .hdr:not(.small) .nav a .sw i:last-child{color:var(--ink)}
+/* docs pages have no coral plate — keep the accent swap there */
+.page-docs .hdr:not(.small) .nav a .sw i:last-child{color:var(--accent)}
 
 /* ---------------------------------------------------------
    5 · (removed) schematic corner ticks
