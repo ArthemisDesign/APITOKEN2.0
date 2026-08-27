@@ -537,7 +537,9 @@ body::before{
   padding:28px 30px;overflow:auto;font-family:var(--mono);font-size:12px;line-height:1.85;letter-spacing:0;color:var(--g100);
   background:var(--ink-2);box-shadow:var(--shadow-m);
 }
-.c-c{color:var(--g400)}.c-k{color:#c792ea}.c-s{color:#9ecbff}.c-n{color:#ffcb6b}.c-v{color:var(--accent)}
+.c-c{color:var(--g400)}.c-k{color:#7c3aed}.c-s{color:#1d4ed8}.c-n{color:#b45309}.c-v{color:var(--accent)}
+/* dark theme: syntax colours back to the bright code-on-ink palette */
+[data-theme="dark"] .c-k{color:#c792ea}[data-theme="dark"] .c-s{color:#9ecbff}[data-theme="dark"] .c-n{color:#ffcb6b}
 
 /* =========================================================
    VIDEO COMPONENT
@@ -630,16 +632,22 @@ body::before{
 .switch__pick .chip{padding:10px 16px}
 .term{
   border:1px solid var(--line);border-radius:12px;
-  background:var(--ink-2);
-  color:var(--paper);
+  background:var(--paper-2);
+  color:var(--ink);
 }
-.term__bar{padding:14px 20px;border-bottom:1px solid rgba(240,239,235,.10);font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--g200)}
-.term__body{padding:28px 30px;font-family:var(--mono);font-size:12px;line-height:1.9;letter-spacing:0;color:var(--g100);overflow:auto}
-.term__out{border-top:1px solid rgba(240,239,235,.10);padding:24px 30px}
+.term__bar{padding:14px 20px;border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--g400)}
+.term__body{padding:28px 30px;font-family:var(--mono);font-size:12px;line-height:1.9;letter-spacing:0;color:var(--ink);overflow:auto}
+.term__out{border-top:1px solid var(--line-soft);padding:24px 30px}
 .term__meta{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:12px}
-.term__out p{font-size:14px;line-height:1.55;color:var(--g100)}
+.term__out p{font-size:14px;line-height:1.55;color:var(--g400)}
 .term__meta b{color:var(--accent);font-weight:400}
-.term__out p{font-size:14px;color:var(--g100);min-height:46px;transition:opacity .2s}
+.term__out p{font-size:14px;color:var(--g400);min-height:46px;transition:opacity .2s}
+/* dark theme: the terminal returns to the deep ink block */
+[data-theme="dark"] .term{background:var(--ink-2);color:var(--paper)}
+[data-theme="dark"] .term__bar{color:var(--g200);border-bottom-color:rgba(240,239,235,.10)}
+[data-theme="dark"] .term__body{color:var(--g100)}
+[data-theme="dark"] .term__out{border-top-color:rgba(240,239,235,.10)}
+[data-theme="dark"] .term__out p{color:var(--g100)}
 
 /* =========================================================
    08 · COMPARE
