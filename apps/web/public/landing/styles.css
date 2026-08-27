@@ -632,11 +632,13 @@ body::before{
 .switch__pick .chip{padding:10px 16px}
 .term{
   border:1px solid var(--line);border-radius:12px;
-  background:var(--paper-2);
+  background:#fff;
   color:var(--ink);
+  box-shadow:var(--shadow-s);
 }
-.term__bar{padding:14px 20px;border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--g400)}
-.term__body{padding:28px 30px;font-family:var(--mono);font-size:12px;line-height:1.9;letter-spacing:0;color:var(--ink);overflow:auto}
+.term__bar{padding:14px 20px;border-bottom:1px solid var(--line-soft);font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--g400)}
+.term__body{padding:26px 28px;font-family:var(--mono);font-size:14px;line-height:1.85;letter-spacing:0;color:var(--ink);overflow:auto}
+.term__body code{color:var(--ink)}
 .term__out{border-top:1px solid var(--line-soft);padding:24px 30px}
 .term__meta{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:12px}
 .term__out p{font-size:14px;line-height:1.55;color:var(--g400)}
