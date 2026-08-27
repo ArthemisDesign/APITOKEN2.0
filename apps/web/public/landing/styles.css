@@ -286,6 +286,9 @@ body::before{
   border:1px solid var(--line);border-radius:8px;color:var(--fg);cursor:pointer;font-size:15px;line-height:1;
   background:transparent;transition:border-color .2s,background .2s}
 .theme-tgl:hover{border-color:var(--fg)}
+/* on the coral hero plate (light theme) the toggle reads white; after scroll it
+   follows the page theme */
+.hdr:not(.small) .theme-tgl,.hdr:not(.small) .theme-tgl:hover{color:#fff;border-color:rgba(255,255,255,.45)}
 /* dark theme: on the coral hero plate the toggle is dark ink; once the header
    sits on the dark page (scrolled / .small, or anywhere off the plate) it turns red */
 [data-theme="dark"] .theme-tgl,[data-theme="dark"] .theme-tgl:hover{color:var(--accent);border-color:var(--accent-line,rgba(255,106,90,.4))}
@@ -1410,7 +1413,7 @@ body{line-height:1.5}
   margin-left:auto;
 }
 .plate__claim .claim__val{
-  color:var(--ink);
+  color:#fff;
   font-size:clamp(32px,4vw,72px);line-height:1;letter-spacing:-.05em;
 }
 .plate__claim .claim__val em{font-style:normal;font-size:.45em;vertical-align:super;line-height:1;padding-top:.25em;display:inline-block}
