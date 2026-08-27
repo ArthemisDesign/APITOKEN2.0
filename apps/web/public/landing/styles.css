@@ -291,6 +291,26 @@ body::before{
 [data-theme="dark"] .theme-tgl,[data-theme="dark"] .theme-tgl:hover{color:var(--accent);border-color:var(--accent-line,rgba(255,106,90,.4))}
 [data-theme="dark"] .hdr:not(.small) .theme-tgl,[data-theme="dark"] .hdr:not(.small) .theme-tgl:hover{color:var(--ink);border-color:rgba(12,11,17,.4)}
 
+/* Docs pages have no coral hero plate — the header there always follows the
+   page theme instead of the "on the plate" treatment. */
+.page-docs .hdr:not(.small) .brand{color:var(--fg)}
+.page-docs .hdr:not(.small) .brand__mark{background:var(--accent)}
+.page-docs .hdr:not(.small) .nav a{color:var(--muted)}
+.page-docs .hdr:not(.small) .nav a:hover{color:var(--fg)}
+.page-docs .hdr:not(.small) .lnk{color:var(--muted)}
+.page-docs .hdr:not(.small) .lnk:hover{color:var(--fg)}
+.page-docs .hdr:not(.small) .lang{border-color:var(--line);background:transparent}
+.page-docs .hdr:not(.small) .lang__link{color:var(--muted)}
+.page-docs .hdr:not(.small) .lang__link:hover{color:var(--fg)}
+.page-docs .hdr:not(.small) .lang__link.is-active{background:var(--ink);color:#fff}
+.page-docs .hdr:not(.small) .btn{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.page-docs .hdr:not(.small) .btn:hover{background:transparent;color:var(--ink)}
+.page-docs .hdr:not(.small) .burger span{background:var(--fg)}
+.page-docs .hdr:not(.small) .theme-tgl,[data-theme="dark"] .page-docs .hdr:not(.small) .theme-tgl{color:var(--fg);border-color:var(--line)}
+[data-theme="dark"] .page-docs .hdr:not(.small) .lang__link.is-active{background:var(--paper);color:var(--ink)}
+[data-theme="dark"] .page-docs .hdr:not(.small) .btn{background:var(--paper);border-color:var(--paper);color:var(--ink)}
+[data-theme="dark"] .page-docs .hdr:not(.small) .btn:hover{background:transparent;color:var(--paper)}
+
 /* ---------- buttons ---------- */
 .btn{
   display:inline-flex;align-items:center;justify-content:center;
@@ -1602,3 +1622,16 @@ body{line-height:1.5}
   .ftr__brand{grid-column:1/5}
   .ftr__bottom{display:block;text-transform:none;letter-spacing:.02em;font-size:11px}
 }
+
+/* Docs header in the dark theme must win over the "on the coral plate" rules
+   (those live later in the file), so the docs-specific dark header is kept
+   here at the very end where it takes precedence. */
+[data-theme="dark"] .page-docs .hdr:not(.small) .brand{color:var(--fg)}
+[data-theme="dark"] .page-docs .hdr:not(.small) .brand__mark{background:var(--accent)}
+[data-theme="dark"] .page-docs .hdr:not(.small) .nav a{color:var(--muted)}
+[data-theme="dark"] .page-docs .hdr:not(.small) .nav a:hover{color:var(--fg)}
+[data-theme="dark"] .page-docs .hdr:not(.small) .lnk{color:var(--muted)}
+[data-theme="dark"] .page-docs .hdr:not(.small) .lnk:hover{color:var(--fg)}
+[data-theme="dark"] .page-docs .hdr:not(.small) .burger span{background:var(--fg)}
+[data-theme="dark"] .page-docs .hdr:not(.small) .theme-tgl,
+[data-theme="dark"] .page-docs .hdr:not(.small) .theme-tgl:hover{color:var(--accent);border-color:rgba(255,106,90,.4)}
