@@ -612,9 +612,12 @@ observeReveals();
       const href = a.getAttribute('href');
       if(!href) return;
       e.preventDefault();
+      /* slide the switcher thumb to the target language first */
+      const wrap = a.closest('.lang');
+      if(wrap) wrap.dataset.active = /en\.html/.test(href) ? 'en' : 'ru';
       try { sessionStorage.setItem('apitoken-lang-fade', '1'); } catch(e2) {}
       document.documentElement.classList.add('lang-fade');
-      window.setTimeout(function(){ window.location.href = href; }, 170);
+      window.setTimeout(function(){ window.location.href = href; }, 220);
     });
   });
 })();
