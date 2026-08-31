@@ -15,101 +15,308 @@
 </head>
 <body class="page-docs">
 
-<a class="skip" href="#main">Skip to content</a>
+<a class="skip" href="#overview">Skip to content</a>
 
-<!-- ================= HEADER ================= -->
-<header class="hdr" id="hdr">
-  <div class="hdr__in grid">
-    <a class="brand c1-3" href="/landing/en.html"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
-    <nav class="nav c4-9">
-      <a href="/landing/en.html#models">Models</a>
-      <a href="/landing/en.html#explorer">Solutions</a>
-      <a href="/landing/en.html#calc">Pricing</a>
-      <a href="/landing/en.html#integrations">Integrations</a>
-      <a href="/landing/en.html#learn">Guides</a>
-      <a href="/landing/docs-en.html" aria-current="page">Docs</a>
-      <a class="nav__dash" href="/dashboard">Dashboard</a>
-    </nav>
-    <div class="hdr__acts c10-13">
-      <div class="lang" aria-label="Language switcher">
-        <a class="lang__link" href="/landing/docs.html">RU</a>
-        <a class="lang__link is-active" href="/landing/docs-en.html" aria-current="page">EN</a>
-      </div>
-      <button class="theme-tgl" id="themeTgl" aria-label="Переключить тему" title="Тема">☾</button>
-      <a class="lnk" href="#">Log in</a>
-      <a class="btn btn--dark" href="/dashboard">Dashboard</a>
-      <button class="burger" id="burger" aria-label="Menu"><span></span><span></span></button>
+<!-- ================= DOCS SIDEBAR (dashboard style, fixed left) ================= -->
+<aside class="docs-sidebar">
+  <a class="docs-side-brand" href="/landing/en.html"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
+  <span class="docs-sidebar__label">On this page</span>
+  <nav class="docs-sidebar__nav" id="docsNav">
+    <a href="#overview"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>Connect models</a>
+    <a href="#agent-setup"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="11" rx="2.5"/><path d="M12 7V4M9 12h.01M15 12h.01M9.5 15.5h5"/></svg>AI agent setup</a>
+    <a href="#setup-support"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12.5a8 8 0 0 1 16 0"/><path d="M4 12.5v3.2a1.8 1.8 0 0 0 1.8 1.8h1a1.2 1.2 0 0 0 1.2-1.2v-3.6a1.2 1.2 0 0 0-1.2-1.2H4ZM20 12.5v3.2a1.8 1.8 0 0 1-1.8 1.8h-1a1.2 1.2 0 0 1-1.2-1.2v-3.6a1.2 1.2 0 0 1 1.2-1.2H20Z"/><path d="M18.5 17.5v.8a2.7 2.7 0 0 1-2.7 2.7H13"/></svg>Setup support</a>
+    <a href="#quickstart"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11L9.8 22 19 10h-6.5L13 2Z"/></svg>Quick start</a>
+    <a href="#api"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-5 6 5 6M16 6l5 6-5 6M13.5 4l-3 16"/></svg>API</a>
+    <a href="#usage"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3 10h18M7 14.5h4"/></svg>Balance & usage</a>
+    <a href="#models"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 20.5 8v8L12 20.5 3.5 16V8L12 3.5Z"/><path d="M12 12 20.5 8M12 12v8.5M12 12 3.5 8"/></svg>Models & pricing</a>
+    <a href="#gemini-batch"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16M4 12h16M4 16.5h16"/><circle cx="8" cy="7.5" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="10" cy="16.5" r="1.4"/></svg>Gemini Batch</a>
+    <a href="#gemini-files"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5L13.5 3Z"/><path d="M13.5 3v5.5H19M9 13.5h6M9 17h6"/></svg>Gemini files</a>
+    <a href="#errors"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 22 20H2L12 3.5Z"/><path d="M12 10v4.5M12 17.3h.01"/></svg>Errors</a>
+    <a href="#caching"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.8"/><path d="M4.5 5.5v6c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8v-6"/><path d="M4.5 11.5v6c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8v-6"/></svg>Prompt caching</a>
+    <a href="#next"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15M13 6l6 6-6 6"/></svg>Next steps</a>
+  </nav>
+  <div class="docs-side-foot">
+    <div class="lang" aria-label="Language switcher">
+      <a class="lang__link" href="/landing/docs.html">RU</a>
+      <a class="lang__link is-active" href="/landing/docs-en.html" aria-current="page">EN</a>
     </div>
+    <button class="theme-tgl" id="themeTgl" aria-label="Toggle theme" title="Theme">☾</button>
+    <a class="btn btn--dark docs-side-dash" href="/dashboard">Dashboard</a>
   </div>
-</header>
+</aside>
+<button class="docs-side-burger" id="docsSideTgl" aria-label="Section menu" aria-expanded="false"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
 
-<main id="main">
+<!-- ================= DOCS LAYOUT ================= -->
+<div class="docs-layout">
+  <main class="docs-main">
 
-<!-- ================= DOCS HERO ================= -->
-<section class="sec docs-hero">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">00</span>
-      <span class="meta c3-6">Documentation</span>
-      <h1 class="display c1-13">API Documentation — Claude and GPT</h1>
-      <p class="c8-13 secdesc">Model setup, endpoints, request examples, response codes, file uploads and caching.</p>
-    </header>
-
-    <div class="docs-intro grid reveal">
-      <div class="c1-7">
-        <h2 class="docs-h2">Connecting models</h2>
-        <p class="lead">One API key, one endpoint, all available models — native Anthropic, OpenAI and Gemini protocols plus an OpenAI-compatible API for any client.</p>
+    <!-- ============ OVERVIEW ============ -->
+    <section class="docs-hero" id="overview">
+      <div class="docs-hero__in">
+        <div class="docs-hero__copy">
+          <span class="meta">Documentation</span>
+          <h1>Connect any model</h1>
+          <p class="lead">One API key, one endpoint, every available model — native Anthropic, OpenAI, and Gemini protocols plus an OpenAI-compatible API for any client. Your AI agent configures and verifies the connection.</p>
+        </div>
+        <button class="btn docs-copy-page" type="button" data-copy-url="https://apitoken.sale/md/docs">Copy page</button>
       </div>
-      <div class="c8-13 docs-cta">
-        <a class="btn btn--solid" href="https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md" target="_blank" rel="noopener">SKILL.md for AI agent</a>
-        <a class="btn" href="https://t.me/apitokensale" target="_blank" rel="noopener">Help on Telegram</a>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ================= QUICK START ================= -->
-<section class="sec sec--dark" id="quickstart">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">01</span>
-      <span class="meta c3-6">Quick start</span>
-      <h2 class="display c1-13">Connect apiToken to your coding agent.</h2>
-    </header>
+    <!-- ============ AGENT SETUP ============ -->
+    <section class="docs-sec" id="agent-setup">
+      <h2 class="docs-agent-label">For your AI agent</h2>
+      <article class="docs-agent-card">
+        <svg class="docs-agent-card__icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.2"></circle><path d="M12 11v5"></path><circle cx="12" cy="7.8" r=".4" fill="currentColor"></circle></svg>
+        <div class="docs-agent-chip">
+          <p class="docs-agent-prompt" title="Read https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md and follow the instructions to connect this project to apiToken.sale.">Read https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md and follow the instructions to connect this project to apiToken.sale.</p>
+          <button class="docs-agent-chip-btn" type="button" aria-label="Copy" title="Copy" data-copy="Read https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md and follow the instructions to connect this project to apiToken.sale."><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"></path></svg></button>
+          <a class="docs-agent-chip-btn" href="https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md" target="_blank" rel="noopener noreferrer" aria-label="Open the guide" title="Open the guide"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H20v17H7.5A2.5 2.5 0 0 0 5 21.5v-17Z"></path><path d="M5 4.5v17M9 6h7M9 10h7"></path></svg></a>
+        </div>
+      </article>
+    </section>
 
-    <div class="grid reveal">
-      <div class="c1-5">
-        <p class="secdesc">Pick a stack and the exact instructions appear below. The key stays only in this terminal session.</p>
-      </div>
-      <div class="c6-13">
-        <div class="docs-tabs">
-          <button class="tab on" data-tab="claude">Claude Code</button>
-          <button class="tab" data-tab="curl">cURL</button>
-          <button class="tab" data-tab="openai">OpenAI SDK</button>
+    <!-- ============ SETUP SUPPORT ============ -->
+    <section class="docs-sec" id="setup-support">
+      <article class="docs-connect-support">
+        <span class="docs-support-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor"><path d="M21.7 2.3 2.9 10.5c-1.3.5-1.3 1.3-.2 1.7l4.8 1.5 1.8 5.4c.2.7.1 1 .9 1 .6 0 .9-.3 1.2-.6l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.8-.8l3.1-14.9c.4-1.3-.5-1.9-1.7-1.4ZM9.4 13.4l9.4-5.9c.5-.3.9-.1.5.2l-7.7 7-.3 3.1-1.9-4.4Z"></path></svg></span>
+        <div class="docs-support-copy">
+          <h2>Connection help</h2>
+          <p>IDE, SDK, endpoint, models, and request errors.</p>
+        </div>
+        <div class="docs-support-actions">
+          <a class="btn btn--dark" href="https://t.me/apitokensale" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M21.7 2.3 2.9 10.5c-1.3.5-1.3 1.3-.2 1.7l4.8 1.5 1.8 5.4c.2.7.1 1 .9 1 .6 0 .9-.3 1.2-.6l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.8-.8l3.1-14.9c.4-1.3-.5-1.9-1.7-1.4ZM9.4 13.4l9.4-5.9c.5-.3.9-.1.5.2l-7.7 7-.3 3.1-1.9-4.4Z"></path></svg>Telegram</a>
+          <span class="docs-support-online"><i aria-hidden="true"></i>AI 24/7 · human when needed</span>
+        </div>
+      </article>
+    </section>
+
+    <!-- ============ 02 QUICKSTART ============ -->
+    <section class="docs-sec" id="quickstart">
+      <header class="docs-sechead">
+        <span class="docs-secnum">02</span>
+        <div>
+          <h2>Quick start</h2>
+          <p>Connect apiToken.sale to the coding agent that reads, edits, and runs your project. Choose the stack — the exact setup appears below.</p>
+        </div>
+      </header>
+
+      <div class="docs-builder">
+        <div class="docs-builder__head">
+          <span class="meta">Integrations</span>
+          <h3>Connect your coding agent</h3>
+          <p>Pick the provider, coding agent, and operating system — the instructions update instantly.</p>
+        </div>
+
+        <div class="docs-tabs docs-tabs--steps">
+          <button class="tab on" data-tab="claude">Claude · Claude Code</button>
+          <button class="tab" data-tab="gpt">GPT · Codex</button>
+          <button class="tab" data-tab="gemini">Gemini · Gemini CLI</button>
+          <button class="tab" data-tab="kimi">Kimi · Kimi Code</button>
         </div>
 
         <div class="docs-panel active" data-panel="claude">
-          <div class="docs-card">
-            <span class="docs-card__meta">Claude Code · macOS / Linux · zsh · bash · Claude Opus 5</span>
-            <div class="docs-row"><span class="docs-row__lab">Endpoint</span><code>https://router.apitoken.sale</code></div>
-            <p class="docs-note">Run this in the terminal from which you launch Claude Code. An explicit model flag prevents picking up a model from an old login.</p>
-            <pre class="code"><code>unset ANTHROPIC_AUTH_TOKEN
+          <div class="docs-steps">
+            <div class="docs-step">
+              <span class="docs-step__num">1</span>
+              <div class="docs-step__body">
+                <h4>Set up the connection</h4>
+                <p>Run these in the terminal you will launch Claude Code from. The key stays in this session only.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Terminal</span><button type="button" data-copy="unset ANTHROPIC_AUTH_TOKEN&#10;export ANTHROPIC_BASE_URL=&quot;https://router.apitoken.sale&quot;&#10;export ANTHROPIC_API_KEY=&quot;sk-pool-•••&quot;">Copy</button></div>
+                <pre class="code"><code>unset ANTHROPIC_AUTH_TOKEN
 export ANTHROPIC_BASE_URL="https://router.apitoken.sale"
-export ANTHROPIC_API_KEY="sk-pool-•••"
-
-claude --model claude-opus-5</code></pre>
-            <p class="docs-note">In Claude Code/status you should see apiToken.sale as the Anthropic base URL and ANTHROPIC_API_KEY as the key source.</p>
+export ANTHROPIC_API_KEY="sk-pool-•••"</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">2</span>
+              <div class="docs-step__body">
+                <h4>Launch Claude Code</h4>
+                <p>An explicit model flag prevents picking up a model from an old login or project settings.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Launch</span><button type="button" data-copy="claude --model claude-opus-5">Copy</button></div>
+                <pre class="code"><code>claude --model claude-opus-5</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">3</span>
+              <div class="docs-step__body">
+                <h4>Verify inside Claude Code</h4>
+                <p>Status must show apiToken.sale as the Anthropic base URL and ANTHROPIC_API_KEY as the key source.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>In Claude Code</span><button type="button" data-copy="/status">Copy</button></div>
+                <pre class="code"><code>/status</code></pre>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div class="docs-panel" data-panel="curl">
-          <div class="docs-card">
-            <span class="docs-card__meta">Anthropic Messages API · cURL</span>
-            <div class="docs-row"><span class="docs-row__lab">Endpoint</span><code>https://router.apitoken.sale</code></div>
-            <p class="docs-note">Keep the key on the server: an environment variable or secrets manager, never a browser bundle.</p>
-            <pre class="code"><code>export APITOKEN_API_KEY="sk-pool-•••"
+        <div class="docs-panel" data-panel="gpt">
+          <div class="docs-steps">
+            <div class="docs-step">
+              <span class="docs-step__num">1</span>
+              <div class="docs-step__body">
+                <h4>Set up the connection</h4>
+                <p>Codex works through the OpenAI Responses API on the unified router. The key stays in this terminal session only.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Terminal</span><button type="button" data-copy="export OPENAI_BASE_URL=&quot;https://router.apitoken.sale/v1&quot;&#10;export OPENAI_API_KEY=&quot;sk-pool-•••&quot;">Copy</button></div>
+                <pre class="code"><code>export OPENAI_BASE_URL="https://router.apitoken.sale/v1"
+export OPENAI_API_KEY="sk-pool-•••"</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">2</span>
+              <div class="docs-step__body">
+                <h4>Launch Codex</h4>
+                <p>An explicit model flag prevents picking up a model from an old login or project settings.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Launch</span><button type="button" data-copy="codex --model gpt-5.6-sol">Copy</button></div>
+                <pre class="code"><code>codex --model gpt-5.6-sol</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">3</span>
+              <div class="docs-step__body">
+                <h4>Verify the connection</h4>
+                <p>Every catalog model is reachable through the OpenAI-compatible route with the same key.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Verify</span><button type="button" data-copy="codex exec &quot;Reply with exactly: connected&quot;">Copy</button></div>
+                <pre class="code"><code>codex exec "Reply with exactly: connected"</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
 
-curl https://router.apitoken.sale/v1/messages \
+        <div class="docs-panel" data-panel="gemini">
+          <div class="docs-steps">
+            <div class="docs-step">
+              <span class="docs-step__num">1</span>
+              <div class="docs-step__body">
+                <h4>Set up the connection</h4>
+                <p>Gemini CLI works through the native Gemini API on the unified router. The key stays in this terminal session only.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Terminal</span><button type="button" data-copy="export GOOGLE_GEMINI_BASE_URL=&quot;https://router.apitoken.sale&quot;&#10;export GEMINI_API_KEY=&quot;sk-pool-•••&quot;">Copy</button></div>
+                <pre class="code"><code>export GOOGLE_GEMINI_BASE_URL="https://router.apitoken.sale"
+export GEMINI_API_KEY="sk-pool-•••"</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">2</span>
+              <div class="docs-step__body">
+                <h4>Launch Gemini CLI</h4>
+                <p>An explicit model flag prevents picking up a model from an old login or project settings.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Launch</span><button type="button" data-copy="gemini --model gemini-3.6-flash">Copy</button></div>
+                <pre class="code"><code>gemini --model gemini-3.6-flash</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">3</span>
+              <div class="docs-step__body">
+                <h4>Verify the connection</h4>
+                <p>The first model response confirms the key and base URL were picked up.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Verify</span><button type="button" data-copy="gemini -p &quot;Reply with exactly: connected&quot;">Copy</button></div>
+                <pre class="code"><code>gemini -p "Reply with exactly: connected"</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="docs-panel" data-panel="kimi">
+          <div class="docs-steps">
+            <div class="docs-step">
+              <span class="docs-step__num">1</span>
+              <div class="docs-step__body">
+                <h4>Set up the connection</h4>
+                <p>Kimi Code works through the Anthropic Messages API on the unified router. The key stays in this terminal session only.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Terminal</span><button type="button" data-copy="export ANTHROPIC_BASE_URL=&quot;https://router.apitoken.sale&quot;&#10;export ANTHROPIC_API_KEY=&quot;sk-pool-•••&quot;">Copy</button></div>
+                <pre class="code"><code>export ANTHROPIC_BASE_URL="https://router.apitoken.sale"
+export ANTHROPIC_API_KEY="sk-pool-•••"</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">2</span>
+              <div class="docs-step__body">
+                <h4>Launch Kimi Code</h4>
+                <p>An explicit model flag prevents picking up a model from an old login or project settings.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Launch</span><button type="button" data-copy="kimi --model kimi-for-coding">Copy</button></div>
+                <pre class="code"><code>kimi --model kimi-for-coding</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">3</span>
+              <div class="docs-step__body">
+                <h4>Verify the connection</h4>
+                <p>The first model response confirms the key and base URL were picked up.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Verify</span><button type="button" data-copy="/status">Copy</button></div>
+                <pre class="code"><code>/status</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 03 API ============ -->
+    <section class="docs-sec" id="api">
+      <header class="docs-sechead">
+        <span class="docs-secnum">03</span>
+        <div>
+          <h2>One endpoint, every protocol</h2>
+          <p>router.apitoken.sale is the single entry point for all providers. Coding agents and official SDKs get byte-faithful native APIs; any OpenAI-compatible client reaches every catalog model through one universal route. Same sk-pool key, same prepaid balance, everywhere.</p>
+        </div>
+      </header>
+
+      <div class="docs-endpoints">
+        <div class="docs-endpoints-base">
+          <span>Base URL</span>
+          <code>https://router.apitoken.sale</code>
+          <button type="button" data-copy="https://router.apitoken.sale">Copy</button>
+        </div>
+        <div class="docs-endpoints-grid">
+          <article class="docs-endpoint-card">
+            <h3>Native APIs</h3>
+            <p>Byte-faithful provider protocols — for coding agents and official SDKs that need full fidelity: thinking, tool use, prompt caching, provider betas.</p>
+            <ul>
+              <li><b>POST</b><code>/v1/messages</code><span>Anthropic</span></li>
+              <li><b>POST</b><code>/v1/responses</code><span>OpenAI</span></li>
+              <li><b>POST</b><code>/v1beta/models/{model}:generateContent</code><span>Gemini</span></li>
+            </ul>
+          </article>
+          <article class="docs-endpoint-card">
+            <h3>OpenAI-compatible</h3>
+            <p>One universal route for every catalog model — Claude, GPT, and Gemini — from any OpenAI-compatible client or SDK. Unsupported parameters fail closed with a clear 400.</p>
+            <ul>
+              <li><b>POST</b><code>/v1/chat/completions</code><span>Any catalog model</span></li>
+            </ul>
+          </article>
+          <article class="docs-endpoint-card">
+            <h3>Unified catalog</h3>
+            <p>Every enabled model under namespaced IDs — anthropic/*, openai/*, google/*, kimi/*. Bare native IDs keep working while they are unambiguous.</p>
+            <ul>
+              <li><b>GET</b><code>/v1/models</code><span>Any catalog model</span></li>
+            </ul>
+          </article>
+        </div>
+        <p class="docs-footnote">Already integrated? The per-provider endpoints api.apitoken.sale, openai.api.apitoken.sale/v1 and gemini.api.apitoken.sale remain fully supported with the same key and balance — the unified router is the recommended entry for new integrations.</p>
+      </div>
+
+      <div class="docs-guide">
+        <div class="docs-guide__head">
+          <span class="meta">Claude · Native API · cURL</span>
+          <p>The Anthropic Messages API on the unified endpoint — byte-faithful protocol, sk-pool key in x-api-key. SDKs add anthropic-version automatically.</p>
+          <div class="docs-guide__row"><span class="docs-row__lab">Claude</span><code>x-api-key · anthropic-version</code></div>
+          <div class="docs-guide__row"><span class="docs-row__lab">Endpoint</span><code>https://router.apitoken.sale</code></div>
+        </div>
+        <div class="docs-steps">
+          <div class="docs-step">
+            <span class="docs-step__num">1</span>
+            <div class="docs-step__body">
+              <h4>Store the key in the environment</h4>
+              <p>Keep the key on the server: an environment variable or a secrets manager, never a browser bundle. On Windows PowerShell use $env:APITOKEN_API_KEY.</p>
+              <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Terminal</span><button type="button" data-copy="export APITOKEN_API_KEY=&quot;sk-pool-•••&quot;">Copy</button></div>
+              <pre class="code"><code>export APITOKEN_API_KEY="sk-pool-•••"</code></pre>
+            </div>
+          </div>
+          <div class="docs-step">
+            <span class="docs-step__num">2</span>
+            <div class="docs-step__body">
+              <h4>Send the first request</h4>
+              <p>Every available Claude model answers on this route. Get the live list via GET /v1/models on the same endpoint instead of hardcoding IDs.</p>
+              <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>HTTP</span><button type="button" data-copy="curl https://router.apitoken.sale/v1/messages \&#10;  -H &quot;x-api-key: $APITOKEN_API_KEY&quot; \&#10;  -H &quot;anthropic-version: 2023-06-01&quot; \&#10;  -H &quot;Content-Type: application/json&quot; \&#10;  -d '{&quot;model&quot;:&quot;claude-opus-5&quot;,&quot;max_tokens&quot;:1024,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Reply with exactly: connected&quot;}]}'">Copy</button></div>
+              <pre class="code"><code>curl https://router.apitoken.sale/v1/messages \
   -H "x-api-key: $APITOKEN_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
@@ -118,254 +325,592 @@ curl https://router.apitoken.sale/v1/messages \
     "max_tokens": 1024,
     "messages": [{"role": "user", "content": "Reply with exactly: connected"}]
   }'</code></pre>
+            </div>
           </div>
-        </div>
-
-        <div class="docs-panel" data-panel="openai">
-          <div class="docs-card">
-            <span class="docs-card__meta">OpenAI-compatible API · Python</span>
-            <div class="docs-row"><span class="docs-row__lab">Endpoint</span><code>https://router.apitoken.sale/v1/chat/completions</code></div>
-            <pre class="code"><code>from openai import OpenAI
-
-client = OpenAI(
-    base_url="https://router.apitoken.sale/v1",
-    api_key="sk-pool-•••"
-)
-
-res = client.chat.completions.create(
-    model="claude-opus-5",
-    messages=[{"role": "user", "content": "Hello"}]
-)
-print(res.choices[0].message.content)</code></pre>
+          <div class="docs-step">
+            <span class="docs-step__num">3</span>
+            <div class="docs-step__body">
+              <h4>Read balance and usage</h4>
+              <p>The same key reads its own account: GET https://router.apitoken.sale/usage returns the live balance and spend for any window — from and to in RFC3339 UTC (to is exclusive), group_by is one of model, provider, day, day,provider, day,model, api_key. Default is the last 30 days broken down by model. One report covers every catalog provider. cost is what you were charged, list_cost is the provider list price for the same traffic; both are duplicated as exact integer *_nano strings — read money as a string, never as a float. The window is at most 366 days. GET https://router.apitoken.sale/balance returns only the balance.</p>
+              <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>HTTP</span><button type="button" data-copy="curl -sG &quot;https://router.apitoken.sale/usage&quot; \&#10;  -H &quot;x-api-key: $APITOKEN_API_KEY&quot; \&#10;  --data-urlencode &quot;from=2026-08-01T00:00:00Z&quot; \&#10;  --data-urlencode &quot;to=2026-09-01T00:00:00Z&quot; \&#10;  --data-urlencode &quot;group_by=model&quot;">Copy</button></div>
+              <pre class="code"><code>curl -sG "https://router.apitoken.sale/usage" \
+  -H "x-api-key: $APITOKEN_API_KEY" \
+  --data-urlencode "from=2026-08-01T00:00:00Z" \
+  --data-urlencode "to=2026-09-01T00:00:00Z" \
+  --data-urlencode "group_by=model"</code></pre>
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ================= ENDPOINTS ================= -->
-<section class="sec" id="endpoints">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">02</span>
-      <span class="meta c3-6">Endpoints</span>
-      <h2 class="display c1-13">One endpoint, all protocols.</h2>
-    </header>
-
-    <div class="grid reveal">
-      <div class="c1-5">
-        <p class="secdesc"><code>router.apitoken.sale</code> is the single entry point. Coding agents and official SDKs get native byte-for-byte APIs; any OpenAI-compatible client works with the whole catalog through one universal route.</p>
-      </div>
-      <div class="c6-13">
-        <div class="docs-endpoints">
-          <div class="docs-endpoint">
-            <span class="docs-endpoint__method">POST</span>
-            <code>/v1/messages</code>
-            <span class="docs-endpoint__prov">Anthropic</span>
-          </div>
-          <div class="docs-endpoint">
-            <span class="docs-endpoint__method">POST</span>
-            <code>/v1/responses</code>
-            <span class="docs-endpoint__prov">OpenAI</span>
-          </div>
-          <div class="docs-endpoint">
-            <span class="docs-endpoint__method">POST</span>
-            <code>/v1beta/models/{model}:generateContent</code>
-            <span class="docs-endpoint__prov">Gemini</span>
-          </div>
-          <div class="docs-endpoint">
-            <span class="docs-endpoint__method">POST</span>
-            <code>/v1/chat/completions</code>
-            <span class="docs-endpoint__prov">OpenAI-compatible</span>
-          </div>
-          <div class="docs-endpoint">
-            <span class="docs-endpoint__method">GET</span>
-            <code>/v1/models</code>
-            <span class="docs-endpoint__prov">Unified catalog</span>
-          </div>
+    <!-- ============ 04 USAGE / BALANCE ============ -->
+    <section class="docs-sec" id="usage">
+      <header class="docs-sechead">
+        <span class="docs-secnum">04</span>
+        <div>
+          <h2>Balance & usage API</h2>
+          <p>The same key that spends the money reads where it went. One route returns the live balance and exact spend for any window across all providers — no dashboard, no second key.</p>
         </div>
-        <p class="docs-footnote">Per-provider endpoints api.apitoken.sale, openai.api.apitoken.sale/v1 and gemini.api.apitoken.sale are still supported with the same key and balance — the unified router is recommended for new integrations.</p>
-      </div>
-    </div>
-  </div>
-</section>
+      </header>
 
-<!-- ================= MODELS & PRICES ================= -->
-<section class="sec sec--dark" id="models">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">03</span>
-      <span class="meta c3-6">Models and pricing</span>
-      <h2 class="display c1-13">All providers, all models, exact rates.</h2>
-    </header>
-
-    <div class="docs-tables reveal">
-      <h3 class="docs-h3">Claude · Anthropic Messages API</h3>
       <div class="docs-table-wrap">
-        <table class="docs-table">
+        <table class="docs-table docs-table--simple">
           <thead>
-            <tr><th>Model</th><th>ID</th><th>Context</th><th>Max output</th><th>Input</th><th>Cached input</th><th>Cache write</th><th>Output</th></tr>
+            <tr><th>Parameter</th><th>What it sets</th></tr>
           </thead>
           <tbody>
-            <tr><td>Claude Opus 5</td><td>claude-opus-5</td><td>1M</td><td>128K</td><td>$2.5 / $5</td><td>$0.25 / $0.5</td><td>$3.125 / $6.25</td><td>$12.5 / $25</td></tr>
-            <tr><td>Claude Fable 5</td><td>claude-fable-5</td><td>1M</td><td>128K</td><td>$5 / $10</td><td>$0.5 / $1</td><td>$6.25 / $12.5</td><td>$25 / $50</td></tr>
-            <tr><td>Claude Sonnet 5</td><td>claude-sonnet-5</td><td>1M</td><td>128K</td><td>$1.5 / $3</td><td>$0.15 / $0.3</td><td>$1.875 / $3.75</td><td>$7.5 / $15</td></tr>
-            <tr><td>Claude Haiku 4.5</td><td>claude-haiku-4-5</td><td>200K</td><td>64K</td><td>$0.5 / $1</td><td>$0.05 / $0.1</td><td>$0.625 / $1.25</td><td>$2.5 / $5</td></tr>
+            <tr><td>from</td><td>Window start, inclusive. RFC3339 UTC — 2026-08-01T00:00:00Z, an explicit numeric offset, or a bare date 2026-08-01. Defaults to to minus 30 days.</td></tr>
+            <tr><td>to</td><td>Window end, <b>exclusive</b>. Same forms. Defaults to “now”; a future value is clamped to “now”.</td></tr>
+            <tr><td>group_by</td><td>model (default), provider, day, day,provider, day,model, or api_key. List order does not matter, and model,provider is just an alias of model: the model string already names its provider.</td></tr>
           </tbody>
         </table>
       </div>
 
-      <h3 class="docs-h3">GPT · OpenAI Responses API</h3>
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>One request</h3>
+          <p>Send your sk-pool- key in x-api-key (or as Authorization: Bearer). Every entry point serves this route.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>HTTP · Request</span><button type="button" data-copy="curl -sG &quot;https://router.apitoken.sale/usage&quot; \&#10;  -H &quot;x-api-key: $APITOKEN_API_KEY&quot; \&#10;  --data-urlencode &quot;from=2026-08-01T00:00:00Z&quot; \&#10;  --data-urlencode &quot;to=2026-09-01T00:00:00Z&quot; \&#10;  --data-urlencode &quot;group_by=model&quot;">Copy</button></div>
+        <pre class="code"><code>curl -sG "https://router.apitoken.sale/usage" \
+  -H "x-api-key: $APITOKEN_API_KEY" \
+  --data-urlencode "from=2026-08-01T00:00:00Z" \
+  --data-urlencode "to=2026-09-01T00:00:00Z" \
+  --data-urlencode "group_by=model"</code></pre>
+      </article>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>Response</h3>
+          <p>The response echoes the exact window the report was computed for, then the live balance, totals, and one row per group.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>JSON · Response</span><button type="button" data-copy='{"account":"acct_…","from":"2026-08-01T00:00:00Z","to":"2026-09-01T00:00:00Z","group_by":"model"}'>Copy</button></div>
+        <pre class="code"><code>{
+  "account": "acct_…",
+  "from": "2026-08-01T00:00:00Z",
+  "to": "2026-09-01T00:00:00Z",
+  "group_by": "model",
+  "balance": {
+    "balance": "$12.345678",
+    "balance_nano": 12345678000,
+    "reserved_nano": 0,
+    "spent": "$3.210000",
+    "status": "active"
+  },
+  "totals": {
+    "requests": 1804,
+    "cost": "$3.210000",
+    "cost_nano": "3210000000",
+    "list_cost": "$6.420000",
+    "input_tokens": 9000000,
+    "output_tokens": 250000,
+    "cache_read_tokens": 4100000
+  },
+  "data": [
+    {
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "requests": 1200,
+      "cost": "$2.100000",
+      "cost_nano": "2100000000",
+      "list_cost": "$4.200000",
+      "input_tokens": 7000000,
+      "output_tokens": 180000
+    }
+  ]
+}</code></pre>
+      </article>
+
+      <p class="docs-note"><b>Two prices, both exact.</b> cost is what you were charged; list_cost is the provider list price for the same traffic — the difference is your discount. Both are duplicated as integer *_nano strings. Read money as a string, never as a float.</p>
+      <p class="docs-note"><b>Explicit UTC only.</b> Local time without an offset is rejected: guessing the zone would silently shift the boundaries of a money report. The window must be positive and at most 366 days, otherwise you get a 400 with the reason in error.</p>
+      <p class="docs-note"><b>Breakdowns reconcile.</b> Any breakdown of the same window yields the same totals: they are all read from one consistent snapshot. Tokens appear in the model, provider, and day,model breakdowns; plain daily breakdowns carry money and request counts. The day,model breakdown — per-model spend by day — is limited to 92 days and answers 400 beyond that instead of silently dropping rows. Keys are masked. GET /balance returns only the balance.</p>
+    </section>
+
+    <!-- ============ 05 MODELS & PRICING ============ -->
+    <section class="docs-sec" id="models">
+      <header class="docs-sechead">
+        <span class="docs-secnum">05</span>
+        <div>
+          <h2>Models & pricing</h2>
+          <p>All providers, every available model, and exact per-1M-token rates — the official list price vs. what you actually pay at the flat 50% discount.</p>
+        </div>
+      </header>
+
+      <div class="docs-provider-head">
+        <h3>Claude · Anthropic Messages API</h3>
+        <div class="docs-provider-meta">
+          <code>router.apitoken.sale</code>
+          <span>POST /v1/messages</span>
+          <span>x-api-key</span>
+        </div>
+      </div>
       <div class="docs-table-wrap">
         <table class="docs-table">
           <thead>
-            <tr><th>Model</th><th>ID</th><th>Context</th><th>Max output</th><th>Input</th><th>Cached input</th><th>Cache write</th><th>Output</th></tr>
+            <tr><th>Model</th><th>Context</th><th>Max output</th><th>Input</th><th>Cached input</th><th>Cache write</th><th>Output</th></tr>
           </thead>
           <tbody>
-            <tr><td>GPT-5.6 Sol</td><td>gpt-5.6-sol</td><td>400K</td><td>128K</td><td>$2.5 / $5</td><td>$0.25 / $0.5</td><td>$3.125 / $6.25</td><td>$15 / $30</td></tr>
-            <tr><td>GPT-5.6 Terra</td><td>gpt-5.6-terra</td><td>400K</td><td>128K</td><td>$1 / $2</td><td>$0.1 / $0.2</td><td>$1.25 / $2.5</td><td>$6 / $12</td></tr>
-            <tr><td>GPT-5.6 Luna</td><td>gpt-5.6-luna</td><td>400K</td><td>128K</td><td>$0.1 / $0.2</td><td>$0.01 / $0.02</td><td>$0.125 / $0.25</td><td>$0.6 / $1.2</td></tr>
-            <tr><td>GPT Image 2</td><td>gpt-image-2</td><td>per request</td><td>1 image</td><td>$2.5 / $5</td><td>$0.625 / $1.25</td><td>$0 / $0</td><td>$15 / $30</td></tr>
+            <tr><td><span class="docs-model-name">Claude Opus 5 <em class="docs-tag">New</em><code>claude-opus-5</code></span></td><td>1M</td><td>128K</td><td>$2.5 <s>$5</s></td><td>$0.25 <s>$0.5</s></td><td>$3.125 <s>$6.25</s></td><td>$12.5 <s>$25</s></td></tr>
+            <tr><td><span class="docs-model-name">Claude Fable 5<code>claude-fable-5</code></span></td><td>1M</td><td>128K</td><td>$5 <s>$10</s></td><td>$0.5 <s>$1</s></td><td>$6.25 <s>$12.5</s></td><td>$25 <s>$50</s></td></tr>
+            <tr><td><span class="docs-model-name">Claude Opus 4.8<code>claude-opus-4-8</code></span></td><td>1M</td><td>128K</td><td>$2.5 <s>$5</s></td><td>$0.25 <s>$0.5</s></td><td>$3.125 <s>$6.25</s></td><td>$12.5 <s>$25</s></td></tr>
+            <tr><td><span class="docs-model-name">Claude Opus 4.7<code>claude-opus-4-7</code></span></td><td>1M</td><td>128K</td><td>$2.5 <s>$5</s></td><td>$0.25 <s>$0.5</s></td><td>$3.125 <s>$6.25</s></td><td>$12.5 <s>$25</s></td></tr>
+            <tr><td><span class="docs-model-name">Claude Sonnet 5<code>claude-sonnet-5</code></span></td><td>1M</td><td>128K</td><td>$1.5 <s>$3</s></td><td>$0.15 <s>$0.3</s></td><td>$1.875 <s>$3.75</s></td><td>$7.5 <s>$15</s></td></tr>
+            <tr><td><span class="docs-model-name">Claude Sonnet 4.6<code>claude-sonnet-4-6</code></span></td><td>200K</td><td>128K</td><td>$1.5 <s>$3</s></td><td>$0.15 <s>$0.3</s></td><td>$1.875 <s>$3.75</s></td><td>$7.5 <s>$15</s></td></tr>
+            <tr><td><span class="docs-model-name">Claude Haiku 4.5<code>claude-haiku-4-5</code></span></td><td>200K</td><td>64K</td><td>$0.5 <s>$1</s></td><td>$0.05 <s>$0.1</s></td><td>$0.625 <s>$1.25</s></td><td>$2.5 <s>$5</s></td></tr>
           </tbody>
         </table>
       </div>
 
-      <h3 class="docs-h3">Gemini · Google Gemini API</h3>
+      <div class="docs-provider-head">
+        <h3>GPT · OpenAI Responses API</h3>
+        <div class="docs-provider-meta">
+          <code>router.apitoken.sale</code>
+          <span>POST /v1/responses · POST /v1/chat/completions</span>
+          <span>Authorization: Bearer</span>
+        </div>
+      </div>
       <div class="docs-table-wrap">
         <table class="docs-table">
           <thead>
-            <tr><th>Model</th><th>ID</th><th>Context</th><th>Max output</th><th>Input</th><th>Cached input</th><th>Cache write</th><th>Output</th></tr>
+            <tr><th>Model</th><th>Context</th><th>Max output</th><th>Input</th><th>Cached input</th><th>Cache write</th><th>Output</th></tr>
           </thead>
           <tbody>
-            <tr><td>Gemini 3.7 Flash</td><td>gemini-3.7-flash</td><td>1M</td><td>64K</td><td>$0.375 / $0.75</td><td>$0.038 / $0.075</td><td>—</td><td>$1.875 / $3.75</td></tr>
-            <tr><td>Gemini 3.6 Flash</td><td>gemini-3.6-flash</td><td>1M</td><td>64K</td><td>$0.75 / $1.5</td><td>$0.075 / $0.15</td><td>—</td><td>$3.75 / $7.5</td></tr>
-            <tr><td>Gemini 3.5 Flash</td><td>gemini-3.5-flash</td><td>1M</td><td>64K</td><td>$0.75 / $1.5</td><td>$0.075 / $0.15</td><td>—</td><td>$4.5 / $9</td></tr>
-            <tr><td>Gemini 3.1 Pro Preview</td><td>gemini-3.1-pro-preview</td><td>1M</td><td>64K</td><td>$1 / $2</td><td>$0.1 / $0.2</td><td>—</td><td>$6 / $12</td></tr>
+            <tr><td><span class="docs-model-name">GPT-5.6 Sol <em class="docs-tag">New</em><code>gpt-5.6-sol</code></span></td><td>1.05M</td><td>128K</td><td>$2 <s>$4</s></td><td>$0.2 <s>$0.4</s></td><td>$2.5 <s>$5</s></td><td>$10 <s>$20</s></td></tr>
+            <tr><td><span class="docs-model-name">GPT-5.6 Terra<code>gpt-5.6-terra</code></span></td><td>1.05M</td><td>128K</td><td>$1 <s>$2</s></td><td>$0.1 <s>$0.2</s></td><td>$1.25 <s>$2.5</s></td><td>$6 <s>$12</s></td></tr>
+            <tr><td><span class="docs-model-name">GPT-5.6 Luna<code>gpt-5.6-luna</code></span></td><td>1.05M</td><td>128K</td><td>$0.1 <s>$0.2</s></td><td>$0.01 <s>$0.02</s></td><td>$0.125 <s>$0.25</s></td><td>$0.6 <s>$1.2</s></td></tr>
+            <tr><td><span class="docs-model-name">GPT-5.5<code>gpt-5.5</code></span></td><td>1.05M</td><td>128K</td><td>$2.5 <s>$5</s></td><td>$0.25 <s>$0.5</s></td><td>$2.5 <s>$5</s></td><td>$15 <s>$30</s></td></tr>
+            <tr><td><span class="docs-model-name">GPT-5.4<code>gpt-5.4</code></span></td><td>1.05M</td><td>128K</td><td>$1.25 <s>$2.5</s></td><td>$0.125 <s>$0.25</s></td><td>$1.25 <s>$2.5</s></td><td>$7.5 <s>$15</s></td></tr>
+            <tr><td><span class="docs-model-name">GPT Image 2<code>gpt-image-2</code></span></td><td>per request</td><td>1 image</td><td>$2.5 <s>$5</s></td><td>$0.625 <s>$1.25</s></td><td>$0 <s>$0</s></td><td>$15 <s>$30</s></td></tr>
           </tbody>
         </table>
       </div>
-    </div>
 
-    <div class="docs-example grid reveal">
-      <div class="c1-5">
+      <div class="docs-provider-head">
+        <h3>Gemini · Google Gemini API</h3>
+        <div class="docs-provider-meta">
+          <code>router.apitoken.sale</code>
+          <span>POST /v1beta/models/{model}:generateContent</span>
+          <span>x-goog-api-key</span>
+        </div>
+      </div>
+      <div class="docs-table-wrap">
+        <table class="docs-table">
+          <thead>
+            <tr><th>Model</th><th>Context</th><th>Max output</th><th>Input</th><th>Cached input</th><th>Cache write</th><th>Output</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="docs-model-name">Gemini 3.7 Flash <em class="docs-tag">New</em><code>gemini-3.7-flash</code></span></td><td>1M</td><td>64K</td><td>$0.375 <s>$0.75</s></td><td>$0.0375 <s>$0.075</s></td><td>—</td><td>$1.875 <s>$3.75</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 3.6 Flash<code>gemini-3.6-flash</code></span></td><td>1M</td><td>64K</td><td>$0.375 <s>$0.75</s></td><td>$0.0375 <s>$0.075</s></td><td>—</td><td>$1.875 <s>$3.75</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 3.5 Flash<code>gemini-3.5-flash</code></span></td><td>1M</td><td>64K</td><td>$0.75 <s>$1.5</s></td><td>$0.075 <s>$0.15</s></td><td>—</td><td>$4.5 <s>$9</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 3 Flash Preview<code>gemini-3-flash-preview</code></span></td><td>1M</td><td>64K</td><td>$0.25 <s>$0.5</s></td><td>$0.025 <s>$0.05</s></td><td>—</td><td>$1.5 <s>$3</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 3.1 Pro Preview<code>gemini-3.1-pro-preview</code></span></td><td>1M</td><td>64K</td><td>$1 <s>$2</s></td><td>$0.1 <s>$0.2</s></td><td>—</td><td>$6 <s>$12</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 3.1 Flash-Lite<code>gemini-3.1-flash-lite</code></span></td><td>1M</td><td>64K</td><td>$0.125 <s>$0.25</s></td><td>$0.0125 <s>$0.025</s></td><td>—</td><td>$0.75 <s>$1.5</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 2.5 Flash<code>gemini-2.5-flash</code></span></td><td>1M</td><td>64K</td><td>$0.15 <s>$0.3</s></td><td>$0.015 <s>$0.03</s></td><td>—</td><td>$1.25 <s>$2.5</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 2.5 Flash-Lite<code>gemini-2.5-flash-lite</code></span></td><td>1M</td><td>64K</td><td>$0.05 <s>$0.1</s></td><td>$0.005 <s>$0.01</s></td><td>—</td><td>$0.2 <s>$0.4</s></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="docs-provider-head">
+        <h3>Kimi · Anthropic Messages API</h3>
+        <div class="docs-provider-meta">
+          <code>router.apitoken.sale</code>
+          <span>POST /v1/messages</span>
+          <span>x-api-key</span>
+        </div>
+      </div>
+      <div class="docs-table-wrap">
+        <table class="docs-table">
+          <thead>
+            <tr><th>Model</th><th>Context</th><th>Max output</th><th>Input</th><th>Cached input</th><th>Cache write</th><th>Output</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="docs-model-name">Kimi K3 <em class="docs-tag">New</em><code>k3</code></span></td><td>1M</td><td>not published</td><td>$1.5 <s>$3</s></td><td>$0.15 <s>$0.3</s></td><td>$1.5 <s>$3</s></td><td>$7.5 <s>$15</s></td></tr>
+            <tr><td><span class="docs-model-name">Kimi K3 (256K)<code>k3-256k</code></span></td><td>256K</td><td>not published</td><td>$1.5 <s>$3</s></td><td>$0.15 <s>$0.3</s></td><td>$1.5 <s>$3</s></td><td>$7.5 <s>$15</s></td></tr>
+            <tr><td><span class="docs-model-name">Kimi for Coding<code>kimi-for-coding</code></span></td><td>256K</td><td>not published</td><td>$0.475 <s>$0.95</s></td><td>$0.095 <s>$0.19</s></td><td>$0.475 <s>$0.95</s></td><td>$2 <s>$4</s></td></tr>
+            <tr><td><span class="docs-model-name">Kimi for Coding HighSpeed<code>kimi-for-coding-highspeed</code></span></td><td>256K</td><td>not published</td><td>$0.95 <s>$1.9</s></td><td>$0.19 <s>$0.38</s></td><td>$0.95 <s>$1.9</s></td><td>$4 <s>$8</s></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="docs-example">
         <span class="meta">Example · Claude Opus 4.8</span>
-      </div>
-      <div class="c6-13">
         <div class="docs-calc">
           <div class="docs-calc__row"><span>2M input × $5</span><b>$10</b></div>
           <div class="docs-calc__row"><span>400K output × $25</span><b>$10</b></div>
           <div class="docs-calc__row docs-calc__row--total"><span>Official total</span><b>$20</b></div>
           <div class="docs-calc__row docs-calc__row--save"><span>You pay</span><b>$10</b></div>
         </div>
-        <p class="docs-footnote">A $100 top-up gives $200 of official API usage on any model. Rates are per 1M tokens; actual tokens are billed at official rates, then the flat 50% discount is applied.</p>
+        <p class="docs-footnote">A $100 top-up buys $200 of official API usage on any model — every dollar converts at the same rate.</p>
       </div>
-    </div>
-  </div>
-</section>
 
-<!-- ================= FILES IN GEMINI ================= -->
-<section class="sec" id="files">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">04</span>
-      <span class="meta c3-6">Files in Gemini</span>
-      <h2 class="display c1-13">How to send files.</h2>
-    </header>
+      <ul class="docs-notes-list">
+        <li>Rates are per 1M tokens; billing is per actual token at official rates, then the flat 50% discount is subtracted.</li>
+        <li>Thinking/reasoning tokens are billed as output by both providers.</li>
+        <li>GPT requests above 272K input tokens bill at the official long-context rates: 2× input and 1.5× output on the entire request.</li>
+        <li>Gemini rates match Google's official standard paid tier.</li>
+        <li>The live list of available models is always at GET /v1/models on the unified endpoint: one aggregated catalog for all providers.</li>
+      </ul>
+    </section>
 
-    <div class="grid reveal">
-      <div class="c1-5">
-        <p class="secdesc">Gemini is served from a pool of subscriptions, so the file must travel inside the request itself. There is no separate upload step: the Files API is not available.</p>
-      </div>
-      <div class="c6-13">
-        <div class="docs-table-wrap">
-          <table class="docs-table docs-table--simple">
-            <thead>
-              <tr><th>Data type</th><th>Supported</th><th>How to send</th></tr>
-            </thead>
-            <tbody>
-              <tr><td>Images (PNG, JPEG, WebP)</td><td>Yes</td><td><code>inline_data</code> with mime_type and base64. Up to ~23 MB source file.</td></tr>
-              <tr><td>PDF documents</td><td>Yes</td><td><code>inline_data</code> with <code>application/pdf</code>.</td></tr>
-              <tr><td>Text files</td><td>Yes</td><td><code>inline_data</code> with <code>text/plain</code> or just put it in <code>text</code>.</td></tr>
-              <tr><td>Audio</td><td>One model</td><td>Only <code>gemini-3-flash-preview</code>, inline <code>audio/wav</code>.</td></tr>
-              <tr><td>Files API (file_uri)</td><td>No</td><td>Not available. Pass contents inline.</td></tr>
-              <tr><td>cachedContent</td><td>No</td><td>Not available. Pass contents inline.</td></tr>
-            </tbody>
-          </table>
+    <!-- ============ 06 GEMINI BATCH ============ -->
+    <section class="docs-sec" id="gemini-batch">
+      <header class="docs-sechead">
+        <span class="docs-secnum">06</span>
+        <div>
+          <h2>Gemini Batch API</h2>
+          <p>Run many independent Gemini requests asynchronously, poll one durable operation, and retrieve every generated response or per-item error. The same native API works through the unified router and the direct Gemini endpoint.</p>
+          <p>Use the recommended https://router.apitoken.sale or the direct https://gemini.api.apitoken.sale. Only the hostname changes: paths, bodies, and x-goog-api-key authorization are identical. Keep the key on the server only.</p>
         </div>
+      </header>
+
+      <h3 class="docs-h3">Endpoints</h3>
+      <div class="docs-table-wrap">
+        <table class="docs-table docs-table--simple">
+          <thead>
+            <tr><th>Method</th><th>Path</th><th>Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>POST</td><td>/v1beta/models/{model}:batchGenerateContent</td><td>Create an asynchronous operation</td></tr>
+            <tr><td>GET</td><td>/v1beta/batches/{id}</td><td>Check state and retrieve results</td></tr>
+            <tr><td>GET</td><td>/v1beta/batches?pageSize={n}&amp;pageToken={token}</td><td>List this account's operations</td></tr>
+            <tr><td>POST</td><td>/v1beta/batches/{id}:cancel</td><td>Request cancellation; dispatched items may still finish</td></tr>
+            <tr><td>DELETE</td><td>/v1beta/batches/{id}</td><td>Delete a finished operation</td></tr>
+            <tr><td>POST</td><td>/upload/v1beta/files</td><td>Start or resume a resumable JSONL upload</td></tr>
+            <tr><td>GET</td><td>/v1beta/files</td><td>List account-scoped gateway files</td></tr>
+            <tr><td>GET</td><td>/v1beta/files/{id}</td><td>Get file metadata</td></tr>
+            <tr><td>GET</td><td>/v1beta/files/{id}:download</td><td>Stream or range-download an active file</td></tr>
+            <tr><td>DELETE</td><td>/v1beta/files/{id}</td><td>Delete a file with no live references</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>1. Create an inline Batch</h3>
+          <p>Save the returned name (batches/batch-…). Idempotency-Key is optional but recommended: an exact replay returns the same operation, while a different body with the same key returns 409. Without the header every POST creates a new job.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Bash · curl</span><button type="button" data-copy="export APITOKEN_API_KEY=&quot;sk-pool-…&quot;&#10;export GEMINI_BASE=&quot;https://router.apitoken.sale&quot;">Copy</button></div>
+        <pre class="code"><code>export APITOKEN_API_KEY="sk-pool-…"
+export GEMINI_BASE="https://router.apitoken.sale"
+# Direct alternative:
+# export GEMINI_BASE="https://gemini.api.apitoken.sale"
+
+OPERATION=$(curl -fsS \
+  "$GEMINI_BASE/v1beta/models/gemini-3.6-flash:batchGenerateContent" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \
+  -H "content-type: application/json" \
+  -H "Idempotency-Key: product-summary-2026-09-01" \
+  -d '{
+    "batch": {
+      "displayName": "Product summaries",
+      "inputConfig": {
+        "requests": {
+          "requests": [
+            {"request":{"contents":[{"role":"user","parts":[{"text":"Summarize product A."}]}]},"metadata":{"key":"product-a"}},
+            {"request":{"contents":[{"role":"user","parts":[{"text":"Summarize product B."}]}]},"metadata":{"key":"product-b"}}
+          ]
+        }
+      }
+    }
+  }')
+
+BATCH_NAME=$(printf '%s' "$OPERATION" | jq -r .name)
+echo "$BATCH_NAME"</code></pre>
+      </article>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>2. Poll and read every item</h3>
+          <p>Poll with a delay until done=true. Then check state, the string batchStats, and every entry of inlinedResponses. An entry has either a response or an error; a terminal job may contain per-item errors.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Bash · poll</span><button type="button" data-copy="while :; do break; done">Copy</button></div>
+        <pre class="code"><code>while :; do
+  OPERATION=$(curl -fsS \
+    "$GEMINI_BASE/v1beta/$BATCH_NAME" \
+    -H "x-goog-api-key: $APITOKEN_API_KEY")
+  [ "$(printf '%s' "$OPERATION" | jq -r .done)" = "true" ] &amp;&amp; break
+  sleep 5
+done
+
+# Official nested inline results: each entry contains either .response or .error.
+printf '%s' "$OPERATION" | jq '.response.inlinedResponses.inlinedResponses[]'</code></pre>
+      </article>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>3. Parse the terminal operation</h3>
+          <p>Counters arrive as decimal strings — parse them with BigInt. done=true alone does not mean every item succeeded.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>TypeScript</span><button type="button" data-copy="const operation = await response.json();">Copy</button></div>
+        <pre class="code"><code>const operation = await response.json();
+
+if (!operation.done) {
+  console.log("Still running:", operation.metadata?.state);
+  return;
+}
+
+if (operation.error) throw new Error(operation.error.message);
+
+const stats = operation.metadata?.batchStats ?? {};
+const total = BigInt(stats.requestCount ?? "0");
+const failed = BigInt(stats.failedRequestCount ?? "0");
+
+for (const [index, item] of
+    (operation.response?.inlinedResponses?.inlinedResponses ?? []).entries()) {
+  if (item.error) {
+    console.error(index, item.error.status, item.error.message);
+  } else {
+    console.log(index, item.response?.candidates ?? []);
+  }
+}</code></pre>
+      </article>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>4. List, cancel, and delete resources</h3>
+          <p>Use the full batches/{id} name from create. Cancellation is best effort for items already dispatched; delete a Batch only after it reaches a terminal state. Files are account-scoped and cannot be deleted while an active job references them.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Bash · lifecycle</span><button type="button" data-copy="curl -fsS &quot;$GEMINI_BASE/v1beta/batches?pageSize=20&quot; -H &quot;x-goog-api-key: $APITOKEN_API_KEY&quot;">Copy</button></div>
+        <pre class="code"><code># List Batches (save nextPageToken for the next page).
+curl -fsS "$GEMINI_BASE/v1beta/batches?pageSize=20" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+# Read one operation. BATCH_NAME is the complete batches/{id} from create.
+curl -fsS "$GEMINI_BASE/v1beta/$BATCH_NAME" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+# Request cancellation. Items already dispatched may still finish.
+curl -fsS -X POST "$GEMINI_BASE/v1beta/$BATCH_NAME:cancel" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \
+  -H "content-type: application/json" -d '{}'
+
+# Delete only after the operation is terminal.
+curl -fsS -X DELETE "$GEMINI_BASE/v1beta/$BATCH_NAME" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+# Files list supports pageSize, but currently has no pageToken.
+curl -fsS "$GEMINI_BASE/v1beta/files?pageSize=20" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+FILE_ID="file-…" # ID without the files/ prefix
+curl -fsS "$GEMINI_BASE/v1beta/files/$FILE_ID" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+# Public download supports active files up to 20 MiB.
+curl -fsS "$GEMINI_BASE/v1beta/files/$FILE_ID:download" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" -o downloaded.bin
+
+# Deletion fails while a live Batch references the file.
+curl -fsS -X DELETE "$GEMINI_BASE/v1beta/files/$FILE_ID" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"</code></pre>
+      </article>
+
+      <h3 class="docs-h3">Large input via JSONL</h3>
+      <p class="docs-note">Each non-empty line is a standalone JSON object with a correlation key and a request object. Do not wrap lines in an array. Empty lines and CRLF are fine. Upload the file to this gateway and pass the returned files/{id} as inputConfig.fileName.</p>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>Input JSONL format</h3>
+          <p>For file input the key field is required and may be up to 512 bytes. Results preserve input order; keep the key in your own input→output map.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>JSONL</span><button type="button" data-copy='{"key":"product-a","request":{"contents":[{"role":"user","parts":[{"text":"Summarize product A."}]}]}}'>Copy</button></div>
+        <pre class="code"><code>{"key":"product-a","request":{"contents":[{"role":"user","parts":[{"text":"Summarize product A."}]}]}}
+{"key":"product-b","request":{"contents":[{"role":"user","parts":[{"text":"Summarize product B."}]}]}}</code></pre>
+      </article>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>Resumable upload and create via fileName</h3>
+          <p>The returned upload URL is relative. Non-final chunks are exactly 8 MiB at exact offsets; after an ambiguous response, run command=query before retrying. Full output downloads as a stream, and Range gives resumable bounded reads.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Bash · upload</span><button type="button" data-copy="FILE=batch-input.jsonl">Copy</button></div>
+        <pre class="code"><code>FILE=batch-input.jsonl
+SIZE=$(wc -c &lt; "$FILE" | tr -d ' ')
+
+# 1. Start a resumable upload.
+curl -fsS -D upload.headers -o /dev/null \
+  -X POST "$GEMINI_BASE/upload/v1beta/files" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \
+  -H "x-goog-upload-protocol: resumable" \
+  -H "x-goog-upload-command: start" \
+  -H "x-goog-upload-file-name: batch-input.jsonl" \
+  -H "x-goog-upload-header-content-type: application/jsonl" \
+  -H "x-goog-upload-header-content-length: $SIZE"
+
+UPLOAD_PATH=$(awk 'BEGIN{IGNORECASE=1} /^x-goog-upload-url:/{gsub("\r",""); print $2}' upload.headers)
+
+# 2. Upload and finalize this file in one chunk (up to 8 MiB).
+# For larger files, repeat command=upload with exact 8 MiB chunks and
+# increasing x-goog-upload-offset, then use "upload, finalize" on the last chunk.
+curl -fsS "$GEMINI_BASE$UPLOAD_PATH" \
+  -X POST \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \
+  -H "x-goog-upload-protocol: resumable" \
+  -H "x-goog-upload-command: upload, finalize" \
+  -H "x-goog-upload-offset: 0" \
+  -H "content-length: $SIZE" \
+  --data-binary "@$FILE" &gt; uploaded-file.json
+
+FILE_NAME=$(jq -r .file.name uploaded-file.json)
+
+# 3. Use the returned files/{id} as Batch JSONL input.
+curl -fsS \
+  "$GEMINI_BASE/v1beta/models/gemini-3.6-flash:batchGenerateContent" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"batch":{"displayName":"JSONL summaries","inputConfig":{"fileName":"'"$FILE_NAME"'"}}}'</code></pre>
+      </article>
+
+      <h3 class="docs-h3">Limits and retention</h3>
+      <div class="docs-table-wrap">
+        <table class="docs-table docs-table--simple">
+          <thead>
+            <tr><th>Limit</th><th>Value</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Inline create body</td><td>20 MiB</td></tr>
+            <tr><td>Items in one Batch</td><td>No cap. One client job stays one job.</td></tr>
+            <tr><td>Unfinished Batches per account</td><td>100</td></tr>
+            <tr><td>One JSONL line</td><td>20 MiB</td></tr>
+            <tr><td>One upload chunk</td><td>8 MiB</td></tr>
+            <tr><td>Uploaded file TTL</td><td>48 hours</td></tr>
+            <tr><td>Maximum time in queue</td><td>48 hours</td></tr>
+            <tr><td>Terminal result retention</td><td>42 days</td></tr>
+            <tr><td>List page size</td><td>1–1,000</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="docs-note">At create time the account must hold enough balance for a conservative hold of the entire Batch. An accepted job is persisted and may stay queued during temporary capacity shortages. Ultra uses up to 20 durable Batch slots, other plans use 2; starts on one subscription are spaced by a random durable 2–5 second interval. Regular Gemini prices and the account discount apply; there is no separate Batch discount or turnaround guarantee.</p>
+
+      <h3 class="docs-h3">Differences from official Google Batch</h3>
+      <div class="docs-table-wrap">
+        <table class="docs-table docs-table--simple">
+          <thead>
+            <tr><th>Area</th><th>apiToken.sale behavior</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Execution</td><td>Asynchronous non-streaming gateway jobs; this is not Vertex AI Batch, GCS, or BigQuery.</td></tr>
+            <tr><td>Pricing</td><td>Regular Gemini pricing and the account discount. No separate Batch discount or turnaround guarantee.</td></tr>
+            <tr><td>Inline schema</td><td>Both the official InlinedRequests wrapper (requests.requests[]) and a raw array are accepted. Proto-JSON snake_case aliases are accepted.</td></tr>
+            <tr><td>Files</td><td>Files belong to the apiToken.sale account, not a Google Cloud project. Foreign Google files are not accessible.</td></tr>
+            <tr><td>fileData</td><td>Gateway files cannot currently be embedded via fileData. Use JSONL file input, and inlineData for synchronous generation.</td></tr>
+            <tr><td>File output</td><td>File-input jobs publish an ordered encrypted JSONL responsesFile before done=true; inline jobs keep inlinedResponses.</td></tr>
+            <tr><td>Timestamps</td><td>Operation timestamps are RFC 3339 UTC (google-datetime).</td></tr>
+            <tr><td>Unsupported</td><td>No webhooks, embedding/update Batch, image-output models, Google IAM, or Vertex resource semantics.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="docs-h3">Batch errors</h3>
+      <div class="docs-table-wrap">
+        <table class="docs-table docs-table--simple">
+          <thead>
+            <tr><th>Status</th><th>What to do</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>400 INVALID_ARGUMENT</td><td>Fix the JSON, input form choice, JSONL, model, or field. Do not retry an unchanged request.</td></tr>
+            <tr><td>400 INVALID_ARGUMENT / API_KEY_INVALID</td><td>Missing, invalid, or revoked key: the Gemini lane answers 400 with reason API_KEY_INVALID in error.details, like the official Google API (not 401). Send an active sk-pool key in x-goog-api-key and do not retry with a revoked key.</td></tr>
+            <tr><td>402 RESOURCE_EXHAUSTED</td><td>Paid Batch create requires a positive account balance.</td></tr>
+            <tr><td>404 NOT_FOUND</td><td>Wrong, deleted, expired, or foreign job/file; check the full name and account.</td></tr>
+            <tr><td>409 ABORTED</td><td>Idempotency key reused with a different body, or the upload offset did not match.</td></tr>
+            <tr><td>FAILED_PRECONDITION</td><td>Wait for or cancel the Batch before deleting; a live Batch reference also blocks file deletion.</td></tr>
+            <tr><td>429 / 503</td><td>Temporary capacity, quota, or authority limit. Use bounded exponential backoff with jitter.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ 07 FILES IN GEMINI ============ -->
+    <section class="docs-sec" id="gemini-files">
+      <header class="docs-sechead">
+        <span class="docs-secnum">07</span>
+        <div>
+          <h2>Sending files to Gemini</h2>
+          <p>Synchronous generateContent requires inline bytes: files/… from any Google project is invisible to this gateway. For large Gemini Batch input, upload an account-scoped JSONL file to this gateway and pass its returned name as inputConfig.fileName. Uploaded files expire after 48 hours.</p>
+        </div>
+      </header>
+
+      <div class="docs-table-wrap">
+        <table class="docs-table docs-table--simple">
+          <thead>
+            <tr><th>Input</th><th>Supported</th><th>How to send it</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Images (PNG, JPEG, WebP)</td><td>Yes</td><td><code>inline_data</code> with mime_type and base64. Up to ~23 MB of source file.</td></tr>
+            <tr><td>PDF documents</td><td>Yes</td><td><code>inline_data</code> with application/pdf. The model reads the text inside.</td></tr>
+            <tr><td>Text files</td><td>Yes</td><td><code>inline_data</code> with text/plain — or simply paste the text into text.</td></tr>
+            <tr><td>Audio</td><td>All text models</td><td>Any text model, inline audio/wav.</td></td></tr>
+            <tr><td>Files API (file_uri / fileData)</td><td>One model</td><td>Batch JSONL input only: upload to this gateway and pass the returned files/{id} as inputConfig.fileName. fileData embedding is not supported. For synchronous generateContent, inline the bytes.</td></tr>
+            <tr><td>cachedContent</td><td>No</td><td>Not available. Send the content inline.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>Inline request</h3>
+          <p>Upload plus reference becomes a single request. Base64 adds about a third to the size, so our 32 MB body limit fits a source file up to roughly 23 MB.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>JSON · Request</span><button type="button" data-copy='{"contents":[{"role":"user","parts":[{"text":"Describe this file"},{"inline_data":{"mime_type":"image/png","data":"<base64>"}}]}]}'>Copy</button></div>
         <pre class="code"><code>{
   "contents": [
     {
       "role": "user",
       "parts": [
         { "text": "Describe this file" },
-        { "inline_data": { "mime_type": "image/png", "data": "<base64>" } }
+        { "inline_data": { "mime_type": "image/png", "data": "&lt;base64&gt;" } }
       ]
     }
   ]
 }</code></pre>
-        <p class="docs-footnote">Data the gateway cannot accept is rejected before reaching the subscription — 400 INVALID_ARGUMENT. Every error includes an <code>x-request-id</code> header; mention it to support.</p>
-      </div>
-    </div>
-  </div>
-</section>
+      </article>
 
-<!-- ================= RESPONSE CODES ================= -->
-<section class="sec sec--dark" id="codes">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">05</span>
-      <span class="meta c3-6">Response codes</span>
-      <h2 class="display c1-13">Common response codes.</h2>
-    </header>
+      <p class="docs-note"><b>When we refuse.</b> An input this gateway cannot accept is rejected before your request reaches a subscription — 400 INVALID_ARGUMENT with a stable reason in error.details: FILE_URI_UNSUPPORTED, CACHED_CONTENT_UNSUPPORTED, AUDIO_INPUT_UNSUPPORTED. FILE_URI_UNSUPPORTED applies to synchronous generateContent and foreign Google files; Batch can only resolve files uploaded to this gateway under the same account. Such a refusal is final: changing the request is the fix, retrying is not. Every error carries an x-request-id header — quote it to support and we will find your exact request.</p>
+    </section>
 
-    <div class="grid reveal">
-      <div class="c1-5">
-        <p class="secdesc">Each protocol keeps its own error format. 401 and 402 require fixing account state; only retry temporary 429 and 5xx errors automatically.</p>
-      </div>
-      <div class="c6-13">
-        <div class="docs-codes">
-          <div class="docs-code docs-code--bad">
-            <b>401</b>
-            <span>API key missing, invalid or revoked</span>
-            <p>Pass an active sk-pool key in x-api-key. Do not retry with a revoked key.</p>
-          </div>
-          <div class="docs-code docs-code--bad">
-            <b>402</b>
-            <span>Insufficient prepaid balance</span>
-            <p>Top up the account, confirm the balance is credited, then retry.</p>
-          </div>
-          <div class="docs-code docs-code--retry">
-            <b>429</b>
-            <span>Rate limit or temporary provider capacity shortage</span>
-            <p>Respect Retry-After; use bounded exponential backoff with jitter.</p>
-          </div>
-          <div class="docs-code docs-code--retry">
-            <b>5xx</b>
-            <span>Temporary gateway or provider infrastructure error</span>
-            <p>Retry with bounded exponential backoff. Save the request ID.</p>
-          </div>
+    <!-- ============ 08 ERRORS ============ -->
+    <section class="docs-sec" id="errors">
+      <header class="docs-sechead">
+        <span class="docs-secnum">08</span>
+        <div>
+          <h2>Common response codes</h2>
+          <p>On the unified endpoint every protocol keeps its own error envelope: Anthropic lanes return Anthropic's JSON, OpenAI lanes return {"error":{"message","type","param","code"}}, and the Gemini lane returns {"error":{"code","message","status"}}. Treat 401 and 402 as account-state failures; retry only transient 429 and 5xx responses.</p>
         </div>
-      </div>
-    </div>
-  </div>
-</section>
+      </header>
 
-<!-- ================= CACHING ================= -->
-<section class="sec" id="cache">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">06</span>
-      <span class="meta c3-6">Caching</span>
-      <h2 class="display c1-13">Cache the prefix — pay 10% per read.</h2>
-    </header>
-
-    <div class="grid reveal">
-      <div class="c1-5">
-        <h3 class="docs-h3">Claude — explicit cache_control</h3>
-        <p class="secdesc">Cache points are passed through to Anthropic unchanged. Cache write costs 1.25× input price (TTL 5 min) or 2× (TTL 1 hour).</p>
+      <div class="docs-table-wrap">
+        <table class="docs-table docs-table--simple docs-errors">
+          <thead>
+            <tr><th>Status</th><th>Meaning</th><th>What to do</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>401</code></td><td>API key is missing, invalid, or revoked</td><td>Send an active sk-pool key in x-api-key. If it was revoked, create a replacement; do not retry the same key. On the native Gemini lane the same failure arrives as 400 INVALID_ARGUMENT with reason API_KEY_INVALID in error.details — mirroring the official Google API; treat it exactly like a 401.</td></tr>
+            <tr><td><code>402</code></td><td>Available prepaid balance is too low</td><td>Top up the account, confirm the balance is available, then retry. Backoff alone will not resolve a 402.</td></tr>
+            <tr><td><code>429</code></td><td>Rate limit or temporary upstream capacity limit</td><td>Honor Retry-After when present; retry with capped exponential backoff and jitter.</td></tr>
+            <tr><td><code>5xx</code></td><td>Temporary gateway or provider upstream failure</td><td>Retry with bounded exponential backoff. Keep the request ID and avoid unbounded duplicate attempts.</td></tr>
+          </tbody>
+        </table>
       </div>
-      <div class="c6-13">
+    </section>
+
+    <!-- ============ 09 CACHING ============ -->
+    <section class="docs-sec" id="caching">
+      <header class="docs-sechead">
+        <span class="docs-secnum">09</span>
+        <div>
+          <h2>Prompt caching</h2>
+          <p>Cache the large stable prefix once — every later read of it bills at 10% of the input price.</p>
+        </div>
+      </header>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>Claude — explicit cache_control</h3>
+          <p>Breakpoints pass through to Anthropic unchanged. Cache writes bill at 1.25× input (5-minute TTL) or 2× (1-hour TTL — send the anthropic-beta: extended-cache-ttl-2025-04-11 header yourself). Repeat calls of the same prefix are pinned to the warm upstream, so keep the prefix byte-identical.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>JSON · Request</span><button type="button" data-copy='{"model":"claude-opus-4-8","max_tokens":1024,"system":[{"type":"text","text":"Long stable instructions…","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"Short varying question"}]}'>Copy</button></div>
         <pre class="code"><code>{
   "model": "claude-opus-4-8",
   "max_tokens": 1024,
@@ -378,15 +923,14 @@ print(res.choices[0].message.content)</code></pre>
   ],
   "messages": [{ "role": "user", "content": "Short varying question" }]
 }</code></pre>
-      </div>
-    </div>
+      </article>
 
-    <div class="grid reveal docs-row--second">
-      <div class="c1-5">
-        <h3 class="docs-h3">GPT — automatic</h3>
-        <p class="secdesc">Nothing to enable: repeated prefixes are cached server-side. usage.prompt_tokens_details.cached_tokens is billed at 10% of input price.</p>
-      </div>
-      <div class="c6-13">
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>GPT — automatic</h3>
+          <p>No opt-in: repeated prefixes are cached server-side. usage.prompt_tokens_details.cached_tokens (Chat Completions) or input_tokens_details.cached_tokens (Responses) bills at 10% of input automatically.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>JSON · Response</span><button type="button" data-copy='{"usage":{"prompt_tokens":5120,"prompt_tokens_details":{"cached_tokens":4096},"completion_tokens":128}}'>Copy</button></div>
         <pre class="code"><code>{
   "usage": {
     "prompt_tokens": 5120,
@@ -394,26 +938,43 @@ print(res.choices[0].message.content)</code></pre>
     "completion_tokens": 128
   }
 }</code></pre>
+      </article>
+    </section>
+
+    <!-- ============ 10 NEXT ============ -->
+    <section class="docs-sec docs-next" id="next">
+      <header class="docs-sechead">
+        <span class="docs-secnum">10</span>
+        <div>
+          <h2>Next steps</h2>
+          <p>Everything referenced from this page, in one place.</p>
+        </div>
+      </header>
+      <div class="docs-next-grid">
+        <a class="docs-next-card" href="/landing/en.html#models"><strong>Models</strong><span>Exact model IDs, context windows, and token prices.</span></a>
+        <a class="docs-next-card" href="/landing/en.html#calc"><strong>Pricing</strong><span>Top-ups, the flat 50% discount, and how billing works.</span></a>
+        <a class="docs-next-card" href="/landing/en.html#learn"><strong>Guides</strong><span>Step-by-step integration walkthroughs.</span></a>
       </div>
-    </div>
-  </div>
-</section>
+    </section>
+
+    <footer class="docs-footer">apiToken documentation · one router endpoint — native Claude, GPT & Gemini APIs and OpenAI-compatible access</footer>
+
+  </main>
+</div>
 
 <!-- ================= FINAL ================= -->
 <section class="final sec--dark">
   <div class="bleed">
     <h2 class="display display--xxl reveal"><span>All set.</span><span class="ghost">Time to connect.</span></h2>
     <div class="rule grid">
-      <span class="c1-7 final__sub reveal">Start with Claude Code or cURL — the first request takes under a minute.</span>
+      <span class="c1-7 final__sub reveal">Start with Claude Code or cURL — your first request takes under a minute.</span>
       <div class="c8-13 ctas reveal">
-        <a class="btn btn--solid" href="/landing/en.html#calc">Get a B2B quote</a>
+        <a class="btn btn--solid" href="/landing/en.html#calc">Get a B2B offer</a>
         <a class="btn" href="https://t.me/apitokensale" target="_blank" rel="noopener">Contact support</a>
       </div>
     </div>
   </div>
 </section>
-
-</main>
 
 <!-- ================= FOOTER ================= -->
 <footer class="ftr sec--dark">
@@ -422,7 +983,7 @@ print(res.choices[0].message.content)</code></pre>
     <div class="grid ftr__top">
       <div class="c1-5 ftr__brand">
         <a class="brand" href="#"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
-        <p>A platform for access to Claude, GPT and Gemini APIs for developers.</p>
+        <p>The Claude, GPT, and Gemini API access platform for developers.</p>
       </div>
       <div class="ftr__col">
         <span class="ftr__h">Product</span>
@@ -434,20 +995,20 @@ print(res.choices[0].message.content)</code></pre>
       <div class="ftr__col">
         <span class="ftr__h">Developers</span>
         <a href="/landing/docs-en.html">Documentation</a>
-        <a href="/landing/docs-en.html">Quick start</a>
-        <a href="/landing/docs-en.html">API reference</a>
+        <a href="/landing/docs-en.html#quickstart">Quick start</a>
+        <a href="/landing/docs-en.html#api">API reference</a>
         <a href="https://github.com/ArthemisDesign/APITOKEN">GitHub</a>
       </div>
       <div class="ftr__col">
         <span class="ftr__h">Support</span>
         <a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a>
         <a href="#">Status</a>
-        <a href="#">Error codes</a>
+        <a href="/landing/docs-en.html#errors">Error codes</a>
       </div>
       <div class="ftr__col">
         <span class="ftr__h">Legal</span>
-        <a href="#">Terms of Service</a>
-        <a href="#">Privacy Policy</a>
+        <a href="#">Terms of service</a>
+        <a href="#">Privacy policy</a>
       </div>
     </div>
 
@@ -458,11 +1019,6 @@ print(res.choices[0].message.content)</code></pre>
   </div>
 </footer>
 
-<script src="/landing/vendor/gsap.min.js"></script>
-<script src="/landing/vendor/ScrollTrigger.min.js"></script>
-<script src="/landing/vendor/lenis.min.js"></script>
-<script src="/landing/vendor/split-type.min.js"></script>
 <script src="/landing/docs.js"></script>
-<script src="/landing/motion.js"></script>
 </body>
 </html>
