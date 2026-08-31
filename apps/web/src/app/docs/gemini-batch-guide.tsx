@@ -46,11 +46,11 @@ const limits = [
 const differences = [
   ["Execution", "Asynchronous non-streaming gateway jobs; not Vertex AI Batch, GCS or BigQuery.", "Асинхронные непотоковые задания шлюза; это не Vertex AI Batch, GCS или BigQuery."],
   ["Pricing", "Normal Gemini tariff and your account discount. No separate Batch discount or completion SLA.", "Обычный тариф Gemini и скидка аккаунта. Отдельной Batch-скидки и гарантии срока нет."],
-  ["Inline schema", "inputConfig.requests is a direct array. Use the raw HTTP examples below; Google’s InlinedRequests wrapper is not accepted.", "inputConfig.requests — прямой массив. Используйте raw HTTP-примеры ниже; Google-обёртка InlinedRequests не принимается."],
+  ["Inline schema", "Official InlinedRequests wrapping (requests.requests[]) and a raw array are both accepted. Proto-JSON snake_case aliases are accepted.", "Принимаются официальная обёртка InlinedRequests (requests.requests[]) и сырой массив. Алиасы proto-JSON snake_case принимаются."],
   ["Files", "Files belong to your apiToken.sale account, not to a Google Cloud project. Foreign Google files are invisible.", "Файлы принадлежат аккаунту apiToken.sale, а не Google Cloud project. Чужие Google-файлы недоступны."],
   ["fileData", "Gateway files cannot currently be embedded with fileData. Use JSONL file input, or inlineData for synchronous generation.", "Сейчас gateway-файлы нельзя встраивать через fileData. Используйте JSONL file input, а для синхронной генерации — inlineData."],
   ["File output", "File-input jobs publish an ordered encrypted JSONL responsesFile before done=true; inline jobs retain inlinedResponses.", "Задания с файловым вводом публикуют упорядоченный зашифрованный JSONL responsesFile до done=true; inline jobs сохраняют inlinedResponses."],
-  ["Timestamps", "Operation timestamps are Unix-second strings, not RFC 3339.", "Времена operation — строки Unix seconds, не RFC 3339."],
+  ["Timestamps", "Operation timestamps are RFC 3339 UTC (google-datetime).", "Времена operation — RFC 3339 UTC (google-datetime)."],
   ["Unsupported", "No webhooks, embedding/update Batch methods, image-output models, Google IAM or stock Vertex resource semantics.", "Нет webhooks, embedding/update Batch, image-output моделей, Google IAM и Vertex resource semantics."],
 ] as const;
 

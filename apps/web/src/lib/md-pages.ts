@@ -487,6 +487,49 @@ curl ${GEMINI_BASE_URL}/v1beta/models/gemini-3.6-flash:generateContent \\
     "contents": [{"parts": [{"text": "Reply with exactly: connected"}]}]
   }'
 \`\`\`
+
+## Balance and usage API
+
+The same \`sk-pool-…\` key that spends the money reads what it spent — no dashboard, no second credential. Every entry host serves these routes; send the key in \`x-api-key\` (or \`Authorization: Bearer\`).
+
+- \`GET ${API_BASE_URL}/usage\` — live balance and exact spend over any window, across every provider.
+- \`GET ${API_BASE_URL}/balance\` — the balance alone.
+
+Query parameters for \`/usage\`:
+
+| Parameter | What it does |
+|---|---|
+| \`from\` | Start of the window, inclusive. RFC3339 UTC (\`2026-08-01T00:00:00Z\`), an explicit numeric offset, or a bare \`2026-08-01\`. Defaults to \`to\` minus 30 days. |
+| \`to\` | End of the window, exclusive. Same forms. Defaults to now; a future value is clamped to now. |
+| \`group_by\` | \`model\` (default), \`provider\`, \`day\`, \`day,provider\`, \`day,model\` or \`api_key\`. List order does not matter; \`model,provider\` is an alias of \`model\`. |
+
+\`\`\`bash
+curl -sG "${API_BASE_URL}/usage" \\
+  -H "x-api-key: $APITOKEN_API_KEY" \\
+  --data-urlencode "from=2026-08-01T00:00:00Z" \\
+  --data-urlencode "to=2026-09-01T00:00:00Z" \\
+  --data-urlencode "group_by=model"
+\`\`\`
+
+The response echoes the exact interval used, then the live balance, the totals and one row per group:
+
+\`\`\`json
+{
+  "account": "acct_…",
+  "from": "2026-08-01T00:00:00Z",
+  "to": "2026-09-01T00:00:00Z",
+  "group_by": "model",
+  "balance": { "balance": "$12.345678", "balance_nano": 12345678000, "reserved_nano": 0, "spent": "$3.210000", "status": "active" },
+  "totals": { "requests": 1804, "cost": "$3.210000", "cost_nano": "3210000000", "list_cost": "$6.420000", "input_tokens": 9000000, "output_tokens": 250000, "cache_read_tokens": 4100000 },
+  "data": [ { "provider": "anthropic", "model": "claude-opus-4-8", "requests": 1200, "cost": "$2.100000", "cost_nano": "2100000000", "list_cost": "$4.200000", "input_tokens": 7000000, "output_tokens": 180000 } ]
+}
+\`\`\`
+
+Rules:
+
+- \`cost\` is what you were charged; \`list_cost\` is the provider list price for the same traffic — the difference is your discount. Each also comes as an exact integer \`*_nano\` string (nanoUSD). Read money as a string, never as a float.
+- Explicit UTC only: local time without an offset is rejected. The window must be positive and at most 366 days, otherwise the answer is \`400\` with the reason in \`error\`.
+- Every slice of one window sums to the same total (single consistent snapshot). Token counts live in the \`model\`, \`provider\` and \`day,model\` slices; plain \`day\` slices carry money and request counts. \`day,model\` is capped at 92 days and answers \`400\` beyond that. Keys are masked.
 ${GEMINI_BATCH_MARKDOWN}
 
 ## Official SDKs

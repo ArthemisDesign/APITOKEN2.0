@@ -30,10 +30,12 @@ OPERATION=$(curl -fsS \
     "batch": {
       "displayName": "Product summaries",
       "inputConfig": {
-        "requests": [
-          {"request":{"contents":[{"role":"user","parts":[{"text":"Summarize product A."}]}]}},
-          {"request":{"contents":[{"role":"user","parts":[{"text":"Summarize product B."}]}]}}
-        ]
+        "requests": {
+          "requests": [
+            {"request":{"contents":[{"role":"user","parts":[{"text":"Summarize product A."}]}]},"metadata":{"key":"product-a"}},
+            {"request":{"contents":[{"role":"user","parts":[{"text":"Summarize product B."}]}]},"metadata":{"key":"product-b"}}
+          ]
+        }
       }
     }
   }')
@@ -49,8 +51,8 @@ export const GEMINI_BATCH_POLL_CURL = `while :; do
   sleep 5
 done
 
-# Every entry contains either .response or .error.
-printf '%s' "$OPERATION" | jq '.response.inlinedResponses[]'`;
+# Official nested inline results: each entry contains either .response or .error.
+printf '%s' "$OPERATION" | jq '.response.inlinedResponses.inlinedResponses[]'`;
 
 export const GEMINI_BATCH_JSONL = `{"key":"product-a","request":{"contents":[{"role":"user","parts":[{"text":"Summarize product A."}]}]}}
 {"key":"product-b","request":{"contents":[{"role":"user","parts":[{"text":"Summarize product B."}]}]}}`;
@@ -136,7 +138,7 @@ const total = BigInt(stats.requestCount ?? "0");
 const failed = BigInt(stats.failedRequestCount ?? "0");
 
 for (const [index, item] of
-     (operation.response?.inlinedResponses ?? []).entries()) {
+     (operation.response?.inlinedResponses?.inlinedResponses ?? []).entries()) {
   if (item.error) {
     console.error(index, item.error.status, item.error.message);
   } else {

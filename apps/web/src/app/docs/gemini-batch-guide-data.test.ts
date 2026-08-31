@@ -26,7 +26,7 @@ describe("Gemini Batch public documentation contract", () => {
   });
 
   it("keeps copy-paste examples on the exact gateway subset", () => {
-    expect(GEMINI_BATCH_CREATE_CURL).toContain('"requests": [');
+    expect(GEMINI_BATCH_CREATE_CURL).toContain('"requests": {');
     expect(GEMINI_BATCH_CREATE_CURL).toContain("Idempotency-Key");
     expect(GEMINI_BATCH_CREATE_CURL).toContain("x-goog-api-key");
     expect(GEMINI_BATCH_JSONL.split("\n")).toHaveLength(2);

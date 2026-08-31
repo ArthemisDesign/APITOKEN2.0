@@ -23,13 +23,13 @@ curl -fsS "$GEMINI_BASE/v1beta/models/gemini-3.6-flash:batchGenerateContent" \\
   -H "x-goog-api-key: $APITOKEN_API_KEY" \\
   -H "content-type: application/json" \\
   -H "Idempotency-Key: product-summary-2026-09-01" \\
-  -d '{"batch":{"displayName":"Product summaries","inputConfig":{"requests":[
-    {"request":{"contents":[{"parts":[{"text":"Summarize product A."}]}]}},
-    {"request":{"contents":[{"parts":[{"text":"Summarize product B."}]}]}}
-  ]}}}'
+  -d '{"batch":{"displayName":"Product summaries","inputConfig":{"requests":{"requests":[
+    {"request":{"contents":[{"parts":[{"text":"Summarize product A."}]}]},"metadata":{"key":"product-a"}},
+    {"request":{"contents":[{"parts":[{"text":"Summarize product B."}]}]},"metadata":{"key":"product-b"}}
+  ]}}}}'
 \`\`\`
 
-Save the returned \`name\` (\`batches/batch-…\`). Poll \`GET /v1beta/{name}\` with a delay until \`done\` is true. Read every \`response.inlinedResponses[]\` entry: it contains either a complete \`response\` or an item-level \`error\`. \`metadata.batchStats\` counters are decimal strings. \`done: true\` does not by itself mean that every item succeeded.
+Save the returned \`name\` (\`batches/batch-…\`). Poll \`GET /v1beta/{name}\` with a delay until \`done\` is true. Read every \`response.inlinedResponses.inlinedResponses[]\` entry: it contains either a complete \`response\` or an item-level \`error\`. \`metadata.batchStats\` counters are decimal strings. \`done: true\` does not by itself mean that every item succeeded.
 
 \`Idempotency-Key\` is an apiToken.sale extension. Exact replay returns the existing operation; reuse with different content returns \`409 ABORTED\`. Without it, every POST creates another job.
 
@@ -55,9 +55,9 @@ Start a resumable upload with \`POST /upload/v1beta/files\`, \`X-Goog-Upload-Pro
 - Inline create body and one JSONL line: 20 MiB. Up to 100,000 items, 100 nonterminal jobs/account, 8 MiB per upload chunk, 48-hour upload TTL, 48-hour queue deadline, 42-day terminal-result retention.
 - The account must have enough available balance for the complete conservative hold when the Batch is created. Standard Gemini pricing and the normal account discount apply; there is no separate Batch discount or completion-time SLA.
 - This is not Vertex AI Batch: no GCS, BigQuery, Google Cloud IAM, webhooks, embedding/update Batch methods, or image-output Batch models.
-- \`inputConfig.requests\` is a direct array; Google SDK serializers that send an \`InlinedRequests\` wrapper are not accepted. Use the documented raw HTTP schema.
+- Both the official \`InlinedRequests\` wrapper (\`inputConfig.requests.requests[]\`) and a raw request array are accepted; proto-JSON snake_case aliases are accepted.
 - Gateway files belong to the apiToken.sale account, not a Google project. Foreign Google \`files/...\` are invisible. \`fileData\` with gateway files is not currently supported; use JSONL \`fileName\`, or synchronous \`inlineData\`.
-- Inline jobs return \`response.inlinedResponses\`. File-input jobs remain \`done:false\` until an ordered encrypted JSONL output file is atomically published, then return \`metadata.output.responsesFile\`; download that file and correlate each line by \`key\`.
-- Operation times are Unix-second strings, not RFC 3339. Batch list supports \`pageSize\`/\`pageToken\`.
+- Inline jobs return \`response.inlinedResponses.inlinedResponses\`. File-input jobs remain \`done:false\` until an ordered encrypted JSONL output file is atomically published, then return \`metadata.output.responsesFile\`; download that file and correlate each line by \`key\`.
+- Operation timestamps are RFC 3339 UTC (google-datetime). Batch list supports \`pageSize\`/\`pageToken\`.
 - Ultra subscriptions use up to 20 durable Batch slots; every other plan uses 2. Starts on one subscription are separated by a random durable 2–5 second interval.
 - Full file downloads stream; single-range downloads support resumption. A file referenced by live work cannot be deleted.`;
