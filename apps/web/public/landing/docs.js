@@ -77,7 +77,7 @@
     sections.forEach(function(el){ observer.observe(el); });
   }
 
-  /* smooth anchor scrolling with header offset */
+  /* smooth anchor scrolling; on mobile an open sidebar closes on navigate */
   function initAnchors(){
     document.querySelectorAll('a[href^="#"]').forEach(function(a){
       a.addEventListener('click', function(e){
@@ -85,12 +85,23 @@
         const el = document.getElementById(id);
         if(!el) return;
         e.preventDefault();
+        document.body.classList.remove('docs-nav-open');
         const header = document.getElementById('hdr');
         const offset = (header ? header.offsetHeight : 0) + 16;
         const top = el.getBoundingClientRect().top + window.scrollY - offset;
         window.scrollTo({ top: top, behavior: 'smooth' });
         history.replaceState(null, '', '#' + id);
       });
+    });
+  }
+
+  /* mobile: burger toggles the off-canvas sidebar */
+  function initSideToggle(){
+    const btn = document.getElementById('docsSideTgl');
+    if(!btn) return;
+    btn.addEventListener('click', function(){
+      const open = document.body.classList.toggle('docs-nav-open');
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     });
   }
 
@@ -153,6 +164,7 @@
     initDocsTabs();
     initScrollSpy();
     initAnchors();
+    initSideToggle();
     initCopy();
   }
 

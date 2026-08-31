@@ -17,53 +17,37 @@
 
 <a class="skip" href="#overview">К содержимому</a>
 
-<!-- ================= HEADER ================= -->
-<header class="hdr" id="hdr">
-  <div class="hdr__in grid">
-    <a class="brand c1-3" href="/landing/index.html"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
-    <nav class="nav c4-9">
-      <a href="/landing/index.html#models">Модели</a>
-      <a href="/landing/index.html#explorer">Решения</a>
-      <a href="/landing/index.html#calc">Цены</a>
-      <a href="/landing/index.html#integrations">Интеграции</a>
-      <a href="/landing/index.html#learn">Гайды</a>
-      <a href="/landing/docs.html" aria-current="page">Доки</a>
-      <a class="nav__dash" href="/dashboard">Дэшборд</a>
-    </nav>
-    <div class="hdr__acts c10-13">
-      <div class="lang" aria-label="Language switcher">
-        <a class="lang__link is-active" href="/landing/docs.html" aria-current="page">RU</a>
-        <a class="lang__link" href="/landing/docs-en.html">EN</a>
-      </div>
-      <button class="theme-tgl" id="themeTgl" aria-label="Переключить тему" title="Тема">☾</button>
-      <a class="lnk" href="#">Войти</a>
-      <a class="btn btn--dark" href="/dashboard">Дэшборд</a>
-      <button class="burger" id="burger" aria-label="Меню"><span></span><span></span></button>
+<!-- ================= DOCS SIDEBAR (dashboard style, fixed left) ================= -->
+<aside class="docs-sidebar">
+  <a class="docs-side-brand" href="/landing/index.html"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
+  <span class="docs-sidebar__label">На этой странице</span>
+  <nav class="docs-sidebar__nav" id="docsNav">
+    <a href="#overview"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>Подключение моделей</a>
+    <a href="#agent-setup"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="7" width="14" height="11" rx="2.5"/><path d="M12 7V4M9 12h.01M15 12h.01M9.5 15.5h5"/></svg>Настройка через AI‑агента</a>
+    <a href="#setup-support"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12.5a8 8 0 0 1 16 0"/><path d="M4 12.5v3.2a1.8 1.8 0 0 0 1.8 1.8h1a1.2 1.2 0 0 0 1.2-1.2v-3.6a1.2 1.2 0 0 0-1.2-1.2H4ZM20 12.5v3.2a1.8 1.8 0 0 1-1.8 1.8h-1a1.2 1.2 0 0 1-1.2-1.2v-3.6a1.2 1.2 0 0 1 1.2-1.2H20Z"/><path d="M18.5 17.5v.8a2.7 2.7 0 0 1-2.7 2.7H13"/></svg>Помощь с подключением</a>
+    <a href="#quickstart"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11L9.8 22 19 10h-6.5L13 2Z"/></svg>Быстрый старт</a>
+    <a href="#api"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 6-5 6 5 6M16 6l5 6-5 6M13.5 4l-3 16"/></svg>API</a>
+    <a href="#usage"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5.5" width="18" height="13" rx="2.5"/><path d="M3 10h18M7 14.5h4"/></svg>Баланс и расход</a>
+    <a href="#models"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 20.5 8v8L12 20.5 3.5 16V8L12 3.5Z"/><path d="M12 12 20.5 8M12 12v8.5M12 12 3.5 8"/></svg>Модели и цены</a>
+    <a href="#gemini-batch"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5h16M4 12h16M4 16.5h16"/><circle cx="8" cy="7.5" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="10" cy="16.5" r="1.4"/></svg>Gemini Batch</a>
+    <a href="#gemini-files"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5L13.5 3Z"/><path d="M13.5 3v5.5H19M9 13.5h6M9 17h6"/></svg>Файлы в Gemini</a>
+    <a href="#errors"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 22 20H2L12 3.5Z"/><path d="M12 10v4.5M12 17.3h.01"/></svg>Ошибки</a>
+    <a href="#caching"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.8"/><path d="M4.5 5.5v6c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8v-6"/><path d="M4.5 11.5v6c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8v-6"/></svg>Кеширование промптов</a>
+    <a href="#next"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15M13 6l6 6-6 6"/></svg>Дальше</a>
+  </nav>
+  <div class="docs-side-foot">
+    <div class="lang" aria-label="Language switcher">
+      <a class="lang__link is-active" href="/landing/docs.html" aria-current="page">RU</a>
+      <a class="lang__link" href="/landing/docs-en.html">EN</a>
     </div>
+    <button class="theme-tgl" id="themeTgl" aria-label="Переключить тему" title="Тема">☾</button>
+    <a class="btn btn--dark docs-side-dash" href="/dashboard">Дэшборд</a>
   </div>
-</header>
+</aside>
+<button class="docs-side-burger" id="docsSideTgl" aria-label="Меню разделов" aria-expanded="false"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
 
-<!-- ================= DOCS LAYOUT: SIDEBAR + CONTENT ================= -->
+<!-- ================= DOCS LAYOUT ================= -->
 <div class="docs-layout">
-
-  <aside class="docs-sidebar">
-    <span class="docs-sidebar__label">На этой странице</span>
-    <nav class="docs-sidebar__nav" id="docsNav">
-      <a href="#overview">Подключение моделей</a>
-      <a href="#agent-setup">Настройка через AI‑агента</a>
-      <a href="#setup-support">Помощь с подключением</a>
-      <a href="#quickstart">Быстрый старт</a>
-      <a href="#api">API</a>
-      <a href="#usage">Баланс и расход</a>
-      <a href="#models">Модели и цены</a>
-      <a href="#gemini-batch">Gemini Batch</a>
-      <a href="#gemini-files">Файлы в Gemini</a>
-      <a href="#errors">Ошибки</a>
-      <a href="#caching">Кеширование промптов</a>
-      <a href="#next">Дальше</a>
-    </nav>
-  </aside>
-
   <main class="docs-main">
 
     <!-- ============ OVERVIEW ============ -->

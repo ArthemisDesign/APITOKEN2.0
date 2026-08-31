@@ -87,46 +87,67 @@
 [data-theme="dark"] .docs-calc__row b,[data-theme="dark"] .docs-calc__row--save span{color:var(--fg)}
 
 /* ============================================================
-   Docs portal layout — sidebar + single-column main
-   (structure mirrors apitoken.sale/ru/docs, in our design)
+   Docs portal layout — fixed left sidebar (dashboard shell)
+   + single-column main. Structure mirrors apitoken.sale/ru/docs.
    ============================================================ */
 
 .docs-layout{
-  display:grid;grid-template-columns:250px minmax(0,1fr);
   max-width:1280px;margin:0 auto;
-  padding:calc(var(--hdr-h) + clamp(28px,3vw,56px)) clamp(18px,2.5vw,40px) clamp(60px,6vw,110px);
-  gap:clamp(28px,3.5vw,64px);
+  padding:clamp(28px,3vw,56px) clamp(18px,2.5vw,40px) clamp(60px,6vw,110px)
+    calc(264px + clamp(18px,2.5vw,40px));
 }
 
-/* sidebar — same look as the dashboard side nav: card surface, pill items,
+/* sidebar — dashboard-style shell: full-height column pinned to the
+   left edge of the screen, card surface, brand on top, pill items,
    active item on soft accent */
 .docs-sidebar{
-  position:sticky;top:calc(var(--hdr-h) + 20px);
-  align-self:start;display:flex;flex-direction:column;
-  max-height:calc(100vh - var(--hdr-h) - 40px);
-  background:#fff;border:1px solid var(--line);border-radius:var(--r-m);
-  padding:18px 12px;overflow:hidden;
+  position:fixed;top:0;left:0;bottom:0;z-index:70;width:264px;
+  display:flex;flex-direction:column;
+  background:#FBFAF7;border-right:1px solid var(--line);
+  padding:24px 18px;overflow:hidden;overscroll-behavior:contain;
 }
 [data-theme="dark"] .docs-sidebar{background:var(--surface)}
+.docs-side-brand{
+  display:inline-flex;align-items:center;gap:9px;margin:2px 10px 22px;
+  font-weight:600;font-size:17px;letter-spacing:-.03em;color:var(--fg);
+}
+.docs-side-brand sup{font-size:.5em;font-weight:500;vertical-align:super}
 .docs-sidebar__label{
   font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--muted);padding:0 10px;margin-bottom:12px;
+  color:var(--muted);padding:0 10px;margin-bottom:10px;
 }
 .docs-sidebar__nav{
   display:flex;flex-direction:column;gap:3px;flex:1;min-height:0;
-  overflow-y:auto;overscroll-behavior:contain;
+  overflow-y:auto;overscroll-behavior:contain;padding-bottom:10px;
 }
 .docs-sidebar__nav a{
-  display:flex;align-items:center;min-height:36px;padding:9px 12px;
+  display:flex;align-items:center;gap:11px;min-height:38px;padding:10px 12px;
   border:1px solid transparent;border-radius:8px;
   font-family:var(--mono);font-size:12.5px;color:var(--muted);
   transition:background-color .14s,color .14s,border-color .14s;
+}
+.docs-sidebar__nav a svg{
+  width:16px;height:16px;flex:none;opacity:.9;
+  fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;
 }
 .docs-sidebar__nav a:hover{background:var(--paper-2);color:var(--fg)}
 [data-theme="dark"] .docs-sidebar__nav a:hover{background:rgba(240,239,235,.06)}
 .docs-sidebar__nav a.active{
   background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent);
 }
+.docs-side-foot{
+  display:flex;align-items:center;gap:10px;flex:none;margin-top:12px;
+  padding:12px 2px 0;border-top:1px solid var(--line);
+}
+.docs-side-foot .lang{padding:3px;background:transparent;border-color:var(--line)}
+.docs-side-dash{flex:1;padding:9px 14px;font-size:12.5px}
+.docs-side-burger{
+  display:none;position:fixed;top:14px;left:14px;z-index:80;
+  width:42px;height:42px;align-items:center;justify-content:center;
+  border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--fg);
+  cursor:pointer;box-shadow:var(--shadow-s);
+}
+[data-theme="dark"] .docs-side-burger{background:var(--surface)}
 
 /* main column */
 .docs-main{min-width:0}
@@ -417,19 +438,15 @@
   color:var(--accent);margin-bottom:12px;
 }
 
-/* responsive */
+/* responsive — sidebar slides off-canvas, burger opens it */
 @media (max-width:1024px){
-  .docs-layout{grid-template-columns:1fr;padding-top:calc(var(--hdr-h) + 24px)}
+  .docs-layout{padding-left:clamp(18px,2.5vw,40px)}
   .docs-sidebar{
-    position:static;max-height:none;overflow-x:auto;
-    border-bottom:1px solid var(--line);padding-bottom:14px;
+    transform:translateX(-100%);transition:transform .25s ease;
+    box-shadow:var(--shadow-l);
   }
-  .docs-sidebar__nav{flex-direction:row;flex-wrap:nowrap;gap:2px}
-  .docs-sidebar__nav a{
-    white-space:nowrap;border-left:0;border-bottom:2px solid transparent;
-    padding:6px 10px;font-size:12.5px;
-  }
-  .docs-sidebar__nav a.active{border-bottom-color:var(--accent)}
+  body.docs-nav-open .docs-sidebar{transform:none}
+  .docs-side-burger{display:inline-flex}
   .docs-endpoints-grid{grid-template-columns:1fr}
   .docs-next-grid{grid-template-columns:1fr}
   .docs-cta{margin-top:26px}
@@ -437,6 +454,7 @@
 
 @media (max-width:640px){
   .docs-layout{padding-left:16px;padding-right:16px}
+  .docs-hero{padding-top:clamp(48px,10vw,64px)}
   .docs-hero h1{font-size:clamp(26px,8vw,34px)}
   .docs-sechead{flex-direction:column;gap:8px}
   .docs-secnum{padding-top:0}
