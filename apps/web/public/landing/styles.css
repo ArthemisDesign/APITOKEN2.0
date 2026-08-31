@@ -1671,3 +1671,7 @@ body{line-height:1.5}
 [data-theme="dark"] .page-docs .hdr:not(.small) .burger span{background:var(--fg)}
 [data-theme="dark"] .page-docs .hdr:not(.small) .theme-tgl,
 [data-theme="dark"] .page-docs .hdr:not(.small) .theme-tgl:hover{color:var(--accent);border-color:rgba(255,106,90,.4)}
+
+/* ---------- page fade on language switch (apply class before navigating) ---------- */
+html.lang-fade body{opacity:0;transition:opacity .16s ease}
+@media (prefers-reduced-motion:reduce){html.lang-fade body{transition:none}}

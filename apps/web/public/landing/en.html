@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(function(){try{if(localStorage.getItem("apitoken-theme")==="dark")document.documentElement.dataset.theme="dark"}catch(e){}})();</script>
+<script>(function(){try{if(sessionStorage.getItem("apitoken-lang-fade")){sessionStorage.removeItem("apitoken-lang-fade");document.documentElement.classList.add("lang-fade");document.addEventListener("DOMContentLoaded",function(){requestAnimationFrame(function(){requestAnimationFrame(function(){document.documentElement.classList.remove("lang-fade")})})})}}catch(e){}})();</script>
 <title>apiToken — AI API Infrastructure</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

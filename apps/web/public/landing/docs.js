@@ -174,3 +174,19 @@
     init();
   }
 })();
+
+/* language switch: fade the page out before navigating so the swap reads
+   as one smooth transition instead of a hard jump */
+(function(){
+  document.querySelectorAll('.lang__link').forEach(function(a){
+    a.addEventListener('click', function(e){
+      if(a.classList.contains('is-active')) return;
+      const href = a.getAttribute('href');
+      if(!href) return;
+      e.preventDefault();
+      try { sessionStorage.setItem('apitoken-lang-fade', '1'); } catch(e2) {}
+      document.documentElement.classList.add('lang-fade');
+      window.setTimeout(function(){ window.location.href = href; }, 170);
+    });
+  });
+})();
