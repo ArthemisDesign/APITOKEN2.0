@@ -15,7 +15,7 @@
 </head>
 <body class="page-docs">
 
-<a class="skip" href="#main">К содержимому</a>
+<a class="skip" href="#overview">К содержимому</a>
 
 <!-- ================= HEADER ================= -->
 <header class="hdr" id="hdr">
@@ -43,73 +43,296 @@
   </div>
 </header>
 
-<main id="main">
+<!-- ================= DOCS LAYOUT: SIDEBAR + CONTENT ================= -->
+<div class="docs-layout">
 
-<!-- ================= DOCS HERO ================= -->
-<section class="sec docs-hero">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">00</span>
-      <span class="meta c3-6">Документация</span>
-      <h1 class="display c1-13">Документация API — Claude и GPT</h1>
-      <p class="c8-13 secdesc">Подключение моделей, endpoint'ы, примеры запросов и ответов, коды ошибок и кеширование.</p>
-    </header>
+  <aside class="docs-sidebar">
+    <span class="docs-sidebar__label">На этой странице</span>
+    <nav class="docs-sidebar__nav" id="docsNav">
+      <a href="#overview">Подключение моделей</a>
+      <a href="#agent-setup">Настройка через AI‑агента</a>
+      <a href="#setup-support">Помощь с подключением</a>
+      <a href="#quickstart">Быстрый старт</a>
+      <a href="#api">API</a>
+      <a href="#usage">Баланс и расход</a>
+      <a href="#models">Модели и цены</a>
+      <a href="#gemini-batch">Gemini Batch</a>
+      <a href="#gemini-files">Файлы в Gemini</a>
+      <a href="#errors">Ошибки</a>
+      <a href="#caching">Кеширование промптов</a>
+      <a href="#next">Дальше</a>
+    </nav>
+  </aside>
 
-    <div class="docs-intro grid reveal">
-      <div class="c1-7">
-        <h2 class="docs-h2">Подключение моделей</h2>
-        <p class="lead">Один API‑ключ, один endpoint, все доступные модели — нативные протоколы Anthropic, OpenAI и Gemini плюс OpenAI‑совместимый API для любого клиента.</p>
+  <main class="docs-main">
+
+    <!-- ============ OVERVIEW ============ -->
+    <section class="docs-hero" id="overview">
+      <div class="docs-hero__in">
+        <div class="docs-hero__copy">
+          <span class="meta">Документация</span>
+          <h1>Подключение моделей</h1>
+          <p class="lead">Один API‑ключ, один endpoint, все доступные модели — нативные протоколы Anthropic, OpenAI и Gemini плюс OpenAI‑совместимый API для любого клиента. AI‑агент сам настроит и проверит подключение.</p>
+        </div>
+        <button class="btn docs-copy-page" type="button" data-copy-url="https://apitoken.sale/md/docs">Копировать страницу</button>
       </div>
-      <div class="c8-13 docs-cta">
-        <a class="btn btn--solid" href="https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md" target="_blank" rel="noopener">SKILL.md для AI‑агента</a>
-        <a class="btn" href="https://t.me/apitokensale" target="_blank" rel="noopener">Помощь в Telegram</a>
-      </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ================= QUICK START ================= -->
-<section class="sec sec--dark" id="quickstart">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">01</span>
-      <span class="meta c3-6">Быстрый старт</span>
-      <h2 class="display c1-13">Подключите apiToken к coding agent.</h2>
-    </header>
+    <!-- ============ AGENT SETUP ============ -->
+    <section class="docs-sec" id="agent-setup">
+      <h2 class="docs-agent-label">Для вашего AI‑агента</h2>
+      <article class="docs-agent-card">
+        <svg class="docs-agent-card__icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.2"></circle><path d="M12 11v5"></path><circle cx="12" cy="7.8" r=".4" fill="currentColor"></circle></svg>
+        <div class="docs-agent-chip">
+          <p class="docs-agent-prompt" title="Прочитай https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md и следуй инструкциям, чтобы подключить этот проект к apiToken.sale.">Прочитай https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md и следуй инструкциям, чтобы подключить этот проект к apiToken.sale.</p>
+          <button class="docs-agent-chip-btn" type="button" aria-label="Скопировать" title="Скопировать" data-copy="Прочитай https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md и следуй инструкциям, чтобы подключить этот проект к apiToken.sale."><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"></path></svg></button>
+          <a class="docs-agent-chip-btn" href="https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md" target="_blank" rel="noopener noreferrer" aria-label="Открыть инструкцию" title="Открыть инструкцию"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H20v17H7.5A2.5 2.5 0 0 0 5 21.5v-17Z"></path><path d="M5 4.5v17M9 6h7M9 10h7"></path></svg></a>
+        </div>
+      </article>
+    </section>
 
-    <div class="grid reveal">
-      <div class="c1-5">
-        <p class="secdesc">Выберите стек — точная инструкция появится ниже. Ключ останется только в этой сессии терминала.</p>
-      </div>
-      <div class="c6-13">
-        <div class="docs-tabs">
-          <button class="tab on" data-tab="claude">Claude Code</button>
-          <button class="tab" data-tab="curl">cURL</button>
-          <button class="tab" data-tab="openai">OpenAI SDK</button>
+    <!-- ============ SETUP SUPPORT ============ -->
+    <section class="docs-sec" id="setup-support">
+      <article class="docs-connect-support">
+        <span class="docs-support-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor"><path d="M21.7 2.3 2.9 10.5c-1.3.5-1.3 1.3-.2 1.7l4.8 1.5 1.8 5.4c.2.7.1 1 .9 1 .6 0 .9-.3 1.2-.6l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.8-.8l3.1-14.9c.4-1.3-.5-1.9-1.7-1.4ZM9.4 13.4l9.4-5.9c.5-.3.9-.1.5.2l-7.7 7-.3 3.1-1.9-4.4Z"></path></svg></span>
+        <div class="docs-support-copy">
+          <h2>Помощь с подключением</h2>
+          <p>IDE, SDK, endpoint, модели и ошибки запросов.</p>
+        </div>
+        <div class="docs-support-actions">
+          <a class="btn btn--dark" href="https://t.me/apitokensale" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M21.7 2.3 2.9 10.5c-1.3.5-1.3 1.3-.2 1.7l4.8 1.5 1.8 5.4c.2.7.1 1 .9 1 .6 0 .9-.3 1.2-.6l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.8-.8l3.1-14.9c.4-1.3-.5-1.9-1.7-1.4ZM9.4 13.4l9.4-5.9c.5-.3.9-.1.5.2l-7.7 7-.3 3.1-1.9-4.4Z"></path></svg>Telegram</a>
+          <span class="docs-support-online"><i aria-hidden="true"></i>AI 24/7 · человек при необходимости</span>
+        </div>
+      </article>
+    </section>
+
+    <!-- ============ 02 QUICKSTART ============ -->
+    <section class="docs-sec" id="quickstart">
+      <header class="docs-sechead">
+        <span class="docs-secnum">02</span>
+        <div>
+          <h2>Быстрый старт</h2>
+          <p>Подключите apiToken.sale к coding agent, который читает, изменяет и запускает ваш проект. Выберите стек — точная инструкция появится ниже.</p>
+        </div>
+      </header>
+
+      <div class="docs-builder">
+        <div class="docs-builder__head">
+          <span class="meta">Интеграции</span>
+          <h3>Подключите coding agent</h3>
+          <p>Выберите провайдера, coding agent и операционную систему — инструкция обновится сразу.</p>
+        </div>
+
+        <div class="docs-tabs docs-tabs--steps">
+          <button class="tab on" data-tab="claude">Claude · Claude Code</button>
+          <button class="tab" data-tab="gpt">GPT · Codex</button>
+          <button class="tab" data-tab="gemini">Gemini · Gemini CLI</button>
+          <button class="tab" data-tab="kimi">Kimi · Kimi Code</button>
         </div>
 
         <div class="docs-panel active" data-panel="claude">
-          <div class="docs-card">
-            <span class="docs-card__meta">Claude Code · macOS / Linux · zsh · bash · Claude Opus 5</span>
-            <div class="docs-row"><span class="docs-row__lab">Endpoint</span><code>https://router.apitoken.sale</code></div>
-            <p class="docs-note">Выполните в терминале, из которого запустите Claude Code. Явный model flag не даст подхватить модель из старого логина.</p>
-            <pre class="code"><code>unset ANTHROPIC_AUTH_TOKEN
+          <div class="docs-steps">
+            <div class="docs-step">
+              <span class="docs-step__num">1</span>
+              <div class="docs-step__body">
+                <h4>Задайте подключение</h4>
+                <p>Выполните в терминале, из которого запустите Claude Code. Ключ останется только в этой сессии.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Терминал</span><button type="button" data-copy="unset ANTHROPIC_AUTH_TOKEN&#10;export ANTHROPIC_BASE_URL=&quot;https://router.apitoken.sale&quot;&#10;export ANTHROPIC_API_KEY=&quot;sk-pool-•••&quot;">Копировать</button></div>
+                <pre class="code"><code>unset ANTHROPIC_AUTH_TOKEN
 export ANTHROPIC_BASE_URL="https://router.apitoken.sale"
-export ANTHROPIC_API_KEY="sk-pool-•••"
-
-claude --model claude-opus-5</code></pre>
-            <p class="docs-note">В Claude Code/status должны быть apiToken.sale как Anthropic base URL и ANTHROPIC_API_KEY как источник ключа.</p>
+export ANTHROPIC_API_KEY="sk-pool-•••"</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">2</span>
+              <div class="docs-step__body">
+                <h4>Запустите Claude Code</h4>
+                <p>Явный model flag не даст подхватить модель из старого логина или настроек проекта.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Запуск</span><button type="button" data-copy="claude --model claude-opus-5">Копировать</button></div>
+                <pre class="code"><code>claude --model claude-opus-5</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">3</span>
+              <div class="docs-step__body">
+                <h4>Проверьте внутри Claude Code</h4>
+                <p>В статусе должны быть apiToken.sale как Anthropic base URL и ANTHROPIC_API_KEY как источник ключа.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>В Claude Code</span><button type="button" data-copy="/status">Копировать</button></div>
+                <pre class="code"><code>/status</code></pre>
+              </div>
+            </div>
           </div>
         </div>
 
-        <div class="docs-panel" data-panel="curl">
-          <div class="docs-card">
-            <span class="docs-card__meta">Anthropic Messages API · cURL</span>
-            <div class="docs-row"><span class="docs-row__lab">Endpoint</span><code>https://router.apitoken.sale</code></div>
-            <p class="docs-note">Держите ключ на сервере: переменная окружения или менеджер секретов, не браузерный bundle.</p>
-            <pre class="code"><code>export APITOKEN_API_KEY="sk-pool-•••"
+        <div class="docs-panel" data-panel="gpt">
+          <div class="docs-steps">
+            <div class="docs-step">
+              <span class="docs-step__num">1</span>
+              <div class="docs-step__body">
+                <h4>Задайте подключение</h4>
+                <p>Codex работает через OpenAI Responses API на едином router. Ключ останется только в этой сессии терминала.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Терминал</span><button type="button" data-copy="export OPENAI_BASE_URL=&quot;https://router.apitoken.sale/v1&quot;&#10;export OPENAI_API_KEY=&quot;sk-pool-•••&quot;">Копировать</button></div>
+                <pre class="code"><code>export OPENAI_BASE_URL="https://router.apitoken.sale/v1"
+export OPENAI_API_KEY="sk-pool-•••"</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">2</span>
+              <div class="docs-step__body">
+                <h4>Запустите Codex</h4>
+                <p>Явный model flag не даст подхватить модель из старого логина или настроек проекта.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Запуск</span><button type="button" data-copy="codex --model gpt-5.6-sol">Копировать</button></div>
+                <pre class="code"><code>codex --model gpt-5.6-sol</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">3</span>
+              <div class="docs-step__body">
+                <h4>Проверьте подключение</h4>
+                <p>Любая модель каталога доступна через OpenAI‑совместимый маршрут с тем же ключом.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Проверка</span><button type="button" data-copy="codex exec &quot;Reply with exactly: connected&quot;">Копировать</button></div>
+                <pre class="code"><code>codex exec "Reply with exactly: connected"</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
 
-curl https://router.apitoken.sale/v1/messages \
+        <div class="docs-panel" data-panel="gemini">
+          <div class="docs-steps">
+            <div class="docs-step">
+              <span class="docs-step__num">1</span>
+              <div class="docs-step__body">
+                <h4>Задайте подключение</h4>
+                <p>Gemini CLI работает через нативный Gemini API на едином router. Ключ останется только в этой сессии терминала.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Терминал</span><button type="button" data-copy="export GOOGLE_GEMINI_BASE_URL=&quot;https://router.apitoken.sale&quot;&#10;export GEMINI_API_KEY=&quot;sk-pool-•••&quot;">Копировать</button></div>
+                <pre class="code"><code>export GOOGLE_GEMINI_BASE_URL="https://router.apitoken.sale"
+export GEMINI_API_KEY="sk-pool-•••"</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">2</span>
+              <div class="docs-step__body">
+                <h4>Запустите Gemini CLI</h4>
+                <p>Явный model flag не даст подхватить модель из старого логина или настроек проекта.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Запуск</span><button type="button" data-copy="gemini --model gemini-3.6-flash">Копировать</button></div>
+                <pre class="code"><code>gemini --model gemini-3.6-flash</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">3</span>
+              <div class="docs-step__body">
+                <h4>Проверьте подключение</h4>
+                <p>Первый ответ модели подтверждает, что ключ и базовый URL подхвачены.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Проверка</span><button type="button" data-copy="gemini -p &quot;Reply with exactly: connected&quot;">Копировать</button></div>
+                <pre class="code"><code>gemini -p "Reply with exactly: connected"</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="docs-panel" data-panel="kimi">
+          <div class="docs-steps">
+            <div class="docs-step">
+              <span class="docs-step__num">1</span>
+              <div class="docs-step__body">
+                <h4>Задайте подключение</h4>
+                <p>Kimi Code работает через Anthropic Messages API на едином router. Ключ останется только в этой сессии терминала.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Терминал</span><button type="button" data-copy="export ANTHROPIC_BASE_URL=&quot;https://router.apitoken.sale&quot;&#10;export ANTHROPIC_API_KEY=&quot;sk-pool-•••&quot;">Копировать</button></div>
+                <pre class="code"><code>export ANTHROPIC_BASE_URL="https://router.apitoken.sale"
+export ANTHROPIC_API_KEY="sk-pool-•••"</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">2</span>
+              <div class="docs-step__body">
+                <h4>Запустите Kimi Code</h4>
+                <p>Явный model flag не даст подхватить модель из старого логина или настроек проекта.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Запуск</span><button type="button" data-copy="kimi --model kimi-for-coding">Копировать</button></div>
+                <pre class="code"><code>kimi --model kimi-for-coding</code></pre>
+              </div>
+            </div>
+            <div class="docs-step">
+              <span class="docs-step__num">3</span>
+              <div class="docs-step__body">
+                <h4>Проверьте подключение</h4>
+                <p>Первый ответ модели подтверждает, что ключ и базовый URL подхвачены.</p>
+                <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Проверка</span><button type="button" data-copy="/status">Копировать</button></div>
+                <pre class="code"><code>/status</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 03 API ============ -->
+    <section class="docs-sec" id="api">
+      <header class="docs-sechead">
+        <span class="docs-secnum">03</span>
+        <div>
+          <h2>Один endpoint, все протоколы</h2>
+          <p>router.apitoken.sale — единая точка входа для всех провайдеров. Coding‑агенты и официальные SDK получают нативные API байт‑в‑байт; любой OpenAI‑совместимый клиент работает со всеми моделями каталога через один универсальный маршрут. Тот же ключ sk‑pool и тот же предоплаченный баланс.</p>
+        </div>
+      </header>
+
+      <div class="docs-endpoints">
+        <div class="docs-endpoints-base">
+          <span>Base URL</span>
+          <code>https://router.apitoken.sale</code>
+          <button type="button" data-copy="https://router.apitoken.sale">Копировать</button>
+        </div>
+        <div class="docs-endpoints-grid">
+          <article class="docs-endpoint-card">
+            <h3>Нативные API</h3>
+            <p>Протоколы провайдеров байт‑в‑байт — для coding‑агентов и официальных SDK, которым нужна полная точность: thinking, tool use, кеширование промптов, beta‑возможности.</p>
+            <ul>
+              <li><b>POST</b><code>/v1/messages</code><span>Anthropic</span></li>
+              <li><b>POST</b><code>/v1/responses</code><span>OpenAI</span></li>
+              <li><b>POST</b><code>/v1beta/models/{model}:generateContent</code><span>Gemini</span></li>
+            </ul>
+          </article>
+          <article class="docs-endpoint-card">
+            <h3>OpenAI-совместимый</h3>
+            <p>Один универсальный маршрут для всех моделей каталога — Claude, GPT и Gemini — из любого OpenAI‑совместимого клиента или SDK. Неподдерживаемые параметры fail-closed с понятным 400.</p>
+            <ul>
+              <li><b>POST</b><code>/v1/chat/completions</code><span>Любая модель каталога</span></li>
+            </ul>
+          </article>
+          <article class="docs-endpoint-card">
+            <h3>Единый каталог</h3>
+            <p>Все доступные модели с namespaced ID — anthropic/*, openai/*, google/*, kimi/*. Обычные нативные ID продолжают работать, пока они однозначны.</p>
+            <ul>
+              <li><b>GET</b><code>/v1/models</code><span>Любая модель каталога</span></li>
+            </ul>
+          </article>
+        </div>
+        <p class="docs-footnote">Уже подключены? Per-provider endpoint'ы api.apitoken.sale, openai.api.apitoken.sale/v1 и gemini.api.apitoken.sale полностью поддерживаются с тем же ключом и балансом — единый router рекомендован для новых интеграций.</p>
+      </div>
+
+      <div class="docs-guide">
+        <div class="docs-guide__head">
+          <span class="meta">Claude · Native API · cURL</span>
+          <p>Anthropic Messages API на едином endpoint — протокол байт-в-байт, ключ sk-pool в x-api-key. SDK добавляют anthropic-version автоматически.</p>
+          <div class="docs-guide__row"><span class="docs-row__lab">Claude</span><code>x-api-key · anthropic-version</code></div>
+          <div class="docs-guide__row"><span class="docs-row__lab">Endpoint</span><code>https://router.apitoken.sale</code></div>
+        </div>
+        <div class="docs-steps">
+          <div class="docs-step">
+            <span class="docs-step__num">1</span>
+            <div class="docs-step__body">
+              <h4>Сохраните ключ в окружении</h4>
+              <p>Держите ключ на сервере: переменная окружения или менеджер секретов, не браузерный bundle. В Windows PowerShell используйте $env:APITOKEN_API_KEY.</p>
+              <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Терминал</span><button type="button" data-copy="export APITOKEN_API_KEY=&quot;sk-pool-•••&quot;">Копировать</button></div>
+              <pre class="code"><code>export APITOKEN_API_KEY="sk-pool-•••"</code></pre>
+            </div>
+          </div>
+          <div class="docs-step">
+            <span class="docs-step__num">2</span>
+            <div class="docs-step__body">
+              <h4>Отправьте первый запрос</h4>
+              <p>Все доступные модели Claude отвечают на этом маршруте. Актуальный список получайте через GET /v1/models на том же endpoint, а не зашивайте ID в код.</p>
+              <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>HTTP</span><button type="button" data-copy="curl https://router.apitoken.sale/v1/messages \&#10;  -H &quot;x-api-key: $APITOKEN_API_KEY&quot; \&#10;  -H &quot;anthropic-version: 2023-06-01&quot; \&#10;  -H &quot;Content-Type: application/json&quot; \&#10;  -d '{&quot;model&quot;:&quot;claude-opus-5&quot;,&quot;max_tokens&quot;:1024,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Reply with exactly: connected&quot;}]}'">Копировать</button></div>
+              <pre class="code"><code>curl https://router.apitoken.sale/v1/messages \
   -H "x-api-key: $APITOKEN_API_KEY" \
   -H "anthropic-version: 2023-06-01" \
   -H "Content-Type: application/json" \
@@ -118,254 +341,592 @@ curl https://router.apitoken.sale/v1/messages \
     "max_tokens": 1024,
     "messages": [{"role": "user", "content": "Reply with exactly: connected"}]
   }'</code></pre>
+            </div>
           </div>
-        </div>
-
-        <div class="docs-panel" data-panel="openai">
-          <div class="docs-card">
-            <span class="docs-card__meta">OpenAI‑совместимый API · Python</span>
-            <div class="docs-row"><span class="docs-row__lab">Endpoint</span><code>https://router.apitoken.sale/v1/chat/completions</code></div>
-            <pre class="code"><code>from openai import OpenAI
-
-client = OpenAI(
-    base_url="https://router.apitoken.sale/v1",
-    api_key="sk-pool-•••"
-)
-
-res = client.chat.completions.create(
-    model="claude-opus-5",
-    messages=[{"role": "user", "content": "Hello"}]
-)
-print(res.choices[0].message.content)</code></pre>
+          <div class="docs-step">
+            <span class="docs-step__num">3</span>
+            <div class="docs-step__body">
+              <h4>Считайте баланс и расход</h4>
+              <p>Тот же ключ читает свой аккаунт: GET https://router.apitoken.sale/usage возвращает живой баланс и расход за любое окно — from и to в RFC3339 UTC (to не включается), group_by — одно из model, provider, day, day,provider, day,model, api_key. По умолчанию — последние 30 дней в разрезе моделей. Один отчёт покрывает всех провайдеров каталога. cost — что списано с вас, list_cost — прайс провайдера за тот же трафик; оба дублируются точной целой строкой *_nano — читайте деньги как строку, не как float. Окно не длиннее 366 дней. GET https://router.apitoken.sale/balance отдаёт только баланс.</p>
+              <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>HTTP</span><button type="button" data-copy="curl -sG &quot;https://router.apitoken.sale/usage&quot; \&#10;  -H &quot;x-api-key: $APITOKEN_API_KEY&quot; \&#10;  --data-urlencode &quot;from=2026-08-01T00:00:00Z&quot; \&#10;  --data-urlencode &quot;to=2026-09-01T00:00:00Z&quot; \&#10;  --data-urlencode &quot;group_by=model&quot;">Копировать</button></div>
+              <pre class="code"><code>curl -sG "https://router.apitoken.sale/usage" \
+  -H "x-api-key: $APITOKEN_API_KEY" \
+  --data-urlencode "from=2026-08-01T00:00:00Z" \
+  --data-urlencode "to=2026-09-01T00:00:00Z" \
+  --data-urlencode "group_by=model"</code></pre>
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  </div>
-</section>
+    </section>
 
-<!-- ================= ENDPOINTS ================= -->
-<section class="sec" id="endpoints">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">02</span>
-      <span class="meta c3-6">Endpoint'ы</span>
-      <h2 class="display c1-13">Один endpoint, все протоколы.</h2>
-    </header>
-
-    <div class="grid reveal">
-      <div class="c1-5">
-        <p class="secdesc"><code>router.apitoken.sale</code> — единая точка входа. Coding‑агенты и официальные SDK получают нативные API байт‑в‑байт; любой OpenAI‑совместимый клиент работает со всеми моделями каталога через один универсальный маршрут.</p>
-      </div>
-      <div class="c6-13">
-        <div class="docs-endpoints">
-          <div class="docs-endpoint">
-            <span class="docs-endpoint__method">POST</span>
-            <code>/v1/messages</code>
-            <span class="docs-endpoint__prov">Anthropic</span>
-          </div>
-          <div class="docs-endpoint">
-            <span class="docs-endpoint__method">POST</span>
-            <code>/v1/responses</code>
-            <span class="docs-endpoint__prov">OpenAI</span>
-          </div>
-          <div class="docs-endpoint">
-            <span class="docs-endpoint__method">POST</span>
-            <code>/v1beta/models/{model}:generateContent</code>
-            <span class="docs-endpoint__prov">Gemini</span>
-          </div>
-          <div class="docs-endpoint">
-            <span class="docs-endpoint__method">POST</span>
-            <code>/v1/chat/completions</code>
-            <span class="docs-endpoint__prov">OpenAI‑совместимый</span>
-          </div>
-          <div class="docs-endpoint">
-            <span class="docs-endpoint__method">GET</span>
-            <code>/v1/models</code>
-            <span class="docs-endpoint__prov">Единый каталог</span>
-          </div>
+    <!-- ============ 04 USAGE / BALANCE ============ -->
+    <section class="docs-sec" id="usage">
+      <header class="docs-sechead">
+        <span class="docs-secnum">04</span>
+        <div>
+          <h2>API баланса и расхода</h2>
+          <p>Тот же ключ, который тратит деньги, читает, на что они ушли. Один маршрут отдаёт живой баланс и точный расход за любое окно по всем провайдерам — без личного кабинета и без второго ключа.</p>
         </div>
-        <p class="docs-footnote">Per-provider endpoint'ы api.apitoken.sale, openai.api.apitoken.sale/v1 и gemini.api.apitoken.sale поддерживаются с тем же ключом и балансом — единый router рекомендован для новых интеграций.</p>
-      </div>
-    </div>
-  </div>
-</section>
+      </header>
 
-<!-- ================= MODELS & PRICES ================= -->
-<section class="sec sec--dark" id="models">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">03</span>
-      <span class="meta c3-6">Модели и цены</span>
-      <h2 class="display c1-13">Все провайдеры, все модели, точные ставки.</h2>
-    </header>
-
-    <div class="docs-tables reveal">
-      <h3 class="docs-h3">Claude · Anthropic Messages API</h3>
       <div class="docs-table-wrap">
-        <table class="docs-table">
+        <table class="docs-table docs-table--simple">
           <thead>
-            <tr><th>Модель</th><th>ID</th><th>Контекст</th><th>Макс. вывод</th><th>Ввод</th><th>Кеш. ввод</th><th>Запись в кеш</th><th>Вывод</th></tr>
+            <tr><th>Параметр</th><th>Что задаёт</th></tr>
           </thead>
           <tbody>
-            <tr><td>Claude Opus 5</td><td>claude-opus-5</td><td>1M</td><td>128K</td><td>$2.5 / $5</td><td>$0.25 / $0.5</td><td>$3.125 / $6.25</td><td>$12.5 / $25</td></tr>
-            <tr><td>Claude Fable 5</td><td>claude-fable-5</td><td>1M</td><td>128K</td><td>$5 / $10</td><td>$0.5 / $1</td><td>$6.25 / $12.5</td><td>$25 / $50</td></tr>
-            <tr><td>Claude Sonnet 5</td><td>claude-sonnet-5</td><td>1M</td><td>128K</td><td>$1.5 / $3</td><td>$0.15 / $0.3</td><td>$1.875 / $3.75</td><td>$7.5 / $15</td></tr>
-            <tr><td>Claude Haiku 4.5</td><td>claude-haiku-4-5</td><td>200K</td><td>64K</td><td>$0.5 / $1</td><td>$0.05 / $0.1</td><td>$0.625 / $1.25</td><td>$2.5 / $5</td></tr>
+            <tr><td>from</td><td>Начало окна, включительно. RFC3339 UTC — 2026-08-01T00:00:00Z, явный числовой offset или голая дата 2026-08-01. По умолчанию — to минус 30 дней.</td></tr>
+            <tr><td>to</td><td>Конец окна, <b>не включается</b>. Те же формы. По умолчанию — «сейчас»; будущее значение подрезается до «сейчас».</td></tr>
+            <tr><td>group_by</td><td>model (по умолчанию), provider, day, day,provider, day,model или api_key. Порядок в списке не важен, а model,provider — просто псевдоним model: строка модели и так называет своего провайдера.</td></tr>
           </tbody>
         </table>
       </div>
 
-      <h3 class="docs-h3">GPT · OpenAI Responses API</h3>
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>Один запрос</h3>
+          <p>Передайте свой ключ sk-pool- в x-api-key (или как Authorization: Bearer). Маршрут обслуживают все точки входа.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>HTTP · Request</span><button type="button" data-copy="curl -sG &quot;https://router.apitoken.sale/usage&quot; \&#10;  -H &quot;x-api-key: $APITOKEN_API_KEY&quot; \&#10;  --data-urlencode &quot;from=2026-08-01T00:00:00Z&quot; \&#10;  --data-urlencode &quot;to=2026-09-01T00:00:00Z&quot; \&#10;  --data-urlencode &quot;group_by=model&quot;">Копировать</button></div>
+        <pre class="code"><code>curl -sG "https://router.apitoken.sale/usage" \
+  -H "x-api-key: $APITOKEN_API_KEY" \
+  --data-urlencode "from=2026-08-01T00:00:00Z" \
+  --data-urlencode "to=2026-09-01T00:00:00Z" \
+  --data-urlencode "group_by=model"</code></pre>
+      </article>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>Ответ</h3>
+          <p>В ответе эхом возвращается ровно то окно, по которому посчитан отчёт, затем живой баланс, итоги и по строке на группу.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>JSON · Response</span><button type="button" data-copy='{"account":"acct_…","from":"2026-08-01T00:00:00Z","to":"2026-09-01T00:00:00Z","group_by":"model"}'>Копировать</button></div>
+        <pre class="code"><code>{
+  "account": "acct_…",
+  "from": "2026-08-01T00:00:00Z",
+  "to": "2026-09-01T00:00:00Z",
+  "group_by": "model",
+  "balance": {
+    "balance": "$12.345678",
+    "balance_nano": 12345678000,
+    "reserved_nano": 0,
+    "spent": "$3.210000",
+    "status": "active"
+  },
+  "totals": {
+    "requests": 1804,
+    "cost": "$3.210000",
+    "cost_nano": "3210000000",
+    "list_cost": "$6.420000",
+    "input_tokens": 9000000,
+    "output_tokens": 250000,
+    "cache_read_tokens": 4100000
+  },
+  "data": [
+    {
+      "provider": "anthropic",
+      "model": "claude-opus-4-8",
+      "requests": 1200,
+      "cost": "$2.100000",
+      "cost_nano": "2100000000",
+      "list_cost": "$4.200000",
+      "input_tokens": 7000000,
+      "output_tokens": 180000
+    }
+  ]
+}</code></pre>
+      </article>
+
+      <p class="docs-note"><b>Две цены, обе точные.</b> cost — что списано с вас; list_cost — прайс провайдера за тот же трафик, разница и есть ваша скидка. Обе дублируются целой строкой *_nano. Читайте деньги как строку, никогда как float.</p>
+      <p class="docs-note"><b>Только явный UTC.</b> Локальное время без offset отклоняется: догадка о зоне молча сдвинула бы границы денежного отчёта. Окно должно быть положительным и не длиннее 366 дней, иначе придёт 400 с причиной в error.</p>
+      <p class="docs-note"><b>Разрезы сходятся.</b> Любой разрез одного окна даёт тот же итог: все они читаются из одного согласованного снимка. Токены есть в разрезах model, provider и day,model; простые дневные разрезы несут деньги и число запросов. Разрез day,model — расход по каждой модели по дням — ограничен 92 днями и за этой границей отвечает 400, а не молча теряет строки. Ключи маскируются. GET /balance отдаёт только баланс.</p>
+    </section>
+
+    <!-- ============ 05 MODELS & PRICING ============ -->
+    <section class="docs-sec" id="models">
+      <header class="docs-sechead">
+        <span class="docs-secnum">05</span>
+        <div>
+          <h2>Модели и цены</h2>
+          <p>Все провайдеры, все доступные модели и точные ставки за 1M токенов — официальная цена против той, что платите вы с единой скидкой 50%.</p>
+        </div>
+      </header>
+
+      <div class="docs-provider-head">
+        <h3>Claude · Anthropic Messages API</h3>
+        <div class="docs-provider-meta">
+          <code>router.apitoken.sale</code>
+          <span>POST /v1/messages</span>
+          <span>x-api-key</span>
+        </div>
+      </div>
       <div class="docs-table-wrap">
         <table class="docs-table">
           <thead>
-            <tr><th>Модель</th><th>ID</th><th>Контекст</th><th>Макс. вывод</th><th>Ввод</th><th>Кеш. ввод</th><th>Запись в кеш</th><th>Вывод</th></tr>
+            <tr><th>Модель</th><th>Контекст</th><th>Макс. вывод</th><th>Ввод</th><th>Кеш. ввод</th><th>Запись в кеш</th><th>Вывод</th></tr>
           </thead>
           <tbody>
-            <tr><td>GPT-5.6 Sol</td><td>gpt-5.6-sol</td><td>400K</td><td>128K</td><td>$2.5 / $5</td><td>$0.25 / $0.5</td><td>$3.125 / $6.25</td><td>$15 / $30</td></tr>
-            <tr><td>GPT-5.6 Terra</td><td>gpt-5.6-terra</td><td>400K</td><td>128K</td><td>$1 / $2</td><td>$0.1 / $0.2</td><td>$1.25 / $2.5</td><td>$6 / $12</td></tr>
-            <tr><td>GPT-5.6 Luna</td><td>gpt-5.6-luna</td><td>400K</td><td>128K</td><td>$0.1 / $0.2</td><td>$0.01 / $0.02</td><td>$0.125 / $0.25</td><td>$0.6 / $1.2</td></tr>
-            <tr><td>GPT Image 2</td><td>gpt-image-2</td><td>per request</td><td>1 image</td><td>$2.5 / $5</td><td>$0.625 / $1.25</td><td>$0 / $0</td><td>$15 / $30</td></tr>
+            <tr><td><span class="docs-model-name">Claude Opus 5 <em class="docs-tag">Новая</em><code>claude-opus-5</code></span></td><td>1M</td><td>128K</td><td>$2.5 <s>$5</s></td><td>$0.25 <s>$0.5</s></td><td>$3.125 <s>$6.25</s></td><td>$12.5 <s>$25</s></td></tr>
+            <tr><td><span class="docs-model-name">Claude Fable 5<code>claude-fable-5</code></span></td><td>1M</td><td>128K</td><td>$5 <s>$10</s></td><td>$0.5 <s>$1</s></td><td>$6.25 <s>$12.5</s></td><td>$25 <s>$50</s></td></tr>
+            <tr><td><span class="docs-model-name">Claude Opus 4.8<code>claude-opus-4-8</code></span></td><td>1M</td><td>128K</td><td>$2.5 <s>$5</s></td><td>$0.25 <s>$0.5</s></td><td>$3.125 <s>$6.25</s></td><td>$12.5 <s>$25</s></td></tr>
+            <tr><td><span class="docs-model-name">Claude Opus 4.7<code>claude-opus-4-7</code></span></td><td>1M</td><td>128K</td><td>$2.5 <s>$5</s></td><td>$0.25 <s>$0.5</s></td><td>$3.125 <s>$6.25</s></td><td>$12.5 <s>$25</s></td></tr>
+            <tr><td><span class="docs-model-name">Claude Sonnet 5<code>claude-sonnet-5</code></span></td><td>1M</td><td>128K</td><td>$1.5 <s>$3</s></td><td>$0.15 <s>$0.3</s></td><td>$1.875 <s>$3.75</s></td><td>$7.5 <s>$15</s></td></tr>
+            <tr><td><span class="docs-model-name">Claude Sonnet 4.6<code>claude-sonnet-4-6</code></span></td><td>200K</td><td>128K</td><td>$1.5 <s>$3</s></td><td>$0.15 <s>$0.3</s></td><td>$1.875 <s>$3.75</s></td><td>$7.5 <s>$15</s></td></tr>
+            <tr><td><span class="docs-model-name">Claude Haiku 4.5<code>claude-haiku-4-5</code></span></td><td>200K</td><td>64K</td><td>$0.5 <s>$1</s></td><td>$0.05 <s>$0.1</s></td><td>$0.625 <s>$1.25</s></td><td>$2.5 <s>$5</s></td></tr>
           </tbody>
         </table>
       </div>
 
-      <h3 class="docs-h3">Gemini · Google Gemini API</h3>
+      <div class="docs-provider-head">
+        <h3>GPT · OpenAI Responses API</h3>
+        <div class="docs-provider-meta">
+          <code>router.apitoken.sale</code>
+          <span>POST /v1/responses · POST /v1/chat/completions</span>
+          <span>Authorization: Bearer</span>
+        </div>
+      </div>
       <div class="docs-table-wrap">
         <table class="docs-table">
           <thead>
-            <tr><th>Модель</th><th>ID</th><th>Контекст</th><th>Макс. вывод</th><th>Ввод</th><th>Кеш. ввод</th><th>Запись в кеш</th><th>Вывод</th></tr>
+            <tr><th>Модель</th><th>Контекст</th><th>Макс. вывод</th><th>Ввод</th><th>Кеш. ввод</th><th>Запись в кеш</th><th>Вывод</th></tr>
           </thead>
           <tbody>
-            <tr><td>Gemini 3.7 Flash</td><td>gemini-3.7-flash</td><td>1M</td><td>64K</td><td>$0.375 / $0.75</td><td>$0.038 / $0.075</td><td>—</td><td>$1.875 / $3.75</td></tr>
-            <tr><td>Gemini 3.6 Flash</td><td>gemini-3.6-flash</td><td>1M</td><td>64K</td><td>$0.75 / $1.5</td><td>$0.075 / $0.15</td><td>—</td><td>$3.75 / $7.5</td></tr>
-            <tr><td>Gemini 3.5 Flash</td><td>gemini-3.5-flash</td><td>1M</td><td>64K</td><td>$0.75 / $1.5</td><td>$0.075 / $0.15</td><td>—</td><td>$4.5 / $9</td></tr>
-            <tr><td>Gemini 3.1 Pro Preview</td><td>gemini-3.1-pro-preview</td><td>1M</td><td>64K</td><td>$1 / $2</td><td>$0.1 / $0.2</td><td>—</td><td>$6 / $12</td></tr>
+            <tr><td><span class="docs-model-name">GPT-5.6 Sol <em class="docs-tag">Новая</em><code>gpt-5.6-sol</code></span></td><td>1.05M</td><td>128K</td><td>$2 <s>$4</s></td><td>$0.2 <s>$0.4</s></td><td>$2.5 <s>$5</s></td><td>$10 <s>$20</s></td></tr>
+            <tr><td><span class="docs-model-name">GPT-5.6 Terra<code>gpt-5.6-terra</code></span></td><td>1.05M</td><td>128K</td><td>$1 <s>$2</s></td><td>$0.1 <s>$0.2</s></td><td>$1.25 <s>$2.5</s></td><td>$6 <s>$12</s></td></tr>
+            <tr><td><span class="docs-model-name">GPT-5.6 Luna<code>gpt-5.6-luna</code></span></td><td>1.05M</td><td>128K</td><td>$0.1 <s>$0.2</s></td><td>$0.01 <s>$0.02</s></td><td>$0.125 <s>$0.25</s></td><td>$0.6 <s>$1.2</s></td></tr>
+            <tr><td><span class="docs-model-name">GPT-5.5<code>gpt-5.5</code></span></td><td>1.05M</td><td>128K</td><td>$2.5 <s>$5</s></td><td>$0.25 <s>$0.5</s></td><td>$2.5 <s>$5</s></td><td>$15 <s>$30</s></td></tr>
+            <tr><td><span class="docs-model-name">GPT-5.4<code>gpt-5.4</code></span></td><td>1.05M</td><td>128K</td><td>$1.25 <s>$2.5</s></td><td>$0.125 <s>$0.25</s></td><td>$1.25 <s>$2.5</s></td><td>$7.5 <s>$15</s></td></tr>
+            <tr><td><span class="docs-model-name">GPT Image 2<code>gpt-image-2</code></span></td><td>per request</td><td>1 image</td><td>$2.5 <s>$5</s></td><td>$0.625 <s>$1.25</s></td><td>$0 <s>$0</s></td><td>$15 <s>$30</s></td></tr>
           </tbody>
         </table>
       </div>
-    </div>
 
-    <div class="docs-example grid reveal">
-      <div class="c1-5">
+      <div class="docs-provider-head">
+        <h3>Gemini · Google Gemini API</h3>
+        <div class="docs-provider-meta">
+          <code>router.apitoken.sale</code>
+          <span>POST /v1beta/models/{model}:generateContent</span>
+          <span>x-goog-api-key</span>
+        </div>
+      </div>
+      <div class="docs-table-wrap">
+        <table class="docs-table">
+          <thead>
+            <tr><th>Модель</th><th>Контекст</th><th>Макс. вывод</th><th>Ввод</th><th>Кеш. ввод</th><th>Запись в кеш</th><th>Вывод</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="docs-model-name">Gemini 3.7 Flash <em class="docs-tag">Новая</em><code>gemini-3.7-flash</code></span></td><td>1M</td><td>64K</td><td>$0.375 <s>$0.75</s></td><td>$0.0375 <s>$0.075</s></td><td>—</td><td>$1.875 <s>$3.75</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 3.6 Flash<code>gemini-3.6-flash</code></span></td><td>1M</td><td>64K</td><td>$0.375 <s>$0.75</s></td><td>$0.0375 <s>$0.075</s></td><td>—</td><td>$1.875 <s>$3.75</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 3.5 Flash<code>gemini-3.5-flash</code></span></td><td>1M</td><td>64K</td><td>$0.75 <s>$1.5</s></td><td>$0.075 <s>$0.15</s></td><td>—</td><td>$4.5 <s>$9</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 3 Flash Preview<code>gemini-3-flash-preview</code></span></td><td>1M</td><td>64K</td><td>$0.25 <s>$0.5</s></td><td>$0.025 <s>$0.05</s></td><td>—</td><td>$1.5 <s>$3</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 3.1 Pro Preview<code>gemini-3.1-pro-preview</code></span></td><td>1M</td><td>64K</td><td>$1 <s>$2</s></td><td>$0.1 <s>$0.2</s></td><td>—</td><td>$6 <s>$12</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 3.1 Flash-Lite<code>gemini-3.1-flash-lite</code></span></td><td>1M</td><td>64K</td><td>$0.125 <s>$0.25</s></td><td>$0.0125 <s>$0.025</s></td><td>—</td><td>$0.75 <s>$1.5</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 2.5 Flash<code>gemini-2.5-flash</code></span></td><td>1M</td><td>64K</td><td>$0.15 <s>$0.3</s></td><td>$0.015 <s>$0.03</s></td><td>—</td><td>$1.25 <s>$2.5</s></td></tr>
+            <tr><td><span class="docs-model-name">Gemini 2.5 Flash-Lite<code>gemini-2.5-flash-lite</code></span></td><td>1M</td><td>64K</td><td>$0.05 <s>$0.1</s></td><td>$0.005 <s>$0.01</s></td><td>—</td><td>$0.2 <s>$0.4</s></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="docs-provider-head">
+        <h3>Kimi · Anthropic Messages API</h3>
+        <div class="docs-provider-meta">
+          <code>router.apitoken.sale</code>
+          <span>POST /v1/messages</span>
+          <span>x-api-key</span>
+        </div>
+      </div>
+      <div class="docs-table-wrap">
+        <table class="docs-table">
+          <thead>
+            <tr><th>Модель</th><th>Контекст</th><th>Макс. вывод</th><th>Ввод</th><th>Кеш. ввод</th><th>Запись в кеш</th><th>Вывод</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><span class="docs-model-name">Kimi K3 <em class="docs-tag">Новая</em><code>k3</code></span></td><td>1M</td><td>not published</td><td>$1.5 <s>$3</s></td><td>$0.15 <s>$0.3</s></td><td>$1.5 <s>$3</s></td><td>$7.5 <s>$15</s></td></tr>
+            <tr><td><span class="docs-model-name">Kimi K3 (256K)<code>k3-256k</code></span></td><td>256K</td><td>not published</td><td>$1.5 <s>$3</s></td><td>$0.15 <s>$0.3</s></td><td>$1.5 <s>$3</s></td><td>$7.5 <s>$15</s></td></tr>
+            <tr><td><span class="docs-model-name">Kimi for Coding<code>kimi-for-coding</code></span></td><td>256K</td><td>not published</td><td>$0.475 <s>$0.95</s></td><td>$0.095 <s>$0.19</s></td><td>$0.475 <s>$0.95</s></td><td>$2 <s>$4</s></td></tr>
+            <tr><td><span class="docs-model-name">Kimi for Coding HighSpeed<code>kimi-for-coding-highspeed</code></span></td><td>256K</td><td>not published</td><td>$0.95 <s>$1.9</s></td><td>$0.19 <s>$0.38</s></td><td>$0.95 <s>$1.9</s></td><td>$4 <s>$8</s></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="docs-example">
         <span class="meta">Пример · Claude Opus 4.8</span>
-      </div>
-      <div class="c6-13">
         <div class="docs-calc">
           <div class="docs-calc__row"><span>2M input × $5</span><b>$10</b></div>
           <div class="docs-calc__row"><span>400K output × $25</span><b>$10</b></div>
           <div class="docs-calc__row docs-calc__row--total"><span>Официально итого</span><b>$20</b></div>
           <div class="docs-calc__row docs-calc__row--save"><span>Вы платите</span><b>$10</b></div>
         </div>
-        <p class="docs-footnote">Пополнение на $100 даёт $200 официального использования API на любой модели. Ставки указаны за 1M токенов; списание идёт за фактические токены по официальным ставкам, затем вычитается единая скидка 50%.</p>
+        <p class="docs-footnote">Пополнение на $100 даёт $200 официального использования API на любой модели — каждый доллар конвертируется по той же ставке.</p>
       </div>
-    </div>
-  </div>
-</section>
 
-<!-- ================= FILES IN GEMINI ================= -->
-<section class="sec" id="files">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">04</span>
-      <span class="meta c3-6">Файлы в Gemini</span>
-      <h2 class="display c1-13">Как отправлять файлы.</h2>
-    </header>
+      <ul class="docs-notes-list">
+        <li>Ставки указаны за 1M токенов; списание идёт за фактические токены по официальным ставкам, затем вычитается единая скидка 50%.</li>
+        <li>Токены размышлений (thinking/reasoning) тарифицируются как вывод у обоих провайдеров.</li>
+        <li>GPT-запросы свыше 272K входных токенов тарифицируются по официальным ставкам длинного контекста: 2× ввод и 1,5× вывод на весь запрос.</li>
+        <li>Ставки Gemini соответствуют официальному стандартному платному тарифу Google.</li>
+        <li>Актуальный список доступных моделей — всегда в GET /v1/models на едином endpoint: один агрегированный каталог для всех провайдеров.</li>
+      </ul>
+    </section>
 
-    <div class="grid reveal">
-      <div class="c1-5">
-        <p class="secdesc">Gemini отдаётся из пула подписок, поэтому файл должен ехать внутри самого запроса. Отдельного шага загрузки нет: Files API недоступен.</p>
-      </div>
-      <div class="c6-13">
-        <div class="docs-table-wrap">
-          <table class="docs-table docs-table--simple">
-            <thead>
-              <tr><th>Тип данных</th><th>Поддержка</th><th>Как отправлять</th></tr>
-            </thead>
-            <tbody>
-              <tr><td>Изображения (PNG, JPEG, WebP)</td><td>Да</td><td><code>inline_data</code> с mime_type и base64. До ~23 МБ исходного файла.</td></tr>
-              <tr><td>PDF-документы</td><td>Да</td><td><code>inline_data</code> с <code>application/pdf</code>.</td></tr>
-              <tr><td>Текстовые файлы</td><td>Да</td><td><code>inline_data</code> с <code>text/plain</code> или просто в <code>text</code>.</td></tr>
-              <tr><td>Аудио</td><td>Одна модель</td><td>Только <code>gemini-3-flash-preview</code>, inline <code>audio/wav</code>.</td></tr>
-              <tr><td>Files API (file_uri)</td><td>Нет</td><td>Недоступно. Передавайте содержимое inline.</td></tr>
-              <tr><td>cachedContent</td><td>Нет</td><td>Недоступно. Передавайте содержимое inline.</td></tr>
-            </tbody>
-          </table>
+    <!-- ============ 06 GEMINI BATCH ============ -->
+    <section class="docs-sec" id="gemini-batch">
+      <header class="docs-sechead">
+        <span class="docs-secnum">06</span>
+        <div>
+          <h2>Gemini Batch API</h2>
+          <p>Запускайте множество независимых запросов Gemini асинхронно, опрашивайте одну durable operation и получайте каждый ответ модели или ошибку отдельного item. Один нативный API работает через unified router и прямой Gemini endpoint.</p>
+          <p>Используйте рекомендуемый https://router.apitoken.sale или прямой https://gemini.api.apitoken.sale. Меняется только hostname: пути, тела и авторизация x-goog-api-key одинаковы. Храните ключ только на сервере.</p>
         </div>
+      </header>
+
+      <h3 class="docs-h3">Endpoints</h3>
+      <div class="docs-table-wrap">
+        <table class="docs-table docs-table--simple">
+          <thead>
+            <tr><th>Метод</th><th>Путь</th><th>Назначение</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>POST</td><td>/v1beta/models/{model}:batchGenerateContent</td><td>Создать асинхронную operation</td></tr>
+            <tr><td>GET</td><td>/v1beta/batches/{id}</td><td>Проверить состояние и получить результаты</td></tr>
+            <tr><td>GET</td><td>/v1beta/batches?pageSize={n}&amp;pageToken={token}</td><td>Список операций этого аккаунта</td></tr>
+            <tr><td>POST</td><td>/v1beta/batches/{id}:cancel</td><td>Запросить отмену; отправленные items могут завершиться</td></tr>
+            <tr><td>DELETE</td><td>/v1beta/batches/{id}</td><td>Удалить завершённую операцию</td></tr>
+            <tr><td>POST</td><td>/upload/v1beta/files</td><td>Начать или продолжить resumable-загрузку JSONL</td></tr>
+            <tr><td>GET</td><td>/v1beta/files</td><td>Список account-scoped файлов шлюза</td></tr>
+            <tr><td>GET</td><td>/v1beta/files/{id}</td><td>Получить метаданные файла</td></tr>
+            <tr><td>GET</td><td>/v1beta/files/{id}:download</td><td>Потоково или диапазоном скачать активный файл</td></tr>
+            <tr><td>DELETE</td><td>/v1beta/files/{id}</td><td>Удалить файл без активных ссылок</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>1. Создайте inline Batch</h3>
+          <p>Сохраните возвращённое name (batches/batch-…). Idempotency-Key необязателен, но рекомендуется: точный replay вернёт ту же operation, а другое тело с тем же ключом даст 409. Без заголовка каждый POST создаёт новое задание.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Bash · curl</span><button type="button" data-copy="export APITOKEN_API_KEY=&quot;sk-pool-…&quot;&#10;export GEMINI_BASE=&quot;https://router.apitoken.sale&quot;">Копировать</button></div>
+        <pre class="code"><code>export APITOKEN_API_KEY="sk-pool-…"
+export GEMINI_BASE="https://router.apitoken.sale"
+# Direct alternative:
+# export GEMINI_BASE="https://gemini.api.apitoken.sale"
+
+OPERATION=$(curl -fsS \
+  "$GEMINI_BASE/v1beta/models/gemini-3.6-flash:batchGenerateContent" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \
+  -H "content-type: application/json" \
+  -H "Idempotency-Key: product-summary-2026-09-01" \
+  -d '{
+    "batch": {
+      "displayName": "Product summaries",
+      "inputConfig": {
+        "requests": {
+          "requests": [
+            {"request":{"contents":[{"role":"user","parts":[{"text":"Summarize product A."}]}]},"metadata":{"key":"product-a"}},
+            {"request":{"contents":[{"role":"user","parts":[{"text":"Summarize product B."}]}]},"metadata":{"key":"product-b"}}
+          ]
+        }
+      }
+    }
+  }')
+
+BATCH_NAME=$(printf '%s' "$OPERATION" | jq -r .name)
+echo "$BATCH_NAME"</code></pre>
+      </article>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>2. Опрашивайте и читайте каждый item</h3>
+          <p>Опрашивайте с задержкой до done=true. Затем проверьте state, строковые batchStats и каждый элемент inlinedResponses. В элементе есть либо response, либо error; terminal job может содержать ошибки отдельных items.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Bash · poll</span><button type="button" data-copy="while :; do break; done">Копировать</button></div>
+        <pre class="code"><code>while :; do
+  OPERATION=$(curl -fsS \
+    "$GEMINI_BASE/v1beta/$BATCH_NAME" \
+    -H "x-goog-api-key: $APITOKEN_API_KEY")
+  [ "$(printf '%s' "$OPERATION" | jq -r .done)" = "true" ] &amp;&amp; break
+  sleep 5
+done
+
+# Official nested inline results: each entry contains either .response or .error.
+printf '%s' "$OPERATION" | jq '.response.inlinedResponses.inlinedResponses[]'</code></pre>
+      </article>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>3. Разберите terminal operation</h3>
+          <p>Счётчики приходят десятичными строками — разбирайте их через BigInt. Само по себе done=true не означает успех каждого item.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>TypeScript</span><button type="button" data-copy="const operation = await response.json();">Копировать</button></div>
+        <pre class="code"><code>const operation = await response.json();
+
+if (!operation.done) {
+  console.log("Still running:", operation.metadata?.state);
+  return;
+}
+
+if (operation.error) throw new Error(operation.error.message);
+
+const stats = operation.metadata?.batchStats ?? {};
+const total = BigInt(stats.requestCount ?? "0");
+const failed = BigInt(stats.failedRequestCount ?? "0");
+
+for (const [index, item] of
+    (operation.response?.inlinedResponses?.inlinedResponses ?? []).entries()) {
+  if (item.error) {
+    console.error(index, item.error.status, item.error.message);
+  } else {
+    console.log(index, item.response?.candidates ?? []);
+  }
+}</code></pre>
+      </article>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>4. List, cancel и delete ресурсов</h3>
+          <p>Используйте полное имя batches/{id} из create. Для уже отправленных items отмена работает best effort; удаляйте Batch только после terminal state. Файлы account-scoped и не удаляются, пока на них ссылается активное задание.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Bash · lifecycle</span><button type="button" data-copy="curl -fsS &quot;$GEMINI_BASE/v1beta/batches?pageSize=20&quot; -H &quot;x-goog-api-key: $APITOKEN_API_KEY&quot;">Копировать</button></div>
+        <pre class="code"><code># List Batches (save nextPageToken for the next page).
+curl -fsS "$GEMINI_BASE/v1beta/batches?pageSize=20" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+# Read one operation. BATCH_NAME is the complete batches/{id} from create.
+curl -fsS "$GEMINI_BASE/v1beta/$BATCH_NAME" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+# Request cancellation. Items already dispatched may still finish.
+curl -fsS -X POST "$GEMINI_BASE/v1beta/$BATCH_NAME:cancel" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \
+  -H "content-type: application/json" -d '{}'
+
+# Delete only after the operation is terminal.
+curl -fsS -X DELETE "$GEMINI_BASE/v1beta/$BATCH_NAME" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+# Files list supports pageSize, but currently has no pageToken.
+curl -fsS "$GEMINI_BASE/v1beta/files?pageSize=20" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+FILE_ID="file-…" # ID without the files/ prefix
+curl -fsS "$GEMINI_BASE/v1beta/files/$FILE_ID" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"
+
+# Public download supports active files up to 20 MiB.
+curl -fsS "$GEMINI_BASE/v1beta/files/$FILE_ID:download" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" -o downloaded.bin
+
+# Deletion fails while a live Batch references the file.
+curl -fsS -X DELETE "$GEMINI_BASE/v1beta/files/$FILE_ID" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY"</code></pre>
+      </article>
+
+      <h3 class="docs-h3">Большой ввод через JSONL</h3>
+      <p class="docs-note">Каждая непустая строка — отдельный JSON object с correlation key и объектом request. Не оборачивайте строки в массив. Пустые строки и CRLF допустимы. Загрузите файл в этот шлюз и передайте возвращённое files/{id} в inputConfig.fileName.</p>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>Формат входного JSONL</h3>
+          <p>Для file input поле key обязательно и может занимать до 512 байт. Результаты сохраняют порядок ввода; храните key в своей карте input→output.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>JSONL</span><button type="button" data-copy='{"key":"product-a","request":{"contents":[{"role":"user","parts":[{"text":"Summarize product A."}]}]}}'>Копировать</button></div>
+        <pre class="code"><code>{"key":"product-a","request":{"contents":[{"role":"user","parts":[{"text":"Summarize product A."}]}]}}
+{"key":"product-b","request":{"contents":[{"role":"user","parts":[{"text":"Summarize product B."}]}]}}</code></pre>
+      </article>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>Resumable upload и create через fileName</h3>
+          <p>Возвращаемый upload URL относительный. Нефинальные chunks имеют ровно 8 МиБ и точные offsets; после неоднозначного ответа выполните command=query перед повтором. Полный output скачивается потоком, а Range даёт возобновляемые ограниченные чтения.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>Bash · upload</span><button type="button" data-copy="FILE=batch-input.jsonl">Копировать</button></div>
+        <pre class="code"><code>FILE=batch-input.jsonl
+SIZE=$(wc -c &lt; "$FILE" | tr -d ' ')
+
+# 1. Start a resumable upload.
+curl -fsS -D upload.headers -o /dev/null \
+  -X POST "$GEMINI_BASE/upload/v1beta/files" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \
+  -H "x-goog-upload-protocol: resumable" \
+  -H "x-goog-upload-command: start" \
+  -H "x-goog-upload-file-name: batch-input.jsonl" \
+  -H "x-goog-upload-header-content-type: application/jsonl" \
+  -H "x-goog-upload-header-content-length: $SIZE"
+
+UPLOAD_PATH=$(awk 'BEGIN{IGNORECASE=1} /^x-goog-upload-url:/{gsub("\r",""); print $2}' upload.headers)
+
+# 2. Upload and finalize this file in one chunk (up to 8 MiB).
+# For larger files, repeat command=upload with exact 8 MiB chunks and
+# increasing x-goog-upload-offset, then use "upload, finalize" on the last chunk.
+curl -fsS "$GEMINI_BASE$UPLOAD_PATH" \
+  -X POST \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \
+  -H "x-goog-upload-protocol: resumable" \
+  -H "x-goog-upload-command: upload, finalize" \
+  -H "x-goog-upload-offset: 0" \
+  -H "content-length: $SIZE" \
+  --data-binary "@$FILE" &gt; uploaded-file.json
+
+FILE_NAME=$(jq -r .file.name uploaded-file.json)
+
+# 3. Use the returned files/{id} as Batch JSONL input.
+curl -fsS \
+  "$GEMINI_BASE/v1beta/models/gemini-3.6-flash:batchGenerateContent" \
+  -H "x-goog-api-key: $APITOKEN_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"batch":{"displayName":"JSONL summaries","inputConfig":{"fileName":"'"$FILE_NAME"'"}}}'</code></pre>
+      </article>
+
+      <h3 class="docs-h3">Лимиты и хранение</h3>
+      <div class="docs-table-wrap">
+        <table class="docs-table docs-table--simple">
+          <thead>
+            <tr><th>Лимит</th><th>Значение</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Тело inline create</td><td>20 МиБ</td></tr>
+            <tr><td>Items в одном Batch</td><td>Нет потолка. Один клиентский job остаётся одним job.</td></tr>
+            <tr><td>Незавершённых Batches на аккаунт</td><td>100</td></tr>
+            <tr><td>Одна строка JSONL</td><td>20 МиБ</td></tr>
+            <tr><td>Один upload chunk</td><td>8 МиБ</td></tr>
+            <tr><td>TTL загруженного файла</td><td>48 часов</td></tr>
+            <tr><td>Максимальное время в очереди</td><td>48 часов</td></tr>
+            <tr><td>Хранение terminal result</td><td>42 дня</td></tr>
+            <tr><td>Размер страницы list</td><td>1–1 000</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="docs-note">При создании на аккаунте должен быть доступен баланс для conservative hold всего Batch. Принятое задание сохраняется и может оставаться в очереди при временном дефиците мощности. Ultra использует до 20 durable Batch slots, остальные планы — 2; старты на одной подписке разделены случайным durable интервалом 2–5 секунд. Действуют обычные цены Gemini и скидка аккаунта; отдельной Batch-скидки и гарантии срока нет.</p>
+
+      <h3 class="docs-h3">Отличия от официального Google Batch</h3>
+      <div class="docs-table-wrap">
+        <table class="docs-table docs-table--simple">
+          <thead>
+            <tr><th>Область</th><th>Поведение apiToken.sale</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Execution</td><td>Асинхронные непотоковые задания шлюза; это не Vertex AI Batch, GCS или BigQuery.</td></tr>
+            <tr><td>Pricing</td><td>Обычный тариф Gemini и скидка аккаунта. Отдельной Batch-скидки и гарантии срока нет.</td></tr>
+            <tr><td>Inline schema</td><td>Принимаются официальная обёртка InlinedRequests (requests.requests[]) и сырой массив. Алиасы proto-JSON snake_case принимаются.</td></tr>
+            <tr><td>Files</td><td>Файлы принадлежат аккаунту apiToken.sale, а не Google Cloud project. Чужие Google-файлы недоступны.</td></tr>
+            <tr><td>fileData</td><td>Сейчас gateway-файлы нельзя встраивать через fileData. Используйте JSONL file input, а для синхронной генерации — inlineData.</td></tr>
+            <tr><td>File output</td><td>Задания с файловым вводом публикуют упорядоченный зашифрованный JSONL responsesFile до done=true; inline jobs сохраняют inlinedResponses.</td></tr>
+            <tr><td>Timestamps</td><td>Времена operation — RFC 3339 UTC (google-datetime).</td></tr>
+            <tr><td>Unsupported</td><td>Нет webhooks, embedding/update Batch, image-output моделей, Google IAM и Vertex resource semantics.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="docs-h3">Ошибки Batch</h3>
+      <div class="docs-table-wrap">
+        <table class="docs-table docs-table--simple">
+          <thead>
+            <tr><th>Статус</th><th>Что делать</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>400 INVALID_ARGUMENT</td><td>Исправьте JSON, выбор input form, JSONL, модель или поле. Не повторяйте неизменённый запрос.</td></tr>
+            <tr><td>400 INVALID_ARGUMENT / API_KEY_INVALID</td><td>Отсутствующий, неверный или отозванный ключ: линия Gemini отвечает 400 с причиной API_KEY_INVALID в error.details, как официальный Google API (не 401). Передайте активный sk-pool ключ в x-goog-api-key и не повторяйте запрос с отозванным ключом.</td></tr>
+            <tr><td>402 RESOURCE_EXHAUSTED</td><td>Для paid Batch create нужен положительный баланс аккаунта.</td></tr>
+            <tr><td>404 NOT_FOUND</td><td>Неверный, удалённый, истёкший или чужой job/file; проверьте полное имя и аккаунт.</td></tr>
+            <tr><td>409 ABORTED</td><td>Idempotency key использован с другим телом либо не совпал upload offset.</td></tr>
+            <tr><td>FAILED_PRECONDITION</td><td>Дождитесь/отмените Batch перед удалением; активная ссылка Batch также блокирует удаление файла.</td></tr>
+            <tr><td>429 / 503</td><td>Временный лимит мощности, квоты или authority. Используйте ограниченный exponential backoff с jitter.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ============ 07 FILES IN GEMINI ============ -->
+    <section class="docs-sec" id="gemini-files">
+      <header class="docs-sechead">
+        <span class="docs-secnum">07</span>
+        <div>
+          <h2>Как отправлять файлы в Gemini</h2>
+          <p>Синхронный generateContent требует inline-байты: files/… из любого Google-проекта невидим этому шлюзу. Для большого Gemini Batch input загрузите account-scoped JSONL в этот шлюз и передайте возвращённое имя как inputConfig.fileName. Загруженные файлы живут 48 часов.</p>
+        </div>
+      </header>
+
+      <div class="docs-table-wrap">
+        <table class="docs-table docs-table--simple">
+          <thead>
+            <tr><th>Тип данных</th><th>Поддержка</th><th>Как отправлять</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Изображения (PNG, JPEG, WebP)</td><td>Да</td><td><code>inline_data</code> с mime_type и base64. Примерно до 23 МБ исходного файла.</td></tr>
+            <tr><td>PDF-документы</td><td>Да</td><td><code>inline_data</code> с application/pdf. Модель читает текст внутри документа.</td></tr>
+            <tr><td>Текстовые файлы</td><td>Да</td><td><code>inline_data</code> с text/plain — или просто вставьте текст в text.</td></tr>
+            <tr><td>Аудио</td><td>Все текстовые модели</td><td>Любая текстовая модель, inline audio/wav.</td></tr>
+            <tr><td>Files API (file_uri / fileData)</td><td>Одна модель</td><td>Только JSONL input для Batch: загрузите файл в этот шлюз и передайте files/{id} как inputConfig.fileName. Встраивание через fileData не поддерживается. В синхронном generateContent передавайте байты inline.</td></tr>
+            <tr><td>cachedContent</td><td>Нет</td><td>Недоступно. Передавайте содержимое inline.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>Запрос с файлом</h3>
+          <p>Загрузка и ссылка на файл заменяются одним запросом. Base64 добавляет примерно треть объёма, поэтому в наш лимит тела 32 МБ укладывается исходный файл примерно до 23 МБ.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>JSON · Request</span><button type="button" data-copy='{"contents":[{"role":"user","parts":[{"text":"Describe this file"},{"inline_data":{"mime_type":"image/png","data":"<base64>"}}]}]}'>Копировать</button></div>
         <pre class="code"><code>{
   "contents": [
     {
       "role": "user",
       "parts": [
         { "text": "Describe this file" },
-        { "inline_data": { "mime_type": "image/png", "data": "<base64>" } }
+        { "inline_data": { "mime_type": "image/png", "data": "&lt;base64&gt;" } }
       ]
     }
   ]
 }</code></pre>
-        <p class="docs-footnote">Данные, которые шлюз принять не может, отклоняются ещё до обращения к подписке — 400 INVALID_ARGUMENT. В каждой ошибке есть заголовок <code>x-request-id</code> — назовите его поддержке.</p>
-      </div>
-    </div>
-  </div>
-</section>
+      </article>
 
-<!-- ================= RESPONSE CODES ================= -->
-<section class="sec sec--dark" id="codes">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">05</span>
-      <span class="meta c3-6">Коды ответа</span>
-      <h2 class="display c1-13">Основные коды ответа.</h2>
-    </header>
+      <p class="docs-note"><b>Когда мы отказываем.</b> Данные, которые шлюз принять не может, отклоняются ещё до обращения к подписке — 400 INVALID_ARGUMENT со стабильной причиной в error.details: FILE_URI_UNSUPPORTED, CACHED_CONTENT_UNSUPPORTED, AUDIO_INPUT_UNSUPPORTED. FILE_URI_UNSUPPORTED относится к синхронному generateContent и чужим Google-файлам; Batch умеет разрешать только файлы, загруженные в этот шлюз тем же аккаунтом. Такой отказ окончательный: помогает изменение запроса, а не повтор. В каждой ошибке есть заголовок x-request-id — назовите его поддержке, и мы найдём именно ваш запрос.</p>
+    </section>
 
-    <div class="grid reveal">
-      <div class="c1-5">
-        <p class="secdesc">Каждый протокол сохраняет свой формат ошибок. Коды 401 и 402 требуют исправить состояние аккаунта; автоматически повторяйте только временные ошибки 429 и 5xx.</p>
-      </div>
-      <div class="c6-13">
-        <div class="docs-codes">
-          <div class="docs-code docs-code--bad">
-            <b>401</b>
-            <span>API-ключ отсутствует, неверен или отозван</span>
-            <p>Передайте активный ключ sk-pool в x-api-key. Повторять запрос с тем же отозванным ключом не нужно.</p>
-          </div>
-          <div class="docs-code docs-code--bad">
-            <b>402</b>
-            <span>Недостаточно предоплаченного баланса</span>
-            <p>Пополните аккаунт, убедитесь, что баланс зачислен, и повторите запрос.</p>
-          </div>
-          <div class="docs-code docs-code--retry">
-            <b>429</b>
-            <span>Лимит запросов или временный дефицит мощности</span>
-            <p>Учитывайте Retry-After; используйте ограниченную экспоненциальную задержку со случайным смещением.</p>
-          </div>
-          <div class="docs-code docs-code--retry">
-            <b>5xx</b>
-            <span>Временная ошибка шлюза или инфраструктуры</span>
-            <p>Повторите запрос с ограниченной экспоненциальной задержкой. Сохраните ID запроса.</p>
-          </div>
+    <!-- ============ 08 ERRORS ============ -->
+    <section class="docs-sec" id="errors">
+      <header class="docs-sechead">
+        <span class="docs-secnum">08</span>
+        <div>
+          <h2>Основные коды ответа</h2>
+          <p>На едином endpoint каждый протокол сохраняет свой формат ошибок: маршруты Anthropic возвращают JSON Anthropic, маршруты OpenAI — {"error":{"message","type","param","code"}}, маршрут Gemini — {"error":{"code","message","status"}}. Коды 401 и 402 требуют исправить состояние аккаунта; автоматически повторяйте только временные ошибки 429 и 5xx.</p>
         </div>
-      </div>
-    </div>
-  </div>
-</section>
+      </header>
 
-<!-- ================= CACHING ================= -->
-<section class="sec" id="cache">
-  <div class="bleed">
-    <header class="sechead grid reveal">
-      <span class="secnum c1-2">06</span>
-      <span class="meta c3-6">Кеширование</span>
-      <h2 class="display c1-13">Закешируйте префикс — платите 10% за чтение.</h2>
-    </header>
-
-    <div class="grid reveal">
-      <div class="c1-5">
-        <h3 class="docs-h3">Claude — явный cache_control</h3>
-        <p class="secdesc">Точки кеширования пробрасываются в Anthropic без изменений. Запись в кеш стоит 1,25× от цены ввода (TTL 5 минут) или 2× (TTL 1 час).</p>
+      <div class="docs-table-wrap">
+        <table class="docs-table docs-table--simple docs-errors">
+          <thead>
+            <tr><th>Статус</th><th>Значение</th><th>Что делать</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>401</code></td><td>API-ключ отсутствует, неверен или отозван</td><td>Передайте активный ключ sk-pool в x-api-key. Если ключ отозван, создайте новый; повторять запрос с тем же ключом не нужно. На нативной линии Gemini та же ошибка приходит как 400 INVALID_ARGUMENT с причиной API_KEY_INVALID в error.details — как в официальном Google API; обрабатывайте её так же, как 401.</td></tr>
+            <tr><td><code>402</code></td><td>Доступного предоплаченного баланса недостаточно</td><td>Пополните аккаунт, убедитесь, что баланс зачислен, и повторите запрос. Ожидание само по себе не устранит 402.</td></tr>
+            <tr><td><code>429</code></td><td>Лимит запросов или временный дефицит мощности провайдера</td><td>Учитывайте Retry-After, если он есть; используйте ограниченную экспоненциальную задержку со случайным смещением.</td></tr>
+            <tr><td><code>5xx</code></td><td>Временная ошибка шлюза или инфраструктуры провайдера</td><td>Повторите запрос с ограниченной экспоненциальной задержкой. Сохраните ID запроса и не допускайте бесконечных повторов.</td></tr>
+          </tbody>
+        </table>
       </div>
-      <div class="c6-13">
+    </section>
+
+    <!-- ============ 09 CACHING ============ -->
+    <section class="docs-sec" id="caching">
+      <header class="docs-sechead">
+        <span class="docs-secnum">09</span>
+        <div>
+          <h2>Кеширование промптов</h2>
+          <p>Закешируйте большой стабильный префикс один раз — каждое следующее чтение стоит 10% от цены входных токенов.</p>
+        </div>
+      </header>
+
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>Claude — явный cache_control</h3>
+          <p>Точки кеширования пробрасываются в Anthropic без изменений. Запись в кеш стоит 1,25× от цены ввода (TTL 5 минут) или 2× (TTL 1 час — заголовок anthropic-beta: extended-cache-ttl-2025-04-11 передайте самостоятельно). Повторные вызовы с тем же префиксом закрепляются за прогретым апстримом, поэтому держите префикс неизменным байт в байт.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>JSON · Request</span><button type="button" data-copy='{"model":"claude-opus-4-8","max_tokens":1024,"system":[{"type":"text","text":"Long stable instructions…","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"Short varying question"}]}'>Копировать</button></div>
         <pre class="code"><code>{
   "model": "claude-opus-4-8",
   "max_tokens": 1024,
@@ -378,15 +939,14 @@ print(res.choices[0].message.content)</code></pre>
   ],
   "messages": [{ "role": "user", "content": "Short varying question" }]
 }</code></pre>
-      </div>
-    </div>
+      </article>
 
-    <div class="grid reveal docs-row--second">
-      <div class="c1-5">
-        <h3 class="docs-h3">GPT — автоматически</h3>
-        <p class="secdesc">Ничего включать не нужно: повторяющиеся префиксы кешируются на стороне сервера. usage.prompt_tokens_details.cached_tokens тарифицируются как 10% от цены ввода.</p>
-      </div>
-      <div class="c6-13">
+      <article class="docs-card">
+        <header class="docs-card__head">
+          <h3>GPT — автоматически</h3>
+          <p>Ничего включать не нужно: повторяющиеся префиксы кешируются на стороне сервера. usage.prompt_tokens_details.cached_tokens (Chat Completions) или input_tokens_details.cached_tokens (Responses) автоматически тарифицируются как 10% от цены ввода.</p>
+        </header>
+        <div class="docs-codebar"><i class="docs-dots" aria-hidden="true"></i><span>JSON · Response</span><button type="button" data-copy='{"usage":{"prompt_tokens":5120,"prompt_tokens_details":{"cached_tokens":4096},"completion_tokens":128}}'>Копировать</button></div>
         <pre class="code"><code>{
   "usage": {
     "prompt_tokens": 5120,
@@ -394,10 +954,29 @@ print(res.choices[0].message.content)</code></pre>
     "completion_tokens": 128
   }
 }</code></pre>
+      </article>
+    </section>
+
+    <!-- ============ 10 NEXT ============ -->
+    <section class="docs-sec docs-next" id="next">
+      <header class="docs-sechead">
+        <span class="docs-secnum">10</span>
+        <div>
+          <h2>Дальше</h2>
+          <p>Всё, на что ссылается эта страница, в одном месте.</p>
+        </div>
+      </header>
+      <div class="docs-next-grid">
+        <a class="docs-next-card" href="/landing/index.html#models"><strong>Модели</strong><span>Точные ID моделей, контекстные окна и цены за токены.</span></a>
+        <a class="docs-next-card" href="/landing/index.html#calc"><strong>Цены</strong><span>Пополнения, единая скидка 50% и принцип расчёта.</span></a>
+        <a class="docs-next-card" href="/landing/index.html#learn"><strong>Гайды</strong><span>Пошаговые инструкции по интеграции.</span></a>
       </div>
-    </div>
-  </div>
-</section>
+    </section>
+
+    <footer class="docs-footer">Документация apiToken · один router endpoint — нативные Claude, GPT и Gemini API и OpenAI‑совместимый доступ</footer>
+
+  </main>
+</div>
 
 <!-- ================= FINAL ================= -->
 <section class="final sec--dark">
@@ -412,8 +991,6 @@ print(res.choices[0].message.content)</code></pre>
     </div>
   </div>
 </section>
-
-</main>
 
 <!-- ================= FOOTER ================= -->
 <footer class="ftr sec--dark">
@@ -434,15 +1011,15 @@ print(res.choices[0].message.content)</code></pre>
       <div class="ftr__col">
         <span class="ftr__h">Разработчикам</span>
         <a href="/landing/docs.html">Документация</a>
-        <a href="/landing/docs.html">Быстрый старт</a>
-        <a href="/landing/docs.html">API-справочник</a>
+        <a href="/landing/docs.html#quickstart">Быстрый старт</a>
+        <a href="/landing/docs.html#api">API-справочник</a>
         <a href="https://github.com/ArthemisDesign/APITOKEN">GitHub</a>
       </div>
       <div class="ftr__col">
         <span class="ftr__h">Поддержка</span>
         <a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a>
         <a href="#">Статус</a>
-        <a href="#">Коды ошибок</a>
+        <a href="/landing/docs.html#errors">Коды ошибок</a>
       </div>
       <div class="ftr__col">
         <span class="ftr__h">Правовое</span>
@@ -458,11 +1035,6 @@ print(res.choices[0].message.content)</code></pre>
   </div>
 </footer>
 
-<script src="/landing/vendor/gsap.min.js"></script>
-<script src="/landing/vendor/ScrollTrigger.min.js"></script>
-<script src="/landing/vendor/lenis.min.js"></script>
-<script src="/landing/vendor/split-type.min.js"></script>
 <script src="/landing/docs.js"></script>
-<script src="/landing/motion.js"></script>
 </body>
 </html>

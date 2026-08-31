@@ -40,9 +40,120 @@
     });
   }
 
+  /* sidebar scroll-spy: highlights the nav link of the section in view */
+  function initScrollSpy(){
+    const nav = document.getElementById('docsNav');
+    if(!nav) return;
+    const links = Array.prototype.slice.call(nav.querySelectorAll('a'));
+    const byId = {};
+    const sections = [];
+    links.forEach(function(a){
+      const id = a.getAttribute('href').slice(1);
+      const el = document.getElementById(id);
+      if(el){ byId[id] = a; sections.push(el); }
+    });
+    if(!sections.length) return;
+
+    const observer = new IntersectionObserver(function(entries){
+      entries.forEach(function(entry){
+        if(entry.isIntersecting){
+          links.forEach(function(a){ a.classList.remove('active'); });
+          const link = byId[entry.target.id];
+          if(link){
+            link.classList.add('active');
+            /* keep the active link visible inside the scrollable sidebar */
+            if(link.scrollIntoView){
+              const box = nav.parentElement.getBoundingClientRect();
+              const r = link.getBoundingClientRect();
+              if(r.top < box.top || r.bottom > box.bottom){
+                link.scrollIntoView({ block: 'nearest' });
+              }
+            }
+          }
+        }
+      });
+    }, { rootMargin: '-15% 0px -75% 0px' });
+
+    sections.forEach(function(el){ observer.observe(el); });
+  }
+
+  /* smooth anchor scrolling with header offset */
+  function initAnchors(){
+    document.querySelectorAll('a[href^="#"]').forEach(function(a){
+      a.addEventListener('click', function(e){
+        const id = a.getAttribute('href').slice(1);
+        const el = document.getElementById(id);
+        if(!el) return;
+        e.preventDefault();
+        const header = document.getElementById('hdr');
+        const offset = (header ? header.offsetHeight : 0) + 16;
+        const top = el.getBoundingClientRect().top + window.scrollY - offset;
+        window.scrollTo({ top: top, behavior: 'smooth' });
+        history.replaceState(null, '', '#' + id);
+      });
+    });
+  }
+
+  /* copy-to-clipboard for [data-copy] buttons and the "copy page" button */
+  function initCopy(){
+    document.querySelectorAll('[data-copy]').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        const text = btn.getAttribute('data-copy');
+        if(!text) return;
+        copyText(text).then(function(){ flash(btn); });
+      });
+    });
+
+    const pageBtn = document.querySelector('.docs-copy-page');
+    if(pageBtn){
+      pageBtn.addEventListener('click', function(){
+        const url = pageBtn.getAttribute('data-copy-url');
+        const fallback = function(){ copyText(document.body.innerText).then(function(){ flash(pageBtn); }); };
+        if(!url){ fallback(); return; }
+        fetch(url)
+          .then(function(r){ if(!r.ok) throw new Error('bad'); return r.text(); })
+          .then(function(md){ return copyText(md); })
+          .then(function(){ flash(pageBtn); })
+          .catch(fallback);
+      });
+    }
+
+    function copyText(text){
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        return navigator.clipboard.writeText(text);
+      }
+      return new Promise(function(resolve){
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch(e) {}
+        document.body.removeChild(ta);
+        resolve();
+      });
+    }
+
+    function flash(btn){
+      if(btn.classList.contains('copied')) return;
+      const label = btn.textContent;
+      const isIcon = btn.classList.contains('docs-agent-chip-btn');
+      btn.classList.add('copied');
+      if(!isIcon) btn.textContent = 'Скопировано';
+      window.setTimeout(function(){
+        btn.classList.remove('copied');
+        if(!isIcon) btn.textContent = label;
+      }, 1400);
+    }
+  }
+
   function init(){
     initThemeToggle();
     initDocsTabs();
+    initScrollSpy();
+    initAnchors();
+    initCopy();
   }
 
   if(document.readyState === 'loading'){
