@@ -50,7 +50,7 @@ const GEMINI_INLINE_JSON = `{
 
 const AGENT_GUIDE_URL = "https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md";
 const SUPPORT_TELEGRAM_URL = "https://t.me/apitokensupportbot";
-const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "models", "gemini-batch", "gemini-files", "errors", "caching", "next"] as const;
+const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "usage", "models", "gemini-batch", "gemini-files", "errors", "caching", "next"] as const;
 
 const copy = {
   en: {
@@ -63,6 +63,7 @@ const copy = {
     support: "Setup support",
     quickstart: "Quick start",
     api: "API",
+    usageBalance: "Balance & usage",
     errors: "Errors",
     title: "Connect any model",
     lead: "One API key, one endpoint, every available model — native Anthropic, OpenAI, and Gemini protocols plus an OpenAI-compatible API for any client. Your AI agent configures and verifies the connection.",
@@ -161,6 +162,7 @@ const copy = {
     support: "Помощь с подключением",
     quickstart: "Быстрый старт",
     api: "API",
+    usageBalance: "Баланс и расход",
     errors: "Ошибки",
     title: "Подключение моделей",
     lead: "Один API‑ключ, один endpoint, все доступные модели — нативные протоколы Anthropic, OpenAI и Gemini плюс OpenAI‑совместимый API для любого клиента. AI‑агент сам настроит и проверит подключение.",
@@ -262,6 +264,7 @@ export function DocsPortal({ openaiCatalog }: { openaiCatalog?: OpenAiModel[] })
     { id: "setup-support", label: t.support },
     { id: "quickstart", label: t.quickstart },
     { id: "api", label: t.api },
+    { id: "usage", label: t.usageBalance },
     { id: "models", label: t.models },
     { id: "gemini-batch", label: t.geminiBatch },
     { id: "gemini-files", label: t.geminiFiles },

@@ -98,7 +98,11 @@ export function ApiReference({ language }: { language: IntegrationLanguage }) {
       </div>
 
       <ol className="ib-steps">
-        {guide.steps.map((step, index) => <li key={`${provider}-${apiStyle}-${apiLanguage}-${index}`}>
+        {guide.steps.map((step, index) => {
+          // The balance/usage step doubles as the page's "usage" anchor — the
+          // sidebar links to it like the source docs do.
+          const isUsageStep = /\/usage`/.test(step.text);
+          return <li key={`${provider}-${apiStyle}-${apiLanguage}-${index}`} {...(isUsageStep ? { id: "usage" } : {})}>
           <div className="ib-step-head">
             <span aria-hidden="true">{index + 1}</span>
             <h5>{step.title}</h5>
@@ -108,7 +112,8 @@ export function ApiReference({ language }: { language: IntegrationLanguage }) {
             <div className="ib-code-bar"><i className="ib-dots" aria-hidden="true" /><span>{step.codeLabel}</span><button type="button" onClick={() => copyStep(index, step.code)}><CopyIcon copied={copiedStep === index} />{copiedStep === index ? tr(language, "Copied", "Скопировано") : tr(language, "Copy", "Копировать")}</button></div>
             <pre><code><HighlightedCode code={step.code} /></code></pre>
           </div>
-        </li>)}
+        </li>;
+        })}
       </ol>
 
       <footer className="ib-guide-foot">
