@@ -31,6 +31,8 @@
   --line:rgba(12,11,17,.12);
   --line-soft:rgba(12,11,17,.07);
   --muted:var(--g400);
+  --accent-soft:rgba(255,89,73,.10);
+  --accent-line:rgba(255,89,73,.35);
 
   /* elevation */
   --shadow-xs:0 1px 2px rgba(12,11,17,.04);
@@ -66,6 +68,8 @@
   --accent:#FF6A5A;
   --accent-2:#FF5949;
   --accent-glow:rgba(255,106,90,.30);
+  --accent-soft:rgba(255,106,90,.14);
+  --accent-line:rgba(255,106,90,.38);
 
   --shadow-xs:0 1px 2px rgba(0,0,0,.2);
   --shadow-s:0 2px 8px rgba(0,0,0,.25);
@@ -295,7 +299,11 @@ body::before{
 [data-theme="dark"] .hdr:not(.small) .theme-tgl,[data-theme="dark"] .hdr:not(.small) .theme-tgl:hover{color:var(--ink);border-color:rgba(12,11,17,.4)}
 
 /* Docs pages have no coral hero plate — the header there always follows the
-   page theme instead of the "on the plate" treatment. */
+   page theme instead of the "on the plate" treatment, and it stays opaque so
+   page content never bleeds through while scrolling. */
+.page-docs .hdr:not(.small){background:var(--paper);backdrop-filter:none}
+[data-theme="dark"] .page-docs .hdr:not(.small){background:var(--bg)}
+.page-docs .hdr .hdr__in{border-bottom-color:var(--line)}
 .page-docs .hdr:not(.small) .brand{color:var(--fg)}
 .page-docs .hdr:not(.small) .brand__mark{background:var(--accent)}
 .page-docs .hdr:not(.small) .nav a{color:var(--muted)}

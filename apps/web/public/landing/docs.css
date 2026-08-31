@@ -98,24 +98,35 @@
   gap:clamp(28px,3.5vw,64px);
 }
 
-/* sidebar */
+/* sidebar — same look as the dashboard side nav: card surface, pill items,
+   active item on soft accent */
 .docs-sidebar{
-  position:sticky;top:calc(var(--hdr-h) + 28px);
-  align-self:start;display:flex;flex-direction:column;gap:16px;
-  max-height:calc(100vh - var(--hdr-h) - 56px);overflow:auto;
+  position:sticky;top:calc(var(--hdr-h) + 20px);
+  align-self:start;display:flex;flex-direction:column;
+  max-height:calc(100vh - var(--hdr-h) - 40px);
+  background:#fff;border:1px solid var(--line);border-radius:var(--r-m);
+  padding:18px 12px;overflow:hidden;
 }
+[data-theme="dark"] .docs-sidebar{background:var(--surface)}
 .docs-sidebar__label{
   font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--muted);
+  color:var(--muted);padding:0 10px;margin-bottom:12px;
 }
-.docs-sidebar__nav{display:flex;flex-direction:column}
+.docs-sidebar__nav{
+  display:flex;flex-direction:column;gap:3px;flex:1;min-height:0;
+  overflow-y:auto;overscroll-behavior:contain;
+}
 .docs-sidebar__nav a{
-  position:relative;padding:8px 0 8px 16px;font-size:13.5px;font-weight:500;
-  color:var(--muted);border-left:1px solid var(--line);
-  transition:color .2s,border-color .2s;
+  display:flex;align-items:center;min-height:36px;padding:9px 12px;
+  border:1px solid transparent;border-radius:8px;
+  font-family:var(--mono);font-size:12.5px;color:var(--muted);
+  transition:background-color .14s,color .14s,border-color .14s;
 }
-.docs-sidebar__nav a:hover{color:var(--fg)}
-.docs-sidebar__nav a.active{color:var(--fg);border-left-color:var(--accent)}
+.docs-sidebar__nav a:hover{background:var(--paper-2);color:var(--fg)}
+[data-theme="dark"] .docs-sidebar__nav a:hover{background:rgba(240,239,235,.06)}
+.docs-sidebar__nav a.active{
+  background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent);
+}
 
 /* main column */
 .docs-main{min-width:0}
