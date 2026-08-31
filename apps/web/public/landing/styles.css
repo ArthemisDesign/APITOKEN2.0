@@ -1674,4 +1674,5 @@ body{line-height:1.5}
 
 /* ---------- page fade on language switch (apply class before navigating) ---------- */
 html.lang-fade body{opacity:0;transition:opacity .16s ease}
-@media (prefers-reduced-motion:reduce){html.lang-fade body{transition:none}}
+html:not(.lang-fade) body{transition:opacity .2s ease}
+@media (prefers-reduced-motion:reduce){html.lang-fade body,html:not(.lang-fade) body{transition:none}}
