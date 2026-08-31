@@ -29,9 +29,9 @@ describe("API reference guide", () => {
             const guide = buildApiGuide({ provider, apiStyle, apiLanguage, language });
             const withImageStep = provider === "openai" && apiStyle === "native";
             expect(guide.endpoint).toBe(apiStyle === "native" ? nativeEndpoints[provider] : ROUTER_OPENAI_BASE_URL);
-            expect(guide.steps.length).toBe((apiLanguage === "curl" ? 2 : 3) + (withImageStep ? 2 : 0));
+            expect(guide.steps.length).toBe((apiLanguage === "curl" ? 3 : 4) + (withImageStep ? 2 : 0));
             expect(guide.steps.every((step) => step.code.trim().length > 0)).toBe(true);
-            const request = guide.steps.at(withImageStep ? -3 : -1)!.code;
+            const request = guide.steps.at(withImageStep ? -4 : -2)!.code;
             expect(request).toContain(
               apiStyle === "native" ? INTEGRATION_MODELS[provider][0].id : namespacedModelId(provider, INTEGRATION_MODELS[provider][0].id),
             );

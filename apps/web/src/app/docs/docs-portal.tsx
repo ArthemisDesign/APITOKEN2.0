@@ -48,50 +48,9 @@ const GEMINI_INLINE_JSON = `{
   ]
 }`;
 
-const USAGE_CURL = `curl -sG "https://router.apitoken.sale/usage" \\
-  -H "x-api-key: $APITOKEN_API_KEY" \\
-  --data-urlencode "from=2026-08-01T00:00:00Z" \\
-  --data-urlencode "to=2026-09-01T00:00:00Z" \\
-  --data-urlencode "group_by=model"`;
-
-const USAGE_RESPONSE_JSON = `{
-  "account": "acct_…",
-  "from": "2026-08-01T00:00:00Z",
-  "to": "2026-09-01T00:00:00Z",
-  "group_by": "model",
-  "balance": {
-    "balance": "$12.345678",
-    "balance_nano": 12345678000,
-    "reserved_nano": 0,
-    "spent": "$3.210000",
-    "status": "active"
-  },
-  "totals": {
-    "requests": 1804,
-    "cost": "$3.210000",
-    "cost_nano": "3210000000",
-    "list_cost": "$6.420000",
-    "input_tokens": 9000000,
-    "output_tokens": 250000,
-    "cache_read_tokens": 4100000
-  },
-  "data": [
-    {
-      "provider": "anthropic",
-      "model": "claude-opus-4-8",
-      "requests": 1200,
-      "cost": "$2.100000",
-      "cost_nano": "2100000000",
-      "list_cost": "$4.200000",
-      "input_tokens": 7000000,
-      "output_tokens": 180000
-    }
-  ]
-}`;
-
 const AGENT_GUIDE_URL = "https://github.com/apitokensale-admin/apitoken.sale/blob/main/skills/use-apitoken/SKILL.md";
 const SUPPORT_TELEGRAM_URL = "https://t.me/apitokensupportbot";
-const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "usage", "models", "gemini-batch", "gemini-files", "errors", "caching", "next"] as const;
+const SECTION_IDS = ["overview", "agent-setup", "setup-support", "quickstart", "api", "models", "gemini-batch", "gemini-files", "errors", "caching", "next"] as const;
 
 const copy = {
   en: {
@@ -104,24 +63,6 @@ const copy = {
     support: "Setup support",
     quickstart: "Quick start",
     api: "API",
-    usage: "Balance & usage",
-    usageTitle: "Balance and usage API",
-    usageText: "The same key that spends the money reads what it spent. One route returns the live balance and the exact spend over any window, across every provider — no dashboard, no second credential.",
-    usageParam: "Parameter",
-    usageParamDoes: "What it does",
-    usageFrom: "from",
-    usageFromText: "Start of the window, inclusive. RFC3339 UTC — `2026-08-01T00:00:00Z`, an explicit numeric offset, or a bare `2026-08-01`. Defaults to `to` minus 30 days.",
-    usageTo: "to",
-    usageToText: "End of the window, exclusive. Same forms. Defaults to now; a future value is clamped to now.",
-    usageGroupBy: "group_by",
-    usageGroupByText: "`model` (default), `provider`, `day`, `day,provider`, `day,model` or `api_key`. Order inside the list does not matter, and `model,provider` is simply an alias of `model` — a model row already names its provider.",
-    usageRequestTitle: "One request",
-    usageRequestText: "Send your `sk-pool-` key in `x-api-key` (or as `Authorization: Bearer`). Every entry host serves this route.",
-    usageResponseTitle: "The answer",
-    usageResponseText: "The response echoes the exact interval it used, then the live balance, the totals and one row per group.",
-    usagePrices: "Two prices, both exact. `cost` is what you were charged; `list_cost` is the provider list price for the same traffic — the difference is your discount. Each also comes as an integer `*_nano` string. Read money as a string, never as a float.",
-    usageUtc: "Explicit UTC only. Local time without an offset is rejected: guessing a zone would silently move the boundaries of a money report. The window must be positive and at most 366 days, otherwise the answer is `400` with the reason in `error`.",
-    usageSlices: "Slices that add up. Every slice of one window sums to the same total, because all of them are read from a single consistent snapshot. Token counts live in the `model`, `provider` and `day,model` slices; the plain `day` slices carry money and request counts. `day,model` — the per-model daily series — is capped at 92 days and answers `400` beyond that instead of silently dropping rows. Keys are masked. `GET /balance` returns the balance alone.",
     errors: "Errors",
     title: "Connect any model",
     lead: "One API key, one endpoint, every available model — native Anthropic, OpenAI, and Gemini protocols plus an OpenAI-compatible API for any client. Your AI agent configures and verifies the connection.",
@@ -220,24 +161,6 @@ const copy = {
     support: "Помощь с подключением",
     quickstart: "Быстрый старт",
     api: "API",
-    usage: "Баланс и расход",
-    usageTitle: "API баланса и расхода",
-    usageText: "Тот же ключ, который тратит деньги, читает, на что они ушли. Один маршрут отдаёт живой баланс и точный расход за любое окно по всем провайдерам — без личного кабинета и без второго ключа.",
-    usageParam: "Параметр",
-    usageParamDoes: "Что задаёт",
-    usageFrom: "from",
-    usageFromText: "Начало окна, включительно. RFC3339 UTC — `2026-08-01T00:00:00Z`, явный числовой offset или голая дата `2026-08-01`. По умолчанию — `to` минус 30 дней.",
-    usageTo: "to",
-    usageToText: "Конец окна, не включается. Те же формы. По умолчанию — «сейчас»; будущее значение подрезается до «сейчас».",
-    usageGroupBy: "group_by",
-    usageGroupByText: "`model` (по умолчанию), `provider`, `day`, `day,provider`, `day,model` или `api_key`. Порядок в списке не важен, а `model,provider` — просто псевдоним `model`: строка модели и так называет своего провайдера.",
-    usageRequestTitle: "Один запрос",
-    usageRequestText: "Передайте свой ключ `sk-pool-` в `x-api-key` (или как `Authorization: Bearer`). Маршрут обслуживают все точки входа.",
-    usageResponseTitle: "Ответ",
-    usageResponseText: "В ответе эхом возвращается ровно то окно, по которому посчитан отчёт, затем живой баланс, итоги и по строке на группу.",
-    usagePrices: "Две цены, обе точные. `cost` — что списано с вас; `list_cost` — прайс провайдера за тот же трафик, разница и есть ваша скидка. Обе дублируются целой строкой `*_nano`. Читайте деньги как строку, никогда как float.",
-    usageUtc: "Только явный UTC. Локальное время без offset отклоняется: догадка о зоне молча сдвинула бы границы денежного отчёта. Окно должно быть положительным и не длиннее 366 дней, иначе придёт `400` с причиной в `error`.",
-    usageSlices: "Разрезы сходятся. Любой разрез одного окна даёт тот же итог: все они читаются из одного согласованного снимка. Токены есть в разрезах `model`, `provider` и `day,model`; простые дневные разрезы несут деньги и число запросов. Разрез `day,model` — расход по каждой модели по дням — ограничен 92 днями и за этой границей отвечает `400`, а не молча теряет строки. Ключи маскируются. `GET /balance` отдаёт только баланс.",
     errors: "Ошибки",
     title: "Подключение моделей",
     lead: "Один API‑ключ, один endpoint, все доступные модели — нативные протоколы Anthropic, OpenAI и Gemini плюс OpenAI‑совместимый API для любого клиента. AI‑агент сам настроит и проверит подключение.",
@@ -339,7 +262,6 @@ export function DocsPortal({ openaiCatalog }: { openaiCatalog?: OpenAiModel[] })
     { id: "setup-support", label: t.support },
     { id: "quickstart", label: t.quickstart },
     { id: "api", label: t.api },
-    { id: "usage", label: t.usage },
     { id: "models", label: t.models },
     { id: "gemini-batch", label: t.geminiBatch },
     { id: "gemini-files", label: t.geminiFiles },
@@ -424,34 +346,18 @@ export function DocsPortal({ openaiCatalog }: { openaiCatalog?: OpenAiModel[] })
           <ApiReference language={language} />
         </section>
 
-        <section className="docs-section" id="usage">
-          <div className="docs-section-heading"><span>04</span><div><h2>{t.usageTitle}</h2><p>{t.usageText}</p></div></div>
-          <div className="table-scroll"><table className="mtable"><thead><tr><th>{t.usageParam}</th><th>{t.usageParamDoes}</th></tr></thead><tbody>
-            <UsageRow param={t.usageFrom} text={t.usageFromText} labels={t} />
-            <UsageRow param={t.usageTo} text={t.usageToText} labels={t} />
-            <UsageRow param={t.usageGroupBy} text={t.usageGroupByText} labels={t} />
-          </tbody></table></div>
-          <div className="docs-cache-stack">
-            <CacheCard title={t.usageRequestTitle} text={t.usageRequestText} code={USAGE_CURL} codeLabel="HTTP · Request" copyLabel={t.copy} copiedLabel={t.copied} />
-            <CacheCard title={t.usageResponseTitle} text={t.usageResponseText} code={USAGE_RESPONSE_JSON} codeLabel="JSON · Response" copyLabel={t.copy} copiedLabel={t.copied} />
-          </div>
-          <p className="docs-note"><Prose text={t.usagePrices} /></p>
-          <p className="docs-note"><Prose text={t.usageUtc} /></p>
-          <p className="docs-note"><Prose text={t.usageSlices} /></p>
-        </section>
-
         <section className="docs-section" id="models">
-          <div className="docs-section-heading"><span>05</span><div><h2>{t.modelsTitle}</h2><p>{t.modelsText}</p></div></div>
+          <div className="docs-section-heading"><span>04</span><div><h2>{t.modelsTitle}</h2><p>{t.modelsText}</p></div></div>
           <ModelsPricing language={language} openaiCatalog={openaiCatalog} />
         </section>
 
         <section className="docs-section" id="gemini-batch">
-          <div className="docs-section-heading"><span>06</span><div><h2>{t.geminiBatchTitle}</h2><p>{t.geminiBatchText}</p></div></div>
+          <div className="docs-section-heading"><span>05</span><div><h2>{t.geminiBatchTitle}</h2><p>{t.geminiBatchText}</p></div></div>
           <GeminiBatchGuide language={language} />
         </section>
 
         <section className="docs-section" id="gemini-files">
-          <div className="docs-section-heading"><span>07</span><div><h2>{t.geminiFilesTitle}</h2><p>{t.geminiFilesText}</p></div></div>
+          <div className="docs-section-heading"><span>06</span><div><h2>{t.geminiFilesTitle}</h2><p>{t.geminiFilesText}</p></div></div>
           <div className="table-scroll"><table className="mtable"><thead><tr><th>{t.gfKind}</th><th>{t.gfStatus}</th><th>{t.gfHow}</th></tr></thead><tbody>
             <FileRow kind={t.gfImages} status={t.gfYes} how={t.gfImagesHow} labels={t} />
             <FileRow kind={t.gfPdf} status={t.gfYes} how={t.gfPdfHow} labels={t} />
@@ -467,12 +373,12 @@ export function DocsPortal({ openaiCatalog }: { openaiCatalog?: OpenAiModel[] })
         </section>
 
         <section className="docs-section" id="errors">
-          <div className="docs-section-heading"><span>08</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
+          <div className="docs-section-heading"><span>07</span><div><h2>{t.errorTitle}</h2><p>{t.errorText}</p></div></div>
           <div className="table-scroll"><table className="mtable docs-errors"><thead><tr><th>{t.status}</th><th>{t.meaning}</th><th>{t.action}</th></tr></thead><tbody><ErrorRow code="401" meaning={t.e401} action={t.a401} labels={t} /><ErrorRow code="402" meaning={t.e402} action={t.a402} labels={t} /><ErrorRow code="429" meaning={t.e429} action={t.a429} labels={t} /><ErrorRow code="5xx" meaning={t.e5xx} action={t.a5xx} labels={t} /></tbody></table></div>
         </section>
 
         <section className="docs-section" id="caching">
-          <div className="docs-section-heading"><span>09</span><div><h2>{t.cachingTitle}</h2><p>{t.cachingText}</p></div></div>
+          <div className="docs-section-heading"><span>08</span><div><h2>{t.cachingTitle}</h2><p>{t.cachingText}</p></div></div>
           <div className="docs-cache-stack">
             <CacheCard title={t.cacheClaude} text={t.cacheClaudeText} code={CLAUDE_CACHE_JSON} codeLabel="JSON · Request" copyLabel={t.copy} copiedLabel={t.copied} />
             <CacheCard title={t.cacheGpt} text={t.cacheGptText} code={GPT_CACHE_JSON} codeLabel="JSON · Response" copyLabel={t.copy} copiedLabel={t.copied} />
@@ -480,7 +386,7 @@ export function DocsPortal({ openaiCatalog }: { openaiCatalog?: OpenAiModel[] })
         </section>
 
         <section className="docs-section docs-next" id="next">
-          <div className="docs-section-heading"><span>10</span><div><h2>{t.nextSteps}</h2><p>{t.nextStepsText}</p></div></div>
+          <div className="docs-section-heading"><span>09</span><div><h2>{t.nextSteps}</h2><p>{t.nextStepsText}</p></div></div>
           <div className="learn-related">
             <Link className="learn-related-card" href={localeHref("/models", language)}><strong>{t.nextModels}</strong><span>{t.nextModelsText}</span></Link>
             <Link className="learn-related-card" href={localeHref("/plans", language)}><strong>{t.nextPricing}</strong><span>{t.nextPricingText}</span></Link>
@@ -560,10 +466,6 @@ function AgentCopyButton({ prompt, label, copiedLabel }: { prompt: string; label
 
 function ErrorRow({ code, meaning, action, labels }: { code: string; meaning: string; action: string; labels: { status: string; meaning: string; action: string } }) {
   return <tr><td data-label={labels.status}><code>{code}</code></td><td data-label={labels.meaning}><span>{meaning}</span></td><td data-label={labels.action}><span><Prose text={action} /></span></td></tr>;
-}
-
-function UsageRow({ param, text, labels }: { param: string; text: string; labels: { usageParam: string; usageParamDoes: string } }) {
-  return <tr><td data-label={labels.usageParam}><code>{param}</code></td><td data-label={labels.usageParamDoes}><span><Prose text={text} /></span></td></tr>;
 }
 
 function FileRow({ kind, status, how, labels }: { kind: string; status: string; how: string; labels: { gfKind: string; gfStatus: string; gfHow: string } }) {

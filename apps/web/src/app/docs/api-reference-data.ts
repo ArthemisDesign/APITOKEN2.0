@@ -358,6 +358,40 @@ const response = await client.responses.create({
 });`;
 }
 
+function usageRequestCode(apiLanguage: ApiLanguage): string {
+  if (apiLanguage === "curl") {
+    return `curl -sG "${ROUTER_BASE_URL}/usage" \\
+  -H "x-api-key: $APITOKEN_API_KEY" \\
+  --data-urlencode "from=2026-08-01T00:00:00Z" \\
+  --data-urlencode "to=2026-09-01T00:00:00Z" \\
+  --data-urlencode "group_by=model"`;
+  }
+  if (apiLanguage === "python") {
+    return `import os
+import requests
+
+response = requests.get(
+    "${ROUTER_BASE_URL}/usage",
+    headers={"x-api-key": os.environ["APITOKEN_API_KEY"]},
+    params={
+        "from": "2026-08-01T00:00:00Z",
+        "to": "2026-09-01T00:00:00Z",
+        "group_by": "model",
+    },
+)
+print(response.json())`;
+  }
+  return `const response = await fetch(
+  "${ROUTER_BASE_URL}/usage?" + new URLSearchParams({
+    from: "2026-08-01T00:00:00Z",
+    to: "2026-09-01T00:00:00Z",
+    group_by: "model",
+  }),
+  { headers: { "x-api-key": process.env.APITOKEN_API_KEY! } },
+);
+console.log(await response.json());`;
+}
+
 function installStep(provider: IntegrationProvider, style: ApiStyle, apiLanguage: ApiLanguage, language: IntegrationLanguage): ApiStep | null {
   if (apiLanguage === "curl") return null;
   const native = style === "native";
@@ -453,6 +487,14 @@ export function buildApiGuide({
     code: native
       ? nativeRequestCode(provider, apiLanguage, model.id)
       : compatibleRequestCode(provider, apiLanguage, model.id),
+    codeLabel: apiLanguage === "curl" ? "HTTP" : languageName,
+  });
+  steps.push({
+    title: localize(language, "Check balance and usage", "Считайте баланс и расход"),
+    text: localize(language,
+      `The same key reads its own account: \`GET ${ROUTER_BASE_URL}/usage\` returns the live balance and the spend for any window — \`from\` and \`to\` in RFC3339 UTC (\`to\` is exclusive), \`group_by\` is one of \`model\`, \`provider\`, \`day\`, \`day,provider\`, \`day,model\`, \`api_key\`. The default is the last 30 days grouped by model. One report covers every catalog provider. \`cost\` is what you were charged, \`list_cost\` the provider list price for the same traffic; each is also an exact integer \`*_nano\` string — read money as a string, never as a float. The window is at most 366 days. \`GET ${ROUTER_BASE_URL}/balance\` returns the balance alone.`,
+      `Тот же ключ читает свой аккаунт: \`GET ${ROUTER_BASE_URL}/usage\` возвращает живой баланс и расход за любое окно — \`from\` и \`to\` в RFC3339 UTC (\`to\` не включается), \`group_by\` — одно из \`model\`, \`provider\`, \`day\`, \`day,provider\`, \`day,model\`, \`api_key\`. По умолчанию — последние 30 дней в разрезе моделей. Один отчёт покрывает всех провайдеров каталога. \`cost\` — что списано с вас, \`list_cost\` — прайс провайдера за тот же трафик; оба дублируются точной целой строкой \`*_nano\` — читайте деньги как строку, не как float. Окно не длиннее 366 дней. \`GET ${ROUTER_BASE_URL}/balance\` отдаёт только баланс.`),
+    code: usageRequestCode(apiLanguage),
     codeLabel: apiLanguage === "curl" ? "HTTP" : languageName,
   });
 
