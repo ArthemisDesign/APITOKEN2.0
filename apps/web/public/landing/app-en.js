@@ -478,28 +478,3 @@ $('#b2bForm')?.addEventListener('submit', e => {
 })();
 
 observeReveals();
-
-/* language switch: fade the page out before navigating so the swap reads
-   as one smooth transition instead of a hard jump */
-(function(){
-  document.querySelectorAll('.lang__link').forEach(function(a){
-    a.addEventListener('click', function(e){
-      if(a.classList.contains('is-active')) return;
-      const href = a.getAttribute('href');
-      if(!href) return;
-      e.preventDefault();
-      /* slide the switcher thumb, then cover the page with a theme-colored
-         veil and navigate under it — the next page fades the veil out,
-         so no white/dark viewport frame can ever show between pages */
-      const wrap = a.closest('.lang');
-      if(wrap) wrap.dataset.active = /en\.html/.test(href) ? 'en' : 'ru';
-      try { sessionStorage.setItem('apitoken-lang-fade', '1'); } catch(e2) {}
-      const dark = document.documentElement.dataset.theme === 'dark';
-      const veil = document.createElement('div');
-      veil.style.cssText = 'position:fixed;inset:0;z-index:9999;background:' + (dark ? '#0C0B11' : '#F4F3EF') + ';opacity:0;transition:opacity .18s ease;pointer-events:none';
-      document.body.appendChild(veil);
-      requestAnimationFrame(function(){ veil.style.opacity = '1'; });
-      window.setTimeout(function(){ window.location.href = href; }, 200);
-    });
-  });
-})();
