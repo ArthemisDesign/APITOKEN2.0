@@ -291,8 +291,11 @@ body::before{
 .hdr:not(.small) .lang{border-color:rgba(17,17,17,.18);background:rgba(255,255,255,.35)}
 [data-theme="dark"] .hdr:not(.small) .lang{background:var(--surface);border-color:var(--line)}
 .hdr:not(.small) .lang__link{color:rgba(17,17,17,.65)}
+[data-theme="dark"] .hdr:not(.small) .lang__link{color:var(--muted)}
+[data-theme="dark"] .hdr:not(.small) .lang__link:hover{color:var(--fg)}
 .hdr:not(.small) .lang__link:hover{color:var(--ink)}
 .hdr:not(.small) .lang__link.is-active{color:#fff}
+[data-theme="dark"] .hdr:not(.small) .lang__link.is-active{color:var(--ink)}
 .lang__sep{display:none}
 .lnk{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);cursor:pointer;transition:color .2s}
 .lnk:hover{color:var(--fg)}
