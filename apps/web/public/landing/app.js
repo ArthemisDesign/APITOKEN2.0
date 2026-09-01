@@ -610,6 +610,7 @@ observeReveals();
     wrap.querySelectorAll('.lang__link').forEach(function(a){
       a.addEventListener('click', function(){
         wrap.dataset.active = /en\.html/.test(a.getAttribute('href') || '') ? 'en' : 'ru';
+        wrap.querySelectorAll('.lang__link').forEach(function(x){ x.classList.toggle('is-active', x === a); });
         /* remember how far down the page we are (as a fraction) so the other
            language opens at the same relative position instead of jumping to top */
         try {
