@@ -189,7 +189,7 @@
       if(wrap) wrap.dataset.active = /en\.html/.test(href) ? 'en' : 'ru';
       try { sessionStorage.setItem('apitoken-lang-fade', '1'); } catch(e2) {}
       document.documentElement.classList.add('lang-fade');
-      window.setTimeout(function(){ window.location.href = href; }, 220);
+      window.setTimeout(function(){ window.location.href = href; }, 200);
     });
   });
 })();
