@@ -427,10 +427,26 @@ $$('[data-count]').forEach(n => countIO.observe(n));
     b.onclick = () => {
       profile = p;
       $$('.chip', profWrap).forEach(x => x.classList.toggle('on', x === b));
+      moveThumb();
       renderParams(); recalc(true);
     };
     profWrap.appendChild(b);
   });
+
+  /* gliding thumb behind the active chip — same feel as the language switcher */
+  const thumb = el('span', 'chip-thumb');
+  thumb.setAttribute('aria-hidden', 'true');
+  profWrap.insertBefore(thumb, profWrap.firstChild);
+  function moveThumb() {
+    const on = profWrap.querySelector('.chip.on');
+    if (!on) return;
+    thumb.style.width = on.offsetWidth + 'px';
+    thumb.style.height = on.offsetHeight + 'px';
+    thumb.style.transform = 'translate(' + on.offsetLeft + 'px,' + on.offsetTop + 'px)';
+  }
+  window.addEventListener('resize', moveThumb);
+  requestAnimationFrame(moveThumb);
+  window.addEventListener('load', moveThumb);
 
   function renderParams() {
     params.innerHTML = '';

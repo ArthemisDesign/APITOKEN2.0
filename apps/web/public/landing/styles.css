@@ -495,13 +495,13 @@ body::before{
   background:transparent;margin-bottom:clamp(36px,4vw,64px)
 }
 .chip{
-  font-family:var(--sans);font-size:13px;font-weight:500;letter-spacing:-.01em;
+  position:relative;font-family:var(--sans);font-size:13px;font-weight:500;letter-spacing:-.01em;
   padding:10px 16px;border-radius:999px;cursor:pointer;
   color:var(--muted);background:transparent;border:0;
-  transition:color .2s,background .2s;white-space:nowrap;
+  transition:color .32s cubic-bezier(.45,.05,.25,1);white-space:nowrap;
 }
 .chip:hover{color:var(--fg);background:var(--paper-2)}
-.chip.on{background:var(--ink);color:#fff}
+.chip.on{color:#fff;background:transparent}
 .sec--accent .chip.on{background:#fff;color:var(--accent)}
 
 .prov{border-top:1px solid var(--line);padding:clamp(32px,3.6vw,60px) 0;display:grid;grid-template-columns:repeat(12,1fr);gap:var(--gutter)}
@@ -712,8 +712,16 @@ body::before{
   border:1px solid var(--accent);color:var(--accent);
   font-size:10px;letter-spacing:.06em;
 }
-.calc__opts{display:inline-flex;flex-wrap:wrap;gap:6px;padding:0;border:0;border-radius:0;background:transparent}
-.calc__opts .chip{padding:10px 16px}
+.calc__opts{position:relative;display:inline-flex;flex-wrap:wrap;gap:6px;padding:0;border:0;border-radius:0;background:transparent}
+/* gliding thumb behind the active chip — same motion as the language switcher */
+.calc__opts .chip-thumb{
+  position:absolute;top:0;left:0;height:100%;border-radius:999px;background:var(--ink);
+  transition:transform .32s cubic-bezier(.45,.05,.25,1),width .32s cubic-bezier(.45,.05,.25,1);
+  pointer-events:none;will-change:transform;
+}
+[data-theme="dark"] .calc__opts .chip-thumb{background:var(--paper)}
+[data-theme="dark"] .calc__opts .chip.on{color:var(--ink)}
+.calc__opts .chip{padding:10px 16px;z-index:1}
 .calc__spend{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:14px 18px;max-width:360px;background:var(--paper)}
 .calc__spend span,.calc__spend em{font-family:var(--mono);font-size:13px;color:var(--muted);font-style:normal}
 .calc__spend input{flex:1;min-width:0;outline:none;font-size:clamp(24px,2.6vw,38px);font-weight:600;letter-spacing:-.04em;background:transparent}
