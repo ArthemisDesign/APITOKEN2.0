@@ -165,7 +165,8 @@
 [data-theme="dark"] .mcard:hover .tag{border-color:rgba(12,11,17,.4);color:var(--ink)}
 
 *{box-sizing:border-box;margin:0;padding:0}
-html{scroll-behavior:smooth;overflow-x:clip;background:var(--bg)}
+html{scroll-behavior:smooth;overflow-x:clip;background:#F4F3EF}
+[data-theme="dark"] html,[data-theme="dark"]{background:#0C0B11}
 body{
   background:var(--bg);color:var(--fg);
   font-family:var(--sans);
@@ -1681,7 +1682,12 @@ body{line-height:1.5}
 [data-theme="dark"] .page-docs .hdr:not(.small) .theme-tgl,
 [data-theme="dark"] .page-docs .hdr:not(.small) .theme-tgl:hover{color:var(--accent);border-color:rgba(255,106,90,.4)}
 
-/* ---------- page fade on language switch (apply class before navigating) ---------- */
+/* ---------- page fade on language switch (apply class before navigating) ----------
+   During the fade the page background stays the theme bg on BOTH html and body,
+   so no white/dark viewport frame can show through the transparent body. */
+html{background:#F4F3EF}
+[data-theme="dark"] html{background:#0C0B11}
+html.lang-fade,html.lang-fade body{background:inherit}
 html.lang-fade body{opacity:0;transition:opacity .16s ease}
 html:not(.lang-fade) body{transition:opacity .2s ease}
 @media (prefers-reduced-motion:reduce){html.lang-fade body,html:not(.lang-fade) body{transition:none}}
