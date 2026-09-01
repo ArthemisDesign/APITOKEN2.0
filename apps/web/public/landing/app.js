@@ -602,3 +602,15 @@ $('#b2bForm')?.addEventListener('submit', e => {
    INIT
    --------------------------------------------------------- */
 observeReveals();
+
+/* language switcher: glide the thumb to the hovered/target language on click,
+   then let the plain link navigate — no page fade, no white flash */
+(function(){
+  document.querySelectorAll('.lang').forEach(function(wrap){
+    wrap.querySelectorAll('.lang__link').forEach(function(a){
+      a.addEventListener('click', function(){
+        wrap.dataset.active = /en\.html/.test(a.getAttribute('href') || '') ? 'en' : 'ru';
+      });
+    });
+  });
+})();
