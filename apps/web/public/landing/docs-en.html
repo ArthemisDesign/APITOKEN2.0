@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(function(){try{if(localStorage.getItem("apitoken-theme")==="dark")document.documentElement.dataset.theme="dark"}catch(e){}})();</script>
-<script>(function(){try{var r=document.documentElement;if(!sessionStorage.getItem("apitoken-lang-fade"))return;r.classList.add("lang-fade");var cleared=false;var clear=function(){if(cleared)return;cleared=true;sessionStorage.removeItem("apitoken-lang-fade");requestAnimationFrame(function(){requestAnimationFrame(function(){r.classList.remove("lang-fade")})})};if(document.readyState==="complete")clear();else window.addEventListener("load",clear);setTimeout(clear,1500)}catch(e){}})();</script>
+<script>(function(){try{if(!sessionStorage.getItem("apitoken-lang-fade"))return;var r=document.documentElement;var dark=r.dataset.theme==="dark";var v=document.createElement("div");v.id="lang-veil";v.style.cssText="position:fixed;inset:0;z-index:9999;pointer-events:none;background:"+(dark?"#0C0B11":"#F4F3EF")+";opacity:1;transition:opacity .22s ease";(document.body||document.documentElement).appendChild(v);var cleared=false;var clear=function(){if(cleared)return;cleared=true;sessionStorage.removeItem("apitoken-lang-fade");requestAnimationFrame(function(){requestAnimationFrame(function(){v.style.opacity="0";setTimeout(function(){v.remove()},260)})})};if(document.readyState==="complete")clear();else window.addEventListener("load",clear);setTimeout(clear,1500)}catch(e){}})();</script>
 <title>API Documentation — apiToken</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
