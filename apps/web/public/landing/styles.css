@@ -261,6 +261,12 @@ body::before{
 .nav a{color:var(--muted);transition:color .2s}
 .nav a:hover{color:var(--fg)}
 .hdr__acts{display:flex;align-items:center;justify-content:flex-end;gap:14px}
+/* language-independent geometry: header actions keep fixed widths so switching
+   RU/EN never shifts the layout */
+.hdr__acts .lang{width:92px;flex:none}
+.hdr__acts .theme-tgl{width:34px;flex:none}
+.hdr__acts .lnk{width:52px;justify-content:center;text-align:center;flex:none}
+.hdr__acts .btn{width:130px;flex:none;padding-left:0;padding-right:0}
 .lang{
   position:relative;display:flex;align-items:center;gap:3px;
   padding:4px;border:1px solid var(--line);border-radius:999px;
@@ -1680,3 +1686,16 @@ body{line-height:1.5}
 [data-theme="dark"] .page-docs .hdr:not(.small) .burger span{background:var(--fg)}
 [data-theme="dark"] .page-docs .hdr:not(.small) .theme-tgl,
 [data-theme="dark"] .page-docs .hdr:not(.small) .theme-tgl:hover{color:var(--accent);border-color:rgba(255,106,90,.4)}
+
+/* ---------- language-stable section heights ----------
+   Sections keep the max height of the two languages so switching RU/EN never
+   changes element positions or page length — the layout stays put. */
+#models{min-height:2791px}
+#start{min-height:1464px}
+#value{min-height:1335px}
+#explorer{min-height:1103px}
+#integrations{min-height:1770px}
+#switch{min-height:877px}
+#calc{min-height:1160px}
+#learn{min-height:1288px}
+#grow{min-height:1115px}
