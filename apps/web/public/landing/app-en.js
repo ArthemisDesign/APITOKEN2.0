@@ -479,6 +479,26 @@ $('#b2bForm')?.addEventListener('submit', e => {
 
 observeReveals();
 
+
+/* theme toggle — light (warm paper) ↔ dark (deep ink), persisted. */
+(function(){
+  const KEY = 'apitoken-theme';
+  const root = document.documentElement;
+  const btn = document.getElementById('themeTgl');
+  const apply = (t) => {
+    if (t === 'dark') root.dataset.theme = 'dark'; else delete root.dataset.theme;
+    if (btn) btn.textContent = t === 'dark' ? '☾' : '☀';
+  };
+  let saved = 'light';
+  try { saved = localStorage.getItem(KEY) === 'dark' ? 'dark' : 'light'; } catch(e) {}
+  apply(saved);
+  if (btn) btn.addEventListener('click', () => {
+    saved = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem(KEY, saved); } catch(e) {}
+    apply(saved);
+  });
+})();
+
 /* language switcher: glide the thumb to the hovered/target language on click,
    then let the plain link navigate — no page fade, no white flash */
 (function(){
