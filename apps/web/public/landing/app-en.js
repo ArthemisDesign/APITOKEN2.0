@@ -486,6 +486,12 @@ observeReveals();
     wrap.querySelectorAll('.lang__link').forEach(function(a){
       a.addEventListener('click', function(){
         wrap.dataset.active = /en\.html/.test(a.getAttribute('href') || '') ? 'en' : 'ru';
+        /* remember how far down the page we are (as a fraction) so the other
+           language opens at the same relative position instead of jumping to top */
+        try {
+          const max = document.documentElement.scrollHeight - window.innerHeight;
+          if(max > 0) sessionStorage.setItem('apitoken-scroll-frac', String(window.scrollY / max));
+        } catch(e2) {}
       });
     });
   });
