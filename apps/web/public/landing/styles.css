@@ -289,6 +289,7 @@ body::before{
 .lang__link:hover{color:var(--fg)}
 .lang__link.is-active{color:#fff}
 .hdr:not(.small) .lang{border-color:rgba(17,17,17,.18);background:rgba(255,255,255,.35)}
+[data-theme="dark"] .hdr:not(.small) .lang{background:var(--surface);border-color:var(--line)}
 .hdr:not(.small) .lang__link{color:rgba(17,17,17,.65)}
 .hdr:not(.small) .lang__link:hover{color:var(--ink)}
 .hdr:not(.small) .lang__link.is-active{color:#fff}
