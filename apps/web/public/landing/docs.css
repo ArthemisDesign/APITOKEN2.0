@@ -139,7 +139,10 @@
   display:flex;align-items:center;gap:10px;flex:none;margin-top:12px;
   padding:12px 2px 0;border-top:1px solid var(--line);
 }
-.docs-side-foot .lang{padding:3px;background:transparent;border-color:var(--line)}
+.docs-side-foot .lang{padding:3px;background:transparent;border-color:var(--line);flex:none}
+/* theme toggle in the docs sidebar keeps its square size — flex would
+   otherwise shrink it to the glyph width next to the flexible dash button */
+.docs-side-foot .theme-tgl{width:34px;height:34px;flex:none}
 .docs-side-dash{flex:1;padding:9px 14px;font-size:12.5px}
 .docs-side-burger{
   display:none;position:fixed;top:14px;left:14px;z-index:80;
