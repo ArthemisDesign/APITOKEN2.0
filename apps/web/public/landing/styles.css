@@ -255,7 +255,13 @@ body::before{
 /* =========================================================
    HEADER
    ========================================================= */
-.hdr{position:sticky;top:0;z-index:60;background:rgba(240,239,235,.86);backdrop-filter:blur(12px);transition:border-color .3s}
+/* iOS Safari: with viewport-fit=cover the page runs under the sensor housing,
+   and a sticky header without the top safe-area inset can sit below the very
+   top of the visual viewport, leaving a background-colored gap above it.
+   Extend the header background into the notch area so the bar always reaches
+   the screen edge. env() is 0 on desktop and notch-less devices, so the
+   layout elsewhere (incl. the transparent .hdr:not(.small) state) is unchanged. */
+.hdr{position:sticky;top:0;z-index:60;background:rgba(240,239,235,.86);backdrop-filter:blur(12px);transition:border-color .3s;padding-top:env(safe-area-inset-top)}
 .hdr__in{align-items:center;padding:18px var(--margin);max-width:var(--maxw);margin:0 auto;border-bottom:1px solid transparent;transition:padding .3s,border-color .3s}
 .hdr.small .hdr__in{padding-top:11px;padding-bottom:11px;border-bottom-color:var(--line)}
 .brand{display:inline-flex;align-items:center;gap:9px;font-weight:600;font-size:17px;letter-spacing:-.03em}
@@ -1801,6 +1807,7 @@ body{line-height:1.5}
    visible only when the sidebar slides off-canvas */
 .b2b-side-burger{
   display:none;position:fixed;top:14px;left:14px;z-index:80;
+  top:calc(14px + env(safe-area-inset-top));
   width:42px;height:42px;align-items:center;justify-content:center;
   border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--fg);
   cursor:pointer;box-shadow:var(--shadow-s);
@@ -1812,6 +1819,9 @@ body{line-height:1.5}
   position:sticky;top:0;z-index:10;
   display:flex;align-items:center;gap:14px;
   min-height:64px;padding:0 32px;
+  /* iOS Safari: extend the bar into the top safe-area so no gap can open
+     above it when the visual viewport shifts (address bar, notch). */
+  padding-top:env(safe-area-inset-top);
   border-bottom:1px solid var(--line);
   background:var(--bg);
 }
