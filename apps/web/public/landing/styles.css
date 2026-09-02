@@ -729,9 +729,11 @@ body::before{
 .range{display:flex;flex-direction:column;gap:12px}
 .range__top{display:flex;justify-content:space-between;align-items:baseline}
 .range__val{font-size:clamp(24px,2.4vw,36px);font-weight:600;letter-spacing:-.04em}
-input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:3px;background:var(--line);border-radius:2px;outline:none}
-input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--accent);cursor:pointer;box-shadow:0 0 0 4px rgba(255,89,73,.15)}
-input[type=range]::-moz-range-thumb{width:18px;height:18px;border:0;border-radius:50%;background:var(--accent);cursor:pointer;box-shadow:0 0 0 4px rgba(255,89,73,.15)}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:3px;background:var(--line);border-radius:2px;outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--accent);cursor:pointer;box-shadow:0 0 0 4px rgba(255,89,73,.15);transition:box-shadow .25s}
+input[type=range]::-moz-range-thumb{width:18px;height:18px;border:0;border-radius:50%;background:var(--accent);cursor:pointer;box-shadow:0 0 0 4px rgba(255,89,73,.15);transition:box-shadow .25s}
+input[type=range]:active::-webkit-slider-thumb{box-shadow:0 0 0 7px rgba(255,89,73,.22)}
+input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(255,89,73,.22)}
 
 .calc__out{
   padding:clamp(28px,2.8vw,46px);

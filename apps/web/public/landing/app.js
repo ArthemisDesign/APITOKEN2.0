@@ -471,6 +471,27 @@ $$('[data-count]').forEach(n => countIO.observe(n));
     return profile.base * (0.7 + usage * 0.2);
   }
 
+  /* smooth the savings numbers so slider drags feel fluid, not steppy */
+  let rafSave = null, shownSave = null;
+  function fmtMoney(n) { return money(n); }
+  function tweenSave(to) {
+    if (shownSave === null) shownSave = to;
+    const from = shownSave;
+    shownSave = to;
+    if (Math.round(from) === Math.round(to)) { $('#resMo').textContent = fmtMoney(to); $('#resYr').textContent = fmtMoney(to * 12) + ' в год'; return; }
+    cancelAnimationFrame(rafSave);
+    const t0 = performance.now(), dur = 340;
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / dur);
+      const e = 1 - Math.pow(1 - k, 3);
+      const v = from + (to - from) * e;
+      $('#resMo').textContent = fmtMoney(v);
+      $('#resYr').textContent = fmtMoney(v * 12) + ' в год';
+      if (k < 1) rafSave = requestAnimationFrame(step);
+    };
+    rafSave = requestAnimationFrame(step);
+  }
+
   function recalc(fromProfile) {
     let spend;
     if (fromProfile) { spend = estimate(); input.value = Math.round(spend).toLocaleString('ru-RU').replace(/,/g, ' '); }
@@ -479,8 +500,7 @@ $$('[data-count]').forEach(n => countIO.observe(n));
     const now = spend, next = spend * 0.5, save = now - next;
     $('#resNow').textContent = money(now);
     $('#resNew').textContent = money(next);
-    $('#resMo').textContent  = money(save);
-    $('#resYr').textContent  = money(save * 12) + ' в год';
+    tweenSave(save);
   }
 
   input.oninput = () => recalc(false);
