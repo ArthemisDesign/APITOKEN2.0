@@ -259,10 +259,13 @@ body::before{
    visual viewport shifts (address-bar collapse, pinch, rubber-band) the bar
    detaches from the top screen edge and a page-colored gap opens above it.
    A fixed header tracks the visual viewport, so the gap is impossible.
-   With viewport-fit=cover the page runs under the sensor housing;
-   env(safe-area-inset-top) extends the header background into the notch area.
+   With viewport-fit=cover the page runs under the sensor housing and above
+   the home indicator; env(safe-area-inset-top) extends the header background
+   into the notch area, and the html canvas carries the page background so the
+   bottom inset cannot show a foreign color.
    env() is 0 on desktop and notch-less devices, so the layout elsewhere
    (incl. the transparent .hdr:not(.small) state) is unchanged. */
+html{background:var(--bg)}
 .hdr{position:fixed;top:0;left:0;right:0;z-index:60;background:rgba(240,239,235,.86);backdrop-filter:blur(12px);transition:border-color .3s;padding-top:env(safe-area-inset-top)}
 .hdr__in{align-items:center;padding:18px var(--margin);max-width:var(--maxw);margin:0 auto;border-bottom:1px solid transparent;transition:padding .3s,border-color .3s}
 .hdr.small .hdr__in{padding-top:11px;padding-bottom:11px;border-bottom-color:var(--line)}
