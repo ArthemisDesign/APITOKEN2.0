@@ -1714,3 +1714,43 @@ body{line-height:1.5}
 #calc{min-height:1160px}
 #learn{min-height:1288px}
 #grow{min-height:1115px}
+
+/* =========================================================
+   B2B PAGE — /landing/b2b.html
+   Key login (copy of openkeys key-login) + B2B request form,
+   two cards in the landing design system.
+   ========================================================= */
+.b2b-hero{padding-top:clamp(64px,7vw,120px)}
+.b2b-cards{display:grid;grid-template-columns:1fr 1fr;gap:var(--gutter);align-items:start}
+.b2b-card{
+  padding:clamp(28px,2.8vw,46px);
+  border:1px solid var(--line);border-radius:20px;
+  background:#fff;
+  display:flex;flex-direction:column;gap:18px;
+}
+[data-theme="dark"] .b2b-card{background:var(--surface)}
+.b2b-card__title{font-size:clamp(22px,2.2vw,34px);font-weight:600;letter-spacing:-.03em;line-height:1.15;margin-top:6px}
+.b2b-card__lead{font-size:clamp(14px,1.05vw,17px);line-height:1.5;color:var(--g400)}
+[data-theme="dark"] .b2b-card__lead{color:var(--muted)}
+.b2b-field{display:flex;flex-direction:column;gap:8px}
+.b2b-field span{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.b2b-field input{
+  border:1px solid var(--line);border-radius:12px;
+  padding:14px 18px;font-size:16px;letter-spacing:-.01em;
+  outline:none;transition:border-color .2s;background:transparent;
+}
+.b2b-field input:focus{border-color:var(--accent)}
+[data-theme="dark"] .b2b-field input{color:var(--fg)}
+.b2b-card .btn:disabled{opacity:.45;cursor:not-allowed;pointer-events:none}
+.b2b-err{
+  font-family:var(--mono);font-size:12px;letter-spacing:.02em;color:var(--accent);
+  border:1px solid var(--accent-line);border-radius:12px;padding:12px 16px;
+  background:var(--accent-soft);
+}
+.b2b-ok{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
+.b2b-privacy{display:flex;flex-direction:column;gap:4px;border-top:1px solid var(--line-soft);padding-top:18px}
+.b2b-privacy b{font-size:13px;font-weight:600;letter-spacing:-.01em}
+.b2b-privacy span{font-family:var(--mono);font-size:11px;letter-spacing:.04em;color:var(--muted)}
+@media (max-width:900px){
+  .b2b-cards{grid-template-columns:1fr}
+}

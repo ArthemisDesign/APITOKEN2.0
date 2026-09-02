@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{if(localStorage.getItem("apitoken-theme")==="dark")document.documentElement.dataset.theme="dark"}catch(e){}})();</script>
+<title>B2B предложение — apiToken</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/landing/fonts.css">
+<link rel="stylesheet" href="/landing/styles.css">
+</head>
+<body>
+
+<a class="skip" href="#main">К содержимому</a>
+
+<!-- ================= HEADER ================= -->
+<header class="hdr small" id="hdr">
+  <div class="hdr__in grid">
+    <a class="brand c1-3" href="/landing/index.html"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
+    <nav class="nav c4-9">
+      <a href="/landing/index.html#models">Модели</a>
+      <a href="/landing/index.html#explorer">Решения</a>
+      <a href="/landing/index.html#calc">Цены</a>
+      <a href="/landing/index.html#integrations">Интеграции</a>
+      <a href="/landing/index.html#learn">Гайды</a>
+      <a href="/landing/docs.html">Доки</a>
+      <a class="nav__dash" href="/dashboard">Дэшборд</a>
+    </nav>
+    <div class="hdr__acts c10-13">
+      <div class="lang" data-active="ru" aria-label="Language switcher">
+        <a class="lang__link is-active" href="/landing/b2b.html" aria-current="page">RU</a>
+        <a class="lang__link" href="/landing/en.html">EN</a>
+      </div>
+      <button class="theme-tgl" id="themeTgl" aria-label="Переключить тему" title="Тема">☾</button>
+      <a class="lnk" href="#">Войти</a>
+      <a class="btn btn--dark" href="/dashboard">Дэшборд</a>
+      <button class="burger" id="burger" aria-label="Меню"><span></span><span></span></button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- ================= B2B ================= -->
+<section class="sec b2b-hero">
+  <div class="bleed">
+    <header class="sechead grid">
+      <span class="secnum c1-2">B2B</span>
+      <span class="meta c3-6">Предложение для компаний</span>
+      <h1 class="display c1-13">Получить<br><span class="ghost">предложение.</span></h1>
+      <p class="c8-13 secdesc">Персональные условия по расходам вашей компании — или вход по уже выпущенному универсальному ключу.</p>
+    </header>
+
+    <div class="b2b-cards">
+
+      <!-- вход по API-ключу (копия key-login из openkeys) -->
+      <form class="b2b-card" id="keyForm" novalidate>
+        <span class="meta">Универсальный API-ключ</span>
+        <h2 class="b2b-card__title">Откройте свой USAGE</h2>
+        <p class="b2b-card__lead">Вставьте ключ sk-pool, чтобы увидеть его живой баланс и расход. Ключ проверяется сервером и не сохраняется в браузере — остаётся только подписанная сессия профиля.</p>
+        <label class="b2b-field" for="apikey">
+          <span>API-ключ</span>
+          <input id="apikey" name="key" type="text" placeholder="sk-pool-…" autocomplete="off" spellcheck="false">
+        </label>
+        <p class="b2b-err" id="keyError" role="alert" hidden></p>
+        <button class="btn btn--solid btn--full" type="submit">Открыть USAGE</button>
+        <div class="b2b-privacy"><b>Приватность по умолчанию</b><span>Секрет используется только для проверки и не записывается в хранилище браузера.</span></div>
+      </form>
+
+      <!-- B2B-заявка -->
+      <form class="b2b-card" id="b2bForm">
+        <span class="meta">B2B</span>
+        <h2 class="b2b-card__title">Получить B2B предложение</h2>
+        <p class="b2b-card__lead">Компаниям с регулярными расходами на AI API — персональные условия и объёмные скидки. Оставьте контакты, вернёмся с предложением.</p>
+        <label class="b2b-field" for="b2bCompany">
+          <span>Компания</span>
+          <input id="b2bCompany" name="company" type="text" autocomplete="organization" required>
+        </label>
+        <label class="b2b-field" for="b2bEmail">
+          <span>Email</span>
+          <input id="b2bEmail" name="email" type="email" autocomplete="email" required>
+        </label>
+        <label class="b2b-field" for="b2bSpend">
+          <span>Текущие расходы, $/мес</span>
+          <input id="b2bSpend" name="spend" type="text" inputmode="numeric" placeholder="20 000">
+        </label>
+        <p class="b2b-ok" id="b2bOk" hidden>Отправлено — вернёмся с предложением на указанную почту.</p>
+        <button class="btn btn--solid btn--full" type="submit">Получить предложение</button>
+      </form>
+
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ================= FOOTER ================= -->
+<footer class="ftr sec--dark">
+  <div class="bleed">
+
+    <div class="grid ftr__top">
+      <div class="c1-5 ftr__brand">
+        <a class="brand" href="/landing/index.html"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
+        <p>Платформа доступа к Claude, GPT и Gemini API для разработчиков.</p>
+      </div>
+      <div class="ftr__col">
+        <span class="ftr__h">Продукт</span>
+        <a href="/landing/index.html#models">Модели</a>
+        <a href="/landing/index.html#calc">Цены</a>
+        <a href="/landing/index.html#integrations">Интеграции</a>
+        <a href="/landing/index.html#learn">Гайды</a>
+      </div>
+      <div class="ftr__col">
+        <span class="ftr__h">Разработчикам</span>
+        <a href="/landing/docs.html">Документация</a>
+        <a href="/landing/docs.html">Быстрый старт</a>
+        <a href="/landing/docs.html">API-справочник</a>
+        <a href="https://github.com/ArthemisDesign/APITOKEN">GitHub</a>
+      </div>
+      <div class="ftr__col">
+        <span class="ftr__h">Поддержка</span>
+        <a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a>
+        <a href="#">Статус</a>
+        <a href="#">Коды ошибок</a>
+      </div>
+      <div class="ftr__col">
+        <span class="ftr__h">Правовое</span>
+        <a href="#">Пользовательское соглашение</a>
+        <a href="#">Политика конфиденциальности</a>
+      </div>
+    </div>
+
+    <div class="ftr__bottom">
+      <span>© 2026 apiToken® — независимая платформа, не аффилированная с Anthropic, PBC или OpenAI и не одобренная ими.</span>
+    </div>
+
+  </div>
+</footer>
+
+<script src="/landing/b2b.js"></script>
+</body>
+</html>
