@@ -259,13 +259,16 @@ body::before{
    visual viewport shifts (address-bar collapse, pinch, rubber-band) the bar
    detaches from the top screen edge and a page-colored gap opens above it.
    A fixed header tracks the visual viewport, so the gap is impossible.
-   The page deliberately runs WITHOUT viewport-fit=cover: like the dashboard,
-   the layout stays inside the safe area — the header sits flush against the
-   top edge of the usable viewport and no page content shows through the
-   notch or the home-indicator area. The html canvas still carries the page
-   background as a fallback. */
+   With viewport-fit=cover the page runs under the sensor housing and above
+   the home indicator; the fixed header paints the top inset (padding-top:
+   env(safe-area-inset-top)) and the footer paints the bottom one (padding-
+   bottom: env(safe-area-inset-bottom)), so neither area can show a foreign
+   color. env() is 0 on desktop and notch-less devices.
+   In the unscrolled state the header is intentionally transparent over the
+   hero (.hdr:not(.small) below); there the hero coral deliberately extends
+   into the notch area as part of the hero design. */
 html{background:var(--bg)}
-.hdr{position:fixed;top:0;left:0;right:0;z-index:60;background:rgba(240,239,235,.86);backdrop-filter:blur(12px);transition:border-color .3s}
+.hdr{position:fixed;top:0;left:0;right:0;z-index:60;background:rgba(240,239,235,.86);backdrop-filter:blur(12px);transition:border-color .3s;padding-top:env(safe-area-inset-top)}
 .hdr__in{align-items:center;padding:18px var(--margin);max-width:var(--maxw);margin:0 auto;border-bottom:1px solid transparent;transition:padding .3s,border-color .3s}
 .hdr.small .hdr__in{padding-top:11px;padding-bottom:11px;border-bottom-color:var(--line)}
 .brand{display:inline-flex;align-items:center;gap:9px;font-weight:600;font-size:17px;letter-spacing:-.03em}
@@ -390,7 +393,7 @@ html{background:var(--bg)}
 .sec{padding:var(--sec) 0;position:relative}
 /* the fixed header (~66px on mobile) must not cover the section tops when
    the nav jumps to anchors — reserve its height plus a breath of air */
-.sec{scroll-margin-top:88px}
+.sec{scroll-margin-top:calc(88px + env(safe-area-inset-top))}
 /* LIGHT theme: no dark blocks anywhere — the "dark" sections and the footer
    drop to the paper surface with ink text. The dark theme restores them below. */
 .sec--dark{background:var(--paper);color:var(--ink)}
@@ -1059,7 +1062,7 @@ body{line-height:1.5}
 
 /* footer — mirrors the apitoken.sale structure:
    brand + about on the left, four link columns, legal line below */
-.ftr{padding:clamp(64px,7vw,110px) 0 28px;background:var(--paper-2);position:relative}
+.ftr{padding:clamp(64px,7vw,110px) 0 calc(28px + env(safe-area-inset-bottom));background:var(--paper-2);position:relative}
 .ftr::before{
   content:"";position:absolute;left:0;right:0;top:0;height:1px;
   background:linear-gradient(90deg,transparent,rgba(240,239,235,.12),transparent);
@@ -1571,8 +1574,8 @@ body{line-height:1.5}
 
 @media (max-width:640px){
   /* the fixed header overlays the plate top — pad the plate content by
-     the header height */
-  .plate__in{padding-top:calc(var(--hdr-h) + 28px)!important}
+     the header height + the top safe-area inset (notched iPhones) */
+  .plate__in{padding-top:calc(var(--hdr-h) + env(safe-area-inset-top) + 28px)!important}
   .plate{flex-direction:column}
   .plate::before{display:none}
   .plate__in{order:1;padding-top:clamp(28px,8vw,44px)}
@@ -1827,17 +1830,18 @@ body{line-height:1.5}
 .b2b-top{
   /* fixed, not sticky: on iOS Safari a sticky bar detaches from the top
      screen edge when the visual viewport shifts (address bar, notch);
-     fixed tracks the visual viewport, so no gap can open above the bar */
+     fixed tracks the visual viewport, so no gap can open above the bar.
+     With viewport-fit=cover the bar also paints the top inset itself. */
   position:fixed;top:0;left:0;right:0;z-index:10;
   display:flex;align-items:center;gap:14px;
-  min-height:64px;padding:0 32px;
+  min-height:64px;padding:0 32px;padding-top:env(safe-area-inset-top);
   border-bottom:1px solid var(--line);
   background:var(--bg);
 }
 /* reserve the fixed bar's place in the flow so the content below keeps
    its position; on mobile the bar is 56px tall and sits under the floating
    burger (left padding of the bar itself stays with the bar) */
-.b2b-main{padding-top:64px}
+.b2b-main{padding-top:calc(64px + env(safe-area-inset-top))}
 .b2b-top__title{flex:1;font-size:20px;font-weight:600;letter-spacing:-.02em}
 .b2b-top__note{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
 
@@ -1857,8 +1861,8 @@ body{line-height:1.5}
   }
   .b2b-scrim.show{opacity:1;pointer-events:auto}
   .b2b-side-burger{display:inline-flex}
-  .b2b-top{min-height:56px;padding:0 20px 0 66px}
-  .b2b-main{padding-top:56px}
+  .b2b-top{min-height:56px;padding:0 20px 0 66px;padding-top:env(safe-area-inset-top)}
+  .b2b-main{padding-top:calc(56px + env(safe-area-inset-top))}
 }
 
 /* ---------- content ---------- */
