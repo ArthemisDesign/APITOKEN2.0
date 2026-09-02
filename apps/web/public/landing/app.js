@@ -155,10 +155,15 @@ addEventListener('scroll', () => hdr.classList.toggle('small', scrollY > 40), { 
 $('#burger')?.addEventListener('click', () => $('.nav').classList.toggle('open'));
 
 /* ---------------------------------------------------------
-   THEME TOGGLE — light (warm paper) ↔ dark (deep ink), persisted
+   THEME TOGGLE — light (warm paper) ↔ dark (deep ink), persisted.
+   Writes both the landing key (apitoken-theme) and the dashboard
+   key (theme:v1) so the theme follows the user between the static
+   landing and the Next.js dashboard; reads fall back across the
+   three keys via the inline bootstrap in each page's <head>.
    --------------------------------------------------------- */
 (() => {
   const KEY = 'apitoken-theme';
+  const DASH_KEY = 'theme:v1';
   const root = document.documentElement;
   const btn = $('#themeTgl');
   const apply = (t) => {
@@ -170,7 +175,7 @@ $('#burger')?.addEventListener('click', () => $('.nav').classList.toggle('open')
   apply(saved);
   btn?.addEventListener('click', () => {
     saved = root.dataset.theme === 'dark' ? 'light' : 'dark';
-    try { localStorage.setItem(KEY, saved); } catch {}
+    try { localStorage.setItem(KEY, saved); localStorage.setItem(DASH_KEY, saved); } catch {}
     apply(saved);
   });
 })();
@@ -656,7 +661,11 @@ observeReveals();
   document.querySelectorAll('.lang').forEach(function(wrap){
     wrap.querySelectorAll('.lang__link').forEach(function(a){
       a.addEventListener('click', function(){
-        wrap.dataset.active = /en\.html/.test(a.getAttribute('href') || '') ? 'en' : 'ru';
+        const target = /en\.html/.test(a.getAttribute('href') || '') ? 'en' : 'ru';
+        wrap.dataset.active = target;
+        /* persist the explicit choice in the dashboard's lang key so the
+           Next.js app picks it up and the RU→EN default redirect stays off */
+        try { localStorage.setItem('lang:v1', target); } catch(e1) {}
         wrap.querySelectorAll('.lang__link').forEach(function(x){ x.classList.toggle('is-active', x === a); });
         /* remember how far down the page we are (as a fraction) so the other
            language opens at the same relative position instead of jumping to top */
