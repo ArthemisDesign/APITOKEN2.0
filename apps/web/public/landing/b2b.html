@@ -16,7 +16,7 @@
 <a class="skip" href="#main">К содержимому</a>
 
 <!-- Каркас повторяет openkeys (apps/openkeys app-shell): боковое меню слева,
-     контент справа, без верхней шапки. Только RU. -->
+     служебная полоса с заголовком и переключателем темы, контент справа. Только RU. -->
 <div class="b2b-app">
 
   <!-- ================= SIDEBAR ================= -->
@@ -29,9 +29,6 @@
       <a class="b2b-side__link" href="#support" data-section="support"><span class="b2b-si" aria-hidden="true">◌</span><span>Поддержка</span></a>
     </nav>
     <div class="b2b-side__foot">
-      <div class="b2b-side__tools">
-        <button class="theme-tgl" id="themeTgl" aria-label="Переключить тему" title="Тема">☾</button>
-      </div>
       <nav class="b2b-side__legal" aria-label="Внешние ссылки">
         <a href="https://apitoken.sale" target="_blank" rel="noreferrer">apiToken.sale</a>
         <a href="https://apitoken.sale/docs/learn" target="_blank" rel="noreferrer">Гайды по Claude API</a>
@@ -39,10 +36,17 @@
     </div>
   </aside>
   <button class="b2b-scrim" id="b2bScrim" aria-label="Закрыть меню"></button>
-  <button class="b2b-burger" id="b2bBurger" aria-label="Меню" aria-expanded="false">☰</button>
 
   <!-- ================= CONTENT ================= -->
   <main class="b2b-main" id="main">
+
+    <!-- Служебная полоса, как .app-top в openkeys: заголовок раздела слева, тема справа -->
+    <header class="b2b-top">
+      <button class="b2b-burger" id="b2bBurger" aria-label="Меню" aria-expanded="false">☰</button>
+      <span class="b2b-top__title">Расход ключа</span>
+      <button class="theme-tgl b2b-top__theme" id="themeTgl" aria-label="Переключить тему" title="Тема">☾</button>
+    </header>
+    <div class="b2b-body">
 
     <!-- Расход ключа — форма входа по sk-pool ключу (логика key-login из openkeys) -->
     <section class="b2b-section" id="usage">
@@ -156,6 +160,7 @@
       </div>
     </section>
 
+    </div><!-- /.b2b-body -->
   </main>
 </div>
 
