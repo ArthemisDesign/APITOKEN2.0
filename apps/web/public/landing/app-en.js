@@ -141,7 +141,12 @@ const byId = id => ALL_MODELS.find(m => m.id === id);
 
 const hdr = $('#hdr');
 addEventListener('scroll', () => hdr.classList.toggle('small', scrollY > 40), { passive: true });
-$('#burger')?.addEventListener('click', () => $('.nav').classList.toggle('open'));
+$('#burger')?.addEventListener('click', () => {
+  const nav = $('.nav'), btn = $('#burger');
+  const open = nav.classList.toggle('open');
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  document.body.style.overflow = open ? 'hidden' : '';
+});
 
 const io = new IntersectionObserver(entries => {
   entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
