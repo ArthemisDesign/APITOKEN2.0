@@ -447,6 +447,12 @@ $$('[data-count]').forEach(n => countIO.observe(n));
   window.addEventListener('resize', moveThumb);
   requestAnimationFrame(moveThumb);
   window.addEventListener('load', moveThumb);
+  /* the GSAP scroll-reveal shifts chips by y:30 — re-measure once fonts are
+     ready and again after the reveal would have settled, so the thumb never
+     latches onto a mid-animation offset */
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(moveThumb);
+  setTimeout(moveThumb, 1000);
+  setTimeout(moveThumb, 2000);
 
   function renderParams() {
     params.innerHTML = '';

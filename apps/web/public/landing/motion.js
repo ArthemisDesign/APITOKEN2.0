@@ -164,7 +164,8 @@ drawRules();
    --------------------------------------------------------- */
 function stagGroup(sel, childSel) {
   $$(sel).forEach(box => {
-    const kids = childSel ? $$(childSel, box) : [...box.children];
+    const kids = (childSel ? $$(childSel, box) : [...box.children])
+      .filter(el => !el.classList || !el.classList.contains('chip-thumb'));
     if (!kids.length) return;
     reveal(kids, { from: { y: 30 }, stagger: .06 }, box, { start: 'top 88%' });
   });
