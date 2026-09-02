@@ -255,13 +255,15 @@ body::before{
 /* =========================================================
    HEADER
    ========================================================= */
-/* iOS Safari: with viewport-fit=cover the page runs under the sensor housing,
-   and a sticky header without the top safe-area inset can sit below the very
-   top of the visual viewport, leaving a background-colored gap above it.
-   Extend the header background into the notch area so the bar always reaches
-   the screen edge. env() is 0 on desktop and notch-less devices, so the
-   layout elsewhere (incl. the transparent .hdr:not(.small) state) is unchanged. */
-.hdr{position:sticky;top:0;z-index:60;background:rgba(240,239,235,.86);backdrop-filter:blur(12px);transition:border-color .3s;padding-top:env(safe-area-inset-top)}
+/* iOS Safari: a sticky header is bound to the layout viewport, so when the
+   visual viewport shifts (address-bar collapse, pinch, rubber-band) the bar
+   detaches from the top screen edge and a page-colored gap opens above it.
+   A fixed header tracks the visual viewport, so the gap is impossible.
+   With viewport-fit=cover the page runs under the sensor housing;
+   env(safe-area-inset-top) extends the header background into the notch area.
+   env() is 0 on desktop and notch-less devices, so the layout elsewhere
+   (incl. the transparent .hdr:not(.small) state) is unchanged. */
+.hdr{position:fixed;top:0;left:0;right:0;z-index:60;background:rgba(240,239,235,.86);backdrop-filter:blur(12px);transition:border-color .3s;padding-top:env(safe-area-inset-top)}
 .hdr__in{align-items:center;padding:18px var(--margin);max-width:var(--maxw);margin:0 auto;border-bottom:1px solid transparent;transition:padding .3s,border-color .3s}
 .hdr.small .hdr__in{padding-top:11px;padding-bottom:11px;border-bottom-color:var(--line)}
 .brand{display:inline-flex;align-items:center;gap:9px;font-weight:600;font-size:17px;letter-spacing:-.03em}
@@ -384,9 +386,10 @@ body::before{
    SECTIONS
    ========================================================= */
 .sec{padding:var(--sec) 0;position:relative}
-/* sticky header (~66px on mobile) must not cover the section tops when the
-   nav jumps to anchors — reserve header height + a breath of air */
-.sec{scroll-margin-top:88px}
+/* the fixed header (~66px on mobile, + safe-area inset on iOS) must not cover
+   the section tops when the nav jumps to anchors — reserve its height plus
+   a breath of air; env() is 0 outside notched iOS devices */
+.sec{scroll-margin-top:calc(88px + env(safe-area-inset-top))}
 /* LIGHT theme: no dark blocks anywhere — the "dark" sections and the footer
    drop to the paper surface with ink text. The dark theme restores them below. */
 .sec--dark{background:var(--paper);color:var(--ink)}
@@ -1559,10 +1562,16 @@ body{line-height:1.5}
 }
 
 :root{--hdr-h:84px}
-.hero{margin-top:calc(var(--hdr-h) * -1)}
+/* the header is fixed (no place in the flow), so the hero starts at the very
+   top of the page; .plate__in already pads its content below the header
+   height, which keeps the fixed-header overlay layout identical to the old
+   sticky + negative-margin scheme */
+.hero{margin-top:0}
 
 @media (max-width:640px){
-  .hero{margin-top:0}
+  /* the fixed header overlays the plate top on notched phones as well —
+     pad the plate content by the header height + the top safe-area inset */
+  .plate__in{padding-top:calc(var(--hdr-h) + env(safe-area-inset-top) + 28px)!important}
   .plate{flex-direction:column}
   .plate::before{display:none}
   .plate__in{order:1;padding-top:clamp(28px,8vw,44px)}
@@ -1816,7 +1825,10 @@ body{line-height:1.5}
 
 /* ---------- top bar: section title left; theme/lang live in the sidebar ---------- */
 .b2b-top{
-  position:sticky;top:0;z-index:10;
+  /* fixed, not sticky: on iOS Safari a sticky bar detaches from the top
+     screen edge when the visual viewport shifts (address bar, notch);
+     fixed tracks the visual viewport, so no gap can open above the bar */
+  position:fixed;top:0;left:0;right:0;z-index:10;
   display:flex;align-items:center;gap:14px;
   min-height:64px;padding:0 32px;
   /* iOS Safari: extend the bar into the top safe-area so no gap can open
@@ -1825,6 +1837,10 @@ body{line-height:1.5}
   border-bottom:1px solid var(--line);
   background:var(--bg);
 }
+/* reserve the fixed bar's place in the flow so the content below keeps
+   its position; on mobile the bar is 56px tall and sits under the floating
+   burger (left padding of the bar itself stays with the bar) */
+.b2b-main{padding-top:calc(64px + env(safe-area-inset-top))}
 .b2b-top__title{flex:1;font-size:20px;font-weight:600;letter-spacing:-.02em}
 .b2b-top__note{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
 
@@ -1845,6 +1861,7 @@ body{line-height:1.5}
   .b2b-scrim.show{opacity:1;pointer-events:auto}
   .b2b-side-burger{display:inline-flex}
   .b2b-top{min-height:56px;padding:0 20px 0 66px}
+  .b2b-main{padding-top:calc(56px + env(safe-area-inset-top))}
 }
 
 /* ---------- content ---------- */
