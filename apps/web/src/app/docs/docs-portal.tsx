@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { useI18n } from "@/components/i18n-provider";
 import { ThemeToggle } from "@/components/site-chrome";
 import { api } from "@/lib/api";
-import { localeHref } from "@/lib/locale-routes";
+import { landingHref, localeHref } from "@/lib/locale-routes";
 import { IntegrationBuilder } from "./integration-builder";
 import { ROUTER_BASE_URL } from "./integration-builder-data";
 import { ApiReference } from "./api-reference";
@@ -299,11 +299,11 @@ export function DocsPortal({ openaiCatalog }: { openaiCatalog?: OpenAiModel[] })
   return <div className="docs-site">
     <header className="docs-header">
       <a className="skip-link" href="#main-content">{language === "ru" ? "К содержимому" : "Skip to content"}</a>
-      <Link className="docs-brand" href={localeHref("/", language)}><BrandMark /><span>apiToken.sale</span><i>{t.documentation}</i></Link>
+      <Link className="docs-brand" href={landingHref(language)}><BrandMark /><span>apiToken.sale</span><i>{t.documentation}</i></Link>
       <div className="docs-header-actions">
         <div className="lang" role="group" aria-label={language === "ru" ? "Язык" : "Language"}><button type="button" aria-pressed={language === "en"} className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}>EN</button><button type="button" aria-pressed={language === "ru"} className={language === "ru" ? "active" : ""} onClick={() => setLanguage("ru")}>RU</button></div>
         <ThemeToggle />
-        <Link className="btn btn-ghost btn-sm docs-back" href={localeHref("/", language)}>{t.back}</Link>
+        <Link className="btn btn-ghost btn-sm docs-back" href={landingHref(language)}>{t.back}</Link>
         <Link className="btn btn-primary btn-sm" href={localeHref("/dashboard", language)}>{t.dashboard}</Link>
       </div>
     </header>

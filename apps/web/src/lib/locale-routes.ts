@@ -80,4 +80,13 @@ export function localeHref(href: string, locale: CoreLocale): string {
   return localized ? `${localized}${suffix}` : href;
 }
 
+// The customer-facing landing is the static build in apps/web/public/landing
+// (index.html — RU, en.html — EN), not the App Router "/" route. The brand
+// logo in the app chrome must lead there, so /landing/* is deliberately kept
+// out of russianExactRoutes: localeHref would otherwise rewrite the static
+// path to a non-existent /ru/landing/* App Router URL.
+export function landingHref(locale: CoreLocale): string {
+  return locale === "ru" ? "/landing/index.html" : "/landing/en.html";
+}
+
 export const languagePreferenceBootstrapScript = `(()=>{try{if(localStorage.getItem('lang:v1')!=='ru')return;const p=location.pathname;if(${JSON.stringify([...russianExactRoutes])}.includes(p)||p==='/docs/learn'||p.startsWith('/docs/learn/')||p==='/errors'||p.startsWith('/errors/'))location.replace('/ru'+(p==='/'?'':p)+location.search+location.hash)}catch{}})()`;

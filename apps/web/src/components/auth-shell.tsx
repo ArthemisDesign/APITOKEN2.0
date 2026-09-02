@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
-import { localeHref, supportsRussianRoute } from "@/lib/locale-routes";
+import { landingHref, localeHref, supportsRussianRoute } from "@/lib/locale-routes";
 import { BackendPreconnect } from "./backend-preconnect";
 import { useI18n } from "./i18n-provider";
 import { ThemeToggle } from "./site-chrome";
@@ -20,7 +20,7 @@ export function AuthShell({ children }: { children: ReactNode }) {
       <header className="nav">
         <a className="skip-link" href="#main-content">{language === "ru" ? "К содержимому" : "Skip to content"}</a>
         <div className="wrap nav-in">
-          <Link className="brand" href={localeHref("/", language)}>
+          <Link className="brand" href={landingHref(language)}>
             <Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" />
             <Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" />
             apiToken.sale
@@ -43,7 +43,7 @@ export function AuthIntro({ title, subtitle }: { title: string; subtitle: string
   const { language, t } = useI18n();
   return (
     <>
-      <Link className="auth-back" href={localeHref("/", language)}>{t("back_home")}</Link>
+      <Link className="auth-back" href={landingHref(language)}>{t("back_home")}</Link>
       <h1>{title}</h1>
       <p className="sub">{subtitle}</p>
     </>

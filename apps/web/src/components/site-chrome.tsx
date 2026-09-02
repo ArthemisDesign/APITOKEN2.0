@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { localeHref, supportsRussianRoute } from "@/lib/locale-routes";
+import { landingHref, localeHref, supportsRussianRoute } from "@/lib/locale-routes";
 import { DOCS_URL, GITHUB_URL } from "@/lib/site-links";
 import { browserStorage, readSavedTheme, saveTheme, type SavedTheme } from "@/lib/user-preferences";
 import { BackendPreconnect } from "./backend-preconnect";
@@ -18,7 +18,7 @@ function localizeHref(language: string, href: string): string {
 
 export function Brand() {
   const { language } = useI18n();
-  return <Link className="brand" href={localeHref("/", language)} aria-label="apiToken.sale home">
+  return <Link className="brand" href={landingHref(language)} aria-label="apiToken.sale home">
     <Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" />
     <Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" />
     <span className="brand-name">apiToken.sale</span>

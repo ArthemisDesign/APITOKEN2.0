@@ -8,7 +8,7 @@ import type { DashboardCopy } from "@/lib/dashboard-copy";
 import { DOCS_URL } from "@/lib/site-links";
 import { dashboardHref, type DashboardLanguage, type DashboardSection } from "./dashboard-route";
 import { formatNanoUsd } from "./sections/shared";
-import { localeHref } from "@/lib/locale-routes";
+import { landingHref, localeHref } from "@/lib/locale-routes";
 
 const NAV_ICONS = {
   grid: <><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>,
@@ -74,7 +74,7 @@ export const DashboardSidebar = memo(function DashboardSidebar({
   }, [onNavigate]);
 
   return <aside className={`side ${sideOpen ? "open" : ""}`} data-lang={language}>
-    <Link className="brand side-brand" href={localeHref("/", language)} aria-label="apiToken home">
+    <Link className="brand side-brand" href={landingHref(language)} aria-label="apiToken home">
       <span className="side-brand__mark" aria-hidden="true" />apiToken<sup>®</sup>
     </Link>
     <nav className="side-nav">
