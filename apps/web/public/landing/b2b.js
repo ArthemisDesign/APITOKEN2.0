@@ -1,13 +1,17 @@
 /* ---------------------------------------------------------
-   apiToken landing — /landing/b2b.html
-   App-shell (openkeys-style sidebar, RU only) + key login
-   (copy of openkeys key-login.tsx) + B2B form + support.
+   apiToken landing — /landing/b2b.html + /landing/b2b-en.html
+   Sidebar in the docs composition (brand / label / mono nav /
+   lang + theme in the foot), floating burger off-canvas on
+   mobile. Key login and support texts mirror apps/openkeys
+   (key-login.tsx, support-portal.tsx); RU/EN strings live in
+   data-* attributes of the forms on each page.
    --------------------------------------------------------- */
 (() => {
   const $ = (s, c = document) => c.querySelector(s);
   const $$ = (s, c = document) => [...c.querySelectorAll(s)];
 
-  /* THEME TOGGLE — light (warm paper) ↔ dark (deep ink), persisted */
+  /* THEME TOGGLE — light (warm paper) ↔ dark (deep ink), persisted.
+     Same handler as docs.js; the button sits in the sidebar foot. */
   (() => {
     const KEY = 'apitoken-theme';
     const root = document.documentElement;
@@ -26,23 +30,23 @@
     });
   })();
 
-  /* SIDEBAR — burger overlay on mobile (open / scrim / Esc), smooth anchor scroll */
+  /* SIDEBAR — floating burger opens it off-canvas on mobile (body class,
+     like body.docs-nav-open in the docs), scrim/Esc close, smooth anchors */
   (() => {
-    const side = $('#b2bSide');
-    const scrim = $('#b2bScrim');
     const burger = $('#b2bBurger');
-    if (!side || !scrim || !burger) return;
+    const scrim = $('#b2bScrim');
+    if (!burger) return;
     const setOpen = (open) => {
-      side.classList.toggle('open', open);
-      scrim.classList.toggle('show', open);
+      document.body.classList.toggle('b2b-nav-open', open);
+      scrim?.classList.toggle('show', open);
       burger.setAttribute('aria-expanded', String(open));
     };
-    burger.addEventListener('click', () => setOpen(!side.classList.contains('open')));
-    scrim.addEventListener('click', () => setOpen(false));
+    burger.addEventListener('click', () => setOpen(!document.body.classList.contains('b2b-nav-open')));
+    scrim?.addEventListener('click', () => setOpen(false));
     addEventListener('keydown', (e) => {
       if (e.key === 'Escape') setOpen(false);
     });
-    $$('.b2b-side__link[href^="#"]', side).forEach((link) => {
+    $$('.b2b-side__link[href^="#"]').forEach((link) => {
       link.addEventListener('click', (e) => {
         const target = $(link.getAttribute('href'));
         if (!target) return;
@@ -79,9 +83,9 @@
     ['usage', 'offer', 'support'].forEach((id) => { const el = document.getElementById(id); if (el) io.observe(el); });
   })();
 
-  /* KEY LOGIN — same flow and texts as apps/openkeys key-login.tsx (ru copy),
-     but against the live openkeys API: the session cookie and the dashboard
-     both live on openkeys.apitoken.sale. */
+  /* KEY LOGIN — same flow as apps/openkeys key-login.tsx, texts come from
+     the form's data-* attributes so one script serves the RU and EN pages.
+     The session cookie and the dashboard both live on openkeys.apitoken.sale. */
   (() => {
     const form = $('#keyForm');
     if (!form) return;
@@ -89,10 +93,10 @@
     const btn = form.querySelector('button[type="submit"]');
     const err = $('#keyError');
     const copy = {
-      missing: 'Ключ не найден. Проверьте, что скопировали его целиком.',
-      unavailable: 'Не удалось связаться с сервером. Попробуйте ещё раз.',
-      checking: 'Проверяем…',
-      submit: 'Открыть USAGE',
+      missing: form.dataset.errorMissing,
+      unavailable: form.dataset.errorUnavailable,
+      checking: form.dataset.checking,
+      submit: form.dataset.submit,
     };
     const sync = () => { btn.disabled = input.value.trim() === ''; };
     input.addEventListener('input', sync);
@@ -128,10 +132,24 @@
     });
   })();
 
-  /* B2B FORM — client-only, same pattern as #b2bForm in app.js */
+  /* B2B FORM — client-only, same pattern as #b2bForm in app.js;
+     the "sent" label is page-localized via data-sent */
   $('#b2bForm')?.addEventListener('submit', (e) => {
     e.preventDefault();
     $('#b2bOk').hidden = false;
-    e.target.querySelector('button').textContent = 'Отправлено';
+    e.target.querySelector('button').textContent = e.target.dataset.sent;
+  });
+})();
+
+/* language switcher: glide the thumb to the target language on click,
+   then let the plain link navigate — same as docs.js */
+(function(){
+  document.querySelectorAll('.lang').forEach(function(wrap){
+    wrap.querySelectorAll('.lang__link').forEach(function(a){
+      a.addEventListener('click', function(){
+        wrap.dataset.active = /en\.html/.test(a.getAttribute('href') || '') ? 'en' : 'ru';
+        wrap.querySelectorAll('.lang__link').forEach(function(x){ x.classList.toggle('is-active', x === a); });
+      });
+    });
   });
 })();

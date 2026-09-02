@@ -1716,46 +1716,76 @@ body{line-height:1.5}
 #grow{min-height:1115px}
 
 /* =========================================================
-   B2B PAGE — /landing/b2b.html
-   App-shell layout like openkeys (apps/openkeys app-shell):
-   fixed sidebar on the left, service top bar (page title +
-   theme toggle) with a 1px bottom rule, sections stacked in
-   a narrow centered column. Visuals stay in the landing
-   design system; RU only. Geometry follows openkeys
-   globals.css (.side/.app-top/.card/.field/.btn).
+   B2B PAGE — /landing/b2b.html + /landing/b2b-en.html
+   Sidebar repeats the docs sidebar composition (docs.css
+   .docs-sidebar): 264px column, brand + label, mono 12.5px
+   pill items, language switcher and theme toggle in the foot,
+   floating burger off-canvas on mobile. The service top bar
+   keeps only the section title; sections stack in a narrow
+   centered column. RU/EN texts mirror apps/openkeys
+   (key-login.tsx, support-portal.tsx).
    ========================================================= */
 .b2b-app{display:grid;grid-template-columns:264px 1fr;min-height:100dvh}
 
-/* ---------- sidebar ---------- */
+/* ---------- sidebar — same composition as the docs sidebar
+   (docs.css .docs-sidebar): fixed 264px column, brand + label,
+   mono 12.5px pill items, lang + theme in the foot ---------- */
 .b2b-side{
-  position:sticky;top:0;height:100dvh;
-  display:flex;flex-direction:column;gap:24px;
-  padding:24px 18px 22px;
+  position:sticky;top:0;height:100dvh;z-index:70;
+  display:flex;flex-direction:column;
+  padding:24px 18px;
   border-right:1px solid var(--line);
   background:var(--bg);
 }
-.b2b-side__brand{margin:2px 10px 0}
-.b2b-side__brand sup{display:none}
+.b2b-side-brand{
+  display:inline-flex;align-items:center;gap:9px;margin:2px 10px 22px;
+  font-weight:600;font-size:17px;letter-spacing:-.03em;color:var(--fg);
+}
 .b2b-side__tag{
-  font-style:normal;font-size:10px;letter-spacing:.08em;color:var(--muted);
-  border:1px solid var(--line);border-radius:999px;padding:2px 7px;margin-left:8px;
+  font-style:normal;font-family:var(--mono);font-size:10px;letter-spacing:.08em;color:var(--muted);
+  border:1px solid var(--line);border-radius:999px;padding:2px 7px;margin-left:2px;
 }
-.b2b-side__nav{display:flex;flex-direction:column;gap:4px}
+.b2b-side__label{
+  font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);padding:0 10px;margin-bottom:10px;
+}
+.b2b-side__nav{
+  display:flex;flex-direction:column;gap:3px;flex:1;min-height:0;
+  overflow-y:auto;overscroll-behavior:contain;padding-bottom:10px;
+}
 .b2b-side__link{
-  display:flex;align-items:center;gap:12px;
-  min-height:44px;padding:11px 12px;border-radius:10px;
-  font-size:15px;font-weight:500;letter-spacing:-.01em;color:var(--muted);
-  transition:color .2s,background .2s;
+  display:flex;align-items:center;gap:11px;min-height:38px;padding:10px 12px;
+  border:1px solid transparent;border-radius:8px;
+  font-family:var(--mono);font-size:12.5px;color:var(--muted);
+  transition:background-color .14s,color .14s,border-color .14s;
 }
-.b2b-side__link:hover{color:var(--fg);background:var(--accent-soft)}
-.b2b-side__link.is-active{color:var(--accent);background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent-line)}
-.b2b-si{width:18px;text-align:center;font-size:14px;flex:none}
-.b2b-side__foot{margin-top:auto;display:flex;flex-direction:column;gap:14px;border-top:1px solid var(--line-soft);padding-top:16px}
-.b2b-side__legal{display:flex;flex-direction:column;gap:6px;padding:0 4px}
-.b2b-side__legal a{font-family:var(--mono);font-size:11px;letter-spacing:.04em;color:var(--muted)}
-.b2b-side__legal a:hover{color:var(--accent)}
+.b2b-side__link svg{
+  width:16px;height:16px;flex:none;opacity:.9;
+  fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;
+}
+.b2b-side__link:hover{background:var(--paper-2);color:var(--fg)}
+[data-theme="dark"] .b2b-side__link:hover{background:rgba(240,239,235,.06)}
+.b2b-side__link.is-active{
+  background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent);
+}
+.b2b-side__foot{
+  display:flex;align-items:center;gap:10px;flex:none;margin-top:12px;
+  padding:12px 0 0;border-top:1px solid var(--line);
+}
+.b2b-side__foot .lang{padding:3px;background:transparent;border-color:var(--line);flex:none}
+.b2b-side__foot .theme-tgl{width:34px;height:34px;flex:none}
 
-/* ---------- top bar (openkeys .app-top) ---------- */
+/* floating burger — like docs.css .docs-side-burger: fixed top-left,
+   visible only when the sidebar slides off-canvas */
+.b2b-side-burger{
+  display:none;position:fixed;top:14px;left:14px;z-index:80;
+  width:42px;height:42px;align-items:center;justify-content:center;
+  border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--fg);
+  cursor:pointer;box-shadow:var(--shadow-s);
+}
+[data-theme="dark"] .b2b-side-burger{background:var(--surface)}
+
+/* ---------- top bar: section title left; theme/lang live in the sidebar ---------- */
 .b2b-top{
   position:sticky;top:0;z-index:10;
   display:flex;align-items:center;gap:14px;
@@ -1764,26 +1794,25 @@ body{line-height:1.5}
   background:var(--bg);
 }
 .b2b-top__title{flex:1;font-size:20px;font-weight:600;letter-spacing:-.02em}
-.b2b-burger{display:none;background:none;border:0;padding:0;font-size:20px;color:var(--fg);cursor:pointer}
+.b2b-top__note{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
 
-/* ---------- mobile: sidebar becomes an overlay ---------- */
+/* ---------- mobile: sidebar becomes off-canvas ---------- */
 .b2b-scrim{display:none}
 @media (max-width:900px){
   .b2b-app{grid-template-columns:1fr}
   .b2b-side{
-    position:fixed;left:0;top:0;bottom:0;width:280px;height:auto;z-index:60;
-    transform:translateX(-100%);transition:transform .28s ease;
+    position:fixed;left:0;top:0;bottom:0;width:264px;height:auto;
+    transform:translateX(-100%);transition:transform .25s ease;
     box-shadow:var(--shadow-l);
   }
-  .b2b-side.open{transform:none}
+  body.b2b-nav-open .b2b-side{transform:none}
   .b2b-scrim{
     display:block;position:fixed;inset:0;z-index:55;border:0;padding:0;
     background:rgba(12,11,17,.5);opacity:0;pointer-events:none;transition:opacity .25s;
   }
   .b2b-scrim.show{opacity:1;pointer-events:auto}
-  .b2b-burger{display:block}
-  .b2b-top{min-height:56px;padding:0 20px}
-  .b2b-body{padding-top:64px}
+  .b2b-side-burger{display:inline-flex}
+  .b2b-top{min-height:56px;padding:0 20px 0 66px}
 }
 
 /* ---------- content ---------- */
