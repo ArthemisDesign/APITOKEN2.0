@@ -363,15 +363,39 @@ $$('[data-count]').forEach(n => countIO.observe(n));
   let profile = PROFILES[1], devs = 25, usage = 2;
   const USAGE = ['Low', 'Medium', 'High', 'Very high'];
 
-  PROFILES.forEach(p => {
-    const b = el('button', 'chip' + (p === profile ? ' on' : ''), p.name);
-    b.onclick = () => {
-      profile = p;
-      $$('.chip', profWrap).forEach(x => x.classList.toggle('on', x === b));
-      renderParams(); recalc(true);
-    };
-    profWrap.appendChild(b);
+  chipGroup(profWrap, PROFILES.map(p => p.name), PROFILES.indexOf(profile), i => {
+    profile = PROFILES[i];
+    renderParams(); recalc(true);
   });
+
+  /* A chip group with a gliding thumb behind the active chip — same feel as
+     the language switcher. */
+  function chipGroup(wrap, items, active, onPick) {
+    items.forEach((item, i) => {
+      const b = el('button', 'chip' + (i === active ? ' on' : ''), item);
+      b.onclick = () => {
+        $$('.chip', wrap).forEach(x => x.classList.toggle('on', x === b));
+        moveThumb();
+        onPick(i);
+      };
+      wrap.appendChild(b);
+    });
+    const thumb = el('span', 'chip-thumb');
+    thumb.setAttribute('aria-hidden', 'true');
+    wrap.insertBefore(thumb, wrap.firstChild);
+    function moveThumb() {
+      const on = wrap.querySelector('.chip.on');
+      if (!on) return;
+      thumb.style.width = on.offsetWidth + 'px';
+      thumb.style.height = on.offsetHeight + 'px';
+      thumb.style.transform = 'translate(' + on.offsetLeft + 'px,' + on.offsetTop + 'px)';
+    }
+    window.addEventListener('resize', moveThumb);
+    requestAnimationFrame(moveThumb);
+    window.addEventListener('load', moveThumb);
+    setTimeout(moveThumb, 1000);
+    setTimeout(moveThumb, 2000);
+  }
 
   function renderParams() {
     params.innerHTML = '';
@@ -383,12 +407,12 @@ $$('[data-count]').forEach(n => countIO.observe(n));
         <div class="range__top"><span class="calc__lab">Developers</span><span class="range__val" id="devVal">${devs}</span></div>
         <input type="range" id="devRange" min="1" max="200" value="${devs}">
       </div>
-      <div class="range" style="margin-top:28px">
-        <div class="range__top"><span class="calc__lab">Intensity</span><span class="range__val" id="useVal" style="font-size:18px">${USAGE[usage]}</span></div>
-        <input type="range" id="useRange" min="0" max="3" value="${usage}">
+      <div class="calc__usage">
+        <span class="calc__lab">Intensity</span>
+        <div class="calc__opts" id="usageOpts"></div>
       </div>`;
     $('#devRange').oninput = e => { devs = +e.target.value; $('#devVal').textContent = devs; recalc(true); };
-    $('#useRange').oninput = e => { usage = +e.target.value; $('#useVal').textContent = USAGE[usage]; recalc(true); };
+    chipGroup($('#usageOpts'), USAGE, usage, i => { usage = i; recalc(true); });
   }
 
   function estimate() {
