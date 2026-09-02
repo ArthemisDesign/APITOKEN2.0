@@ -1,14 +1,11 @@
 /* ---------------------------------------------------------
    apiToken landing — /landing/b2b.html
-   Key login (copy of openkeys key-login.tsx) + B2B form.
+   App-shell (openkeys-style sidebar, RU only) + key login
+   (copy of openkeys key-login.tsx) + B2B form + support.
    --------------------------------------------------------- */
 (() => {
   const $ = (s, c = document) => c.querySelector(s);
-
-  /* HEADER — shrink on scroll + burger, same contract as app.js */
-  const hdr = $('#hdr');
-  if (hdr) addEventListener('scroll', () => hdr.classList.toggle('small', scrollY > 40), { passive: true });
-  $('#burger')?.addEventListener('click', () => $('.nav')?.classList.toggle('open'));
+  const $$ = (s, c = document) => [...c.querySelectorAll(s)];
 
   /* THEME TOGGLE — light (warm paper) ↔ dark (deep ink), persisted */
   (() => {
@@ -27,6 +24,59 @@
       try { localStorage.setItem(KEY, saved); } catch {}
       apply(saved);
     });
+  })();
+
+  /* SIDEBAR — burger overlay on mobile (open / scrim / Esc), smooth anchor scroll */
+  (() => {
+    const side = $('#b2bSide');
+    const scrim = $('#b2bScrim');
+    const burger = $('#b2bBurger');
+    if (!side || !scrim || !burger) return;
+    const setOpen = (open) => {
+      side.classList.toggle('open', open);
+      scrim.classList.toggle('show', open);
+      burger.setAttribute('aria-expanded', String(open));
+    };
+    burger.addEventListener('click', () => setOpen(!side.classList.contains('open')));
+    scrim.addEventListener('click', () => setOpen(false));
+    addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') setOpen(false);
+    });
+    $$('.b2b-side__link[href^="#"]', side).forEach((link) => {
+      link.addEventListener('click', (e) => {
+        const target = $(link.getAttribute('href'));
+        if (!target) return;
+        e.preventDefault();
+        setOpen(false);
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        history.replaceState(null, '', link.getAttribute('href'));
+      });
+    });
+  })();
+
+  /* SIDEBAR — highlight the anchor item of the section in view */
+  (() => {
+    const links = $$('.b2b-side__link[data-section]');
+    if (!('IntersectionObserver' in window) || !links.length) return;
+    const bySection = new Map(links.map((l) => [l.dataset.section, l]));
+    const setActive = (id) => {
+      links.forEach((l) => {
+        const on = l.dataset.section === id;
+        l.classList.toggle('is-active', on);
+        if (on) l.setAttribute('aria-current', 'page'); else l.removeAttribute('aria-current');
+      });
+    };
+    const visible = new Map(); // section id -> intersection ratio
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((en) => {
+        if (en.isIntersecting) visible.set(en.target.id, en.intersectionRatio);
+        else visible.delete(en.target.id);
+      });
+      let best = null;
+      visible.forEach((ratio, id) => { if (!best || ratio > best[1]) best = [id, ratio]; });
+      if (best && bySection.has(best[0])) setActive(best[0]);
+    }, { rootMargin: '-10% 0px -55% 0px', threshold: [0, 0.1, 0.4, 0.8] });
+    ['usage', 'offer', 'support'].forEach((id) => { const el = document.getElementById(id); if (el) io.observe(el); });
   })();
 
   /* KEY LOGIN — same flow and texts as apps/openkeys key-login.tsx (ru copy),

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(function(){try{if(localStorage.getItem("apitoken-theme")==="dark")document.documentElement.dataset.theme="dark"}catch(e){}})();</script>
-<title>B2B предложение — apiToken</title>
+<title>Расход ключа — apiToken openKeys</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -15,51 +15,44 @@
 
 <a class="skip" href="#main">К содержимому</a>
 
-<!-- ================= HEADER ================= -->
-<header class="hdr small" id="hdr">
-  <div class="hdr__in grid">
-    <a class="brand c1-3" href="/landing/index.html"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
-    <nav class="nav c4-9">
-      <a href="/landing/index.html#models">Модели</a>
-      <a href="/landing/index.html#explorer">Решения</a>
-      <a href="/landing/index.html#calc">Цены</a>
-      <a href="/landing/index.html#integrations">Интеграции</a>
-      <a href="/landing/index.html#learn">Гайды</a>
-      <a href="/landing/docs.html">Доки</a>
-      <a class="nav__dash" href="/dashboard">Дэшборд</a>
+<!-- Каркас повторяет openkeys (apps/openkeys app-shell): боковое меню слева,
+     контент справа, без верхней шапки. Только RU. -->
+<div class="b2b-app">
+
+  <!-- ================= SIDEBAR ================= -->
+  <aside class="b2b-side" id="b2bSide" aria-label="Разделы">
+    <a class="brand b2b-side__brand" href="/landing/index.html"><span class="brand__mark"></span>apiToken<i class="b2b-side__tag">openKeys</i></a>
+    <nav class="b2b-side__nav">
+      <a class="b2b-side__link is-active" href="#usage" data-section="usage" aria-current="page"><span class="b2b-si" aria-hidden="true">◧</span><span>Расход ключа</span></a>
+      <a class="b2b-side__link" href="/landing/docs.html" target="_blank" rel="noreferrer"><span class="b2b-si" aria-hidden="true">◎</span><span>Документация ↗</span></a>
+      <a class="b2b-side__link" href="#offer" data-section="offer"><span class="b2b-si" aria-hidden="true">◇</span><span>B2B предложение</span></a>
+      <a class="b2b-side__link" href="#support" data-section="support"><span class="b2b-si" aria-hidden="true">◌</span><span>Поддержка</span></a>
     </nav>
-    <div class="hdr__acts c10-13">
-      <div class="lang" data-active="ru" aria-label="Language switcher">
-        <a class="lang__link is-active" href="/landing/b2b.html" aria-current="page">RU</a>
-        <a class="lang__link" href="/landing/en.html">EN</a>
+    <div class="b2b-side__foot">
+      <div class="b2b-side__tools">
+        <button class="theme-tgl" id="themeTgl" aria-label="Переключить тему" title="Тема">☾</button>
       </div>
-      <button class="theme-tgl" id="themeTgl" aria-label="Переключить тему" title="Тема">☾</button>
-      <a class="lnk" href="#">Войти</a>
-      <a class="btn btn--dark" href="/dashboard">Дэшборд</a>
-      <button class="burger" id="burger" aria-label="Меню"><span></span><span></span></button>
+      <nav class="b2b-side__legal" aria-label="Внешние ссылки">
+        <a href="https://apitoken.sale" target="_blank" rel="noreferrer">apiToken.sale</a>
+        <a href="https://apitoken.sale/docs/learn" target="_blank" rel="noreferrer">Гайды по Claude API</a>
+      </nav>
     </div>
-  </div>
-</header>
+  </aside>
+  <button class="b2b-scrim" id="b2bScrim" aria-label="Закрыть меню"></button>
+  <button class="b2b-burger" id="b2bBurger" aria-label="Меню" aria-expanded="false">☰</button>
 
-<main id="main">
+  <!-- ================= CONTENT ================= -->
+  <main class="b2b-main" id="main">
 
-<!-- ================= B2B ================= -->
-<section class="sec b2b-hero">
-  <div class="bleed">
-    <header class="sechead grid">
-      <span class="secnum c1-2">B2B</span>
-      <span class="meta c3-6">Предложение для компаний</span>
-      <h1 class="display c1-13">Получить<br><span class="ghost">предложение.</span></h1>
-      <p class="c8-13 secdesc">Персональные условия по расходам вашей компании — или вход по уже выпущенному универсальному ключу.</p>
-    </header>
-
-    <div class="b2b-cards">
-
-      <!-- вход по API-ключу (копия key-login из openkeys) -->
-      <form class="b2b-card" id="keyForm" novalidate>
+    <!-- Расход ключа — форма входа по sk-pool ключу (логика key-login из openkeys) -->
+    <section class="b2b-section" id="usage">
+      <header class="b2b-head">
         <span class="meta">Универсальный API-ключ</span>
-        <h2 class="b2b-card__title">Откройте свой USAGE</h2>
-        <p class="b2b-card__lead">Вставьте ключ sk-pool, чтобы увидеть его живой баланс и расход. Ключ проверяется сервером и не сохраняется в браузере — остаётся только подписанная сессия профиля.</p>
+        <h1 class="b2b-h">Откройте свой USAGE</h1>
+        <p class="b2b-sub">Вставьте ключ sk-pool, чтобы увидеть его живой баланс и расход. Ключ проверяется сервером и не сохраняется в браузере — остаётся только подписанная сессия профиля.</p>
+      </header>
+
+      <form class="b2b-card" id="keyForm" novalidate>
         <label class="b2b-field" for="apikey">
           <span>API-ключ</span>
           <input id="apikey" name="key" type="text" placeholder="sk-pool-…" autocomplete="off" spellcheck="false">
@@ -68,12 +61,17 @@
         <button class="btn btn--solid btn--full" type="submit">Открыть USAGE</button>
         <div class="b2b-privacy"><b>Приватность по умолчанию</b><span>Секрет используется только для проверки и не записывается в хранилище браузера.</span></div>
       </form>
+    </section>
 
-      <!-- B2B-заявка -->
-      <form class="b2b-card" id="b2bForm">
+    <!-- B2B предложение — заявка для компаний -->
+    <section class="b2b-section" id="offer">
+      <header class="b2b-head">
         <span class="meta">B2B</span>
-        <h2 class="b2b-card__title">Получить B2B предложение</h2>
-        <p class="b2b-card__lead">Компаниям с регулярными расходами на AI API — персональные условия и объёмные скидки. Оставьте контакты, вернёмся с предложением.</p>
+        <h2 class="b2b-h">Получить B2B предложение</h2>
+        <p class="b2b-sub">Компаниям с регулярными расходами на AI API — персональные условия и объёмные скидки. Оставьте контакты, вернёмся с предложением.</p>
+      </header>
+
+      <form class="b2b-card" id="b2bForm">
         <label class="b2b-field" for="b2bCompany">
           <span>Компания</span>
           <input id="b2bCompany" name="company" type="text" autocomplete="organization" required>
@@ -89,55 +87,77 @@
         <p class="b2b-ok" id="b2bOk" hidden>Отправлено — вернёмся с предложением на указанную почту.</p>
         <button class="btn btn--solid btn--full" type="submit">Получить предложение</button>
       </form>
+    </section>
 
-    </div>
-  </div>
-</section>
+    <!-- Поддержка — копия раздела support-portal из openkeys (ru) -->
+    <section class="b2b-section" id="support">
+      <header class="b2b-head">
+        <span class="meta">Поддержка клиентов</span>
+        <h2 class="b2b-h">Помощь с ключом openKeys</h2>
+        <p class="b2b-sub">Напишите нашему ИИ-ассистенту в Telegram. Он отвечает сразу, а если нужен ручной разбор, в тот же чат подключается человек.</p>
+      </header>
 
-</main>
-
-<!-- ================= FOOTER ================= -->
-<footer class="ftr sec--dark">
-  <div class="bleed">
-
-    <div class="grid ftr__top">
-      <div class="c1-5 ftr__brand">
-        <a class="brand" href="/landing/index.html"><span class="brand__mark"></span>apiToken<sup>®</sup></a>
-        <p>Платформа доступа к Claude, GPT и Gemini API для разработчиков.</p>
+      <div class="b2b-bot">
+        <div class="b2b-bot__glow" aria-hidden="true"></div>
+        <div class="b2b-bot__main">
+          <div class="b2b-bot__head">
+            <span class="b2b-bot__av" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><path d="M22 2 2.5 10.6c-.9.4-.9 1.6.1 1.9l4.6 1.4 1.8 5.6c.3.9 1.4 1.1 2 .4l2.5-2.8 4.7 3.4c.8.6 2 .1 2.2-.9L23.9 3.3C24.1 2.3 23 1.5 22 2ZM9 13.6l8.3-5.7-6.4 6.9-.1 3.4L9 13.6Z"/></svg>
+            </span>
+            <div><span class="b2b-bot__tag">ИИ первой линии · Claude Sonnet 5</span><h3 class="b2b-bot__name">apiToken Support</h3></div>
+          </div>
+          <p class="b2b-bot__desc">Мгновенная помощь с подключением, расходом, балансом и ошибками запросов.</p>
+          <div class="b2b-bot__actions">
+            <a class="btn btn--solid b2b-bot__cta" href="https://t.me/apitokensupportbot" target="_blank" rel="noreferrer">Открыть в Telegram</a>
+            <a class="b2b-bot__handle" href="https://t.me/apitokensupportbot" target="_blank" rel="noreferrer"><span>Бот поддержки</span>@apitokensupportbot</a>
+          </div>
+          <span class="b2b-bot__avail"><i class="b2b-bot__dot" aria-hidden="true"></i>ИИ 24/7 · люди 08:00–12:00 UTC</span>
+        </div>
       </div>
-      <div class="ftr__col">
-        <span class="ftr__h">Продукт</span>
-        <a href="/landing/index.html#models">Модели</a>
-        <a href="/landing/index.html#calc">Цены</a>
-        <a href="/landing/index.html#integrations">Интеграции</a>
-        <a href="/landing/index.html#learn">Гайды</a>
-      </div>
-      <div class="ftr__col">
-        <span class="ftr__h">Разработчикам</span>
-        <a href="/landing/docs.html">Документация</a>
-        <a href="/landing/docs.html">Быстрый старт</a>
-        <a href="/landing/docs.html">API-справочник</a>
-        <a href="https://github.com/ArthemisDesign/APITOKEN">GitHub</a>
-      </div>
-      <div class="ftr__col">
-        <span class="ftr__h">Поддержка</span>
-        <a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a>
-        <a href="#">Статус</a>
-        <a href="#">Коды ошибок</a>
-      </div>
-      <div class="ftr__col">
-        <span class="ftr__h">Правовое</span>
-        <a href="#">Пользовательское соглашение</a>
-        <a href="#">Политика конфиденциальности</a>
-      </div>
-    </div>
 
-    <div class="ftr__bottom">
-      <span>© 2026 apiToken® — независимая платформа, не аффилированная с Anthropic, PBC или OpenAI и не одобренная ими.</span>
-    </div>
+      <div class="b2b-how">
+        <div class="b2b-how__head">
+          <h3 class="b2b-blocktitle">Как это работает</h3>
+          <span class="b2b-hours"><i class="b2b-bot__dot" aria-hidden="true"></i>Люди · 08:00–12:00 UTC</span>
+        </div>
+        <div class="b2b-steps">
+          <article class="b2b-step">
+            <div class="b2b-step__top"><span class="b2b-step__ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9.4 9.4 0 0 1-3.4-.6L3 21l1.3-4a8.2 8.2 0 0 1-1-4A8.4 8.4 0 0 1 12 4a8.4 8.4 0 0 1 9 7.5Z"/></svg></span><span class="n">01</span></div>
+            <h4>Напишите боту</h4><p>Опишите проблему простыми словами.</p>
+          </article>
+          <article class="b2b-step">
+            <div class="b2b-step__top"><span class="b2b-step__ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 2.5l1.7 4.6 4.6 1.7-4.6 1.7L12 15.1l-1.7-4.6L5.7 8.8l4.6-1.7L12 2.5Z"/><path d="M18.7 14l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z" opacity=".55"/></svg></span><span class="n">02</span></div>
+            <h4>ИИ отвечает</h4><p>Помощь за секунды в любое время.</p>
+          </article>
+          <article class="b2b-step">
+            <div class="b2b-step__top"><span class="b2b-step__ic" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg></span><span class="n">03</span></div>
+            <h4>Человек при необходимости</h4><p>Вопросы по деньгам и аккаунту передаются оператору.</p>
+          </article>
+        </div>
+      </div>
 
-  </div>
-</footer>
+      <div class="b2b-topics">
+        <h3 class="b2b-blocktitle">С чем помогает</h3>
+        <ul class="b2b-chips">
+          <li>Подключение Claude</li>
+          <li>Подключение GPT / OpenAI</li>
+          <li>Ошибки запросов</li>
+          <li>Расход ключа</li>
+          <li>Баланс</li>
+          <li>ID моделей</li>
+        </ul>
+      </div>
+
+      <div class="b2b-note"><span class="b2b-note__ic" aria-hidden="true">✓</span><p>Не отправляйте пароли, полные API-ключи и данные карт — поддержка их не спрашивает.</p></div>
+
+      <div class="b2b-footline">
+        <a class="b2b-footmail" href="mailto:apitokensale@gmail.com">Удобнее почтой? <b>apitokensale@gmail.com</b></a>
+        <span class="b2b-footnote">Единственный официальный бот — @apitokensupportbot.</span>
+      </div>
+    </section>
+
+  </main>
+</div>
 
 <script src="/landing/b2b.js"></script>
 </body>
