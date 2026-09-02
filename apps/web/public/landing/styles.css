@@ -259,14 +259,13 @@ body::before{
    visual viewport shifts (address-bar collapse, pinch, rubber-band) the bar
    detaches from the top screen edge and a page-colored gap opens above it.
    A fixed header tracks the visual viewport, so the gap is impossible.
-   With viewport-fit=cover the page runs under the sensor housing and above
-   the home indicator; env(safe-area-inset-top) extends the header background
-   into the notch area, and the html canvas carries the page background so the
-   bottom inset cannot show a foreign color.
-   env() is 0 on desktop and notch-less devices, so the layout elsewhere
-   (incl. the transparent .hdr:not(.small) state) is unchanged. */
+   The page deliberately runs WITHOUT viewport-fit=cover: like the dashboard,
+   the layout stays inside the safe area — the header sits flush against the
+   top edge of the usable viewport and no page content shows through the
+   notch or the home-indicator area. The html canvas still carries the page
+   background as a fallback. */
 html{background:var(--bg)}
-.hdr{position:fixed;top:0;left:0;right:0;z-index:60;background:rgba(240,239,235,.86);backdrop-filter:blur(12px);transition:border-color .3s;padding-top:env(safe-area-inset-top)}
+.hdr{position:fixed;top:0;left:0;right:0;z-index:60;background:rgba(240,239,235,.86);backdrop-filter:blur(12px);transition:border-color .3s}
 .hdr__in{align-items:center;padding:18px var(--margin);max-width:var(--maxw);margin:0 auto;border-bottom:1px solid transparent;transition:padding .3s,border-color .3s}
 .hdr.small .hdr__in{padding-top:11px;padding-bottom:11px;border-bottom-color:var(--line)}
 .brand{display:inline-flex;align-items:center;gap:9px;font-weight:600;font-size:17px;letter-spacing:-.03em}
@@ -389,10 +388,9 @@ html{background:var(--bg)}
    SECTIONS
    ========================================================= */
 .sec{padding:var(--sec) 0;position:relative}
-/* the fixed header (~66px on mobile, + safe-area inset on iOS) must not cover
-   the section tops when the nav jumps to anchors — reserve its height plus
-   a breath of air; env() is 0 outside notched iOS devices */
-.sec{scroll-margin-top:calc(88px + env(safe-area-inset-top))}
+/* the fixed header (~66px on mobile) must not cover the section tops when
+   the nav jumps to anchors — reserve its height plus a breath of air */
+.sec{scroll-margin-top:88px}
 /* LIGHT theme: no dark blocks anywhere — the "dark" sections and the footer
    drop to the paper surface with ink text. The dark theme restores them below. */
 .sec--dark{background:var(--paper);color:var(--ink)}
@@ -1572,9 +1570,9 @@ body{line-height:1.5}
 .hero{margin-top:0}
 
 @media (max-width:640px){
-  /* the fixed header overlays the plate top on notched phones as well —
-     pad the plate content by the header height + the top safe-area inset */
-  .plate__in{padding-top:calc(var(--hdr-h) + env(safe-area-inset-top) + 28px)!important}
+  /* the fixed header overlays the plate top — pad the plate content by
+     the header height */
+  .plate__in{padding-top:calc(var(--hdr-h) + 28px)!important}
   .plate{flex-direction:column}
   .plate::before{display:none}
   .plate__in{order:1;padding-top:clamp(28px,8vw,44px)}
@@ -1819,7 +1817,6 @@ body{line-height:1.5}
    visible only when the sidebar slides off-canvas */
 .b2b-side-burger{
   display:none;position:fixed;top:14px;left:14px;z-index:80;
-  top:calc(14px + env(safe-area-inset-top));
   width:42px;height:42px;align-items:center;justify-content:center;
   border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--fg);
   cursor:pointer;box-shadow:var(--shadow-s);
@@ -1834,16 +1831,13 @@ body{line-height:1.5}
   position:fixed;top:0;left:0;right:0;z-index:10;
   display:flex;align-items:center;gap:14px;
   min-height:64px;padding:0 32px;
-  /* iOS Safari: extend the bar into the top safe-area so no gap can open
-     above it when the visual viewport shifts (address bar, notch). */
-  padding-top:env(safe-area-inset-top);
   border-bottom:1px solid var(--line);
   background:var(--bg);
 }
 /* reserve the fixed bar's place in the flow so the content below keeps
    its position; on mobile the bar is 56px tall and sits under the floating
    burger (left padding of the bar itself stays with the bar) */
-.b2b-main{padding-top:calc(64px + env(safe-area-inset-top))}
+.b2b-main{padding-top:64px}
 .b2b-top__title{flex:1;font-size:20px;font-weight:600;letter-spacing:-.02em}
 .b2b-top__note{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
 
@@ -1864,7 +1858,7 @@ body{line-height:1.5}
   .b2b-scrim.show{opacity:1;pointer-events:auto}
   .b2b-side-burger{display:inline-flex}
   .b2b-top{min-height:56px;padding:0 20px 0 66px}
-  .b2b-main{padding-top:calc(56px + env(safe-area-inset-top))}
+  .b2b-main{padding-top:56px}
 }
 
 /* ---------- content ---------- */
