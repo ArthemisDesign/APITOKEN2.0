@@ -282,7 +282,11 @@ aw_worktree_lock_state() {
           (( locked == 1 )) && printf 'locked\n' || printf 'unlocked\n'
           return 0
         fi
+        # Git for Windows reports worktree paths in native C:/... form while the
+        # rest of this script compares paths in the MSYS /c/... form (pwd -P);
+        # normalize through the filesystem so the comparison below can match.
         path=${line#worktree }
+        [[ -d $path ]] && path=$(cd -- "$path" && pwd -P)
         locked=0
         ;;
       'locked'*) locked=1 ;;
