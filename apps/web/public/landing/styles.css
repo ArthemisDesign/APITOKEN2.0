@@ -88,7 +88,25 @@
 /* Elements that hard-code light surfaces follow the theme through these
    broad overrides — the dark palette already lives in the tokens above. */
 [data-theme="dark"] body{background:var(--bg);color:var(--fg)}
-[data-theme="dark"] .sec--accent{background:var(--accent)}
+/* In the dark theme the coral is lighter (#FF6A5A), so white text drops to
+   2.81:1 — below the floor even for the large numerals. The dark hero plate
+   already solves this by carrying ink text on the same coral (6.96:1); the
+   accent sections follow it, so the whole dark theme treats coral the same way. */
+[data-theme="dark"] .sec--accent{
+  background:var(--accent);color:var(--ink);
+  --fg:var(--ink);--muted:rgba(12,11,17,.72);
+  --line:rgba(12,11,17,.22);--line-soft:rgba(12,11,17,.12);
+}
+[data-theme="dark"] .sec--accent .ghost{color:rgba(12,11,17,.45)}
+[data-theme="dark"] .sec--accent .secnum,
+[data-theme="dark"] .sec--accent .meta{color:rgba(12,11,17,.72)}
+[data-theme="dark"] .sec--accent .secdesc,
+[data-theme="dark"] .sec--accent .num__desc{color:rgba(12,11,17,.82)}
+[data-theme="dark"] .sec--accent .chip.on{background:var(--ink);color:var(--accent)}
+[data-theme="dark"] .sec--accent .btn{border-color:rgba(12,11,17,.32);color:var(--ink);background:transparent}
+[data-theme="dark"] .sec--accent .btn:hover{border-color:var(--ink);background:rgba(255,255,255,.18)}
+[data-theme="dark"] .sec--accent .btn--solid{background:var(--ink);border-color:var(--ink);color:var(--accent)}
+[data-theme="dark"] .sec--accent .btn--solid:hover{background:transparent;color:var(--ink)}
 [data-theme="dark"] .hdr:not(.small){background:transparent}
 [data-theme="dark"] .hdr{background:var(--bg)}
 [data-theme="dark"] .hdr .brand,
@@ -713,7 +731,10 @@ html{background:var(--bg)}
 /* dark theme: the terminal returns to the deep ink block */
 [data-theme="dark"] .term{background:var(--ink-2);color:var(--paper)}
 [data-theme="dark"] .term__bar{color:var(--g200);border-bottom-color:rgba(240,239,235,.10)}
-[data-theme="dark"] .term__body{color:var(--g100)}
+/* the nested <code> repeats the colour, so the dark override has to reach it
+   too — otherwise the unhighlighted parts of the snippet stayed ink on ink */
+[data-theme="dark"] .term__body,
+[data-theme="dark"] .term__body code{color:var(--g100)}
 [data-theme="dark"] .term__out{border-top-color:rgba(240,239,235,.10)}
 [data-theme="dark"] .term__out p{color:var(--g100)}
 
