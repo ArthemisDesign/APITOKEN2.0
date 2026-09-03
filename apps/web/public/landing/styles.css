@@ -1141,7 +1141,10 @@ body{line-height:1.5}
 @media (max-width:1024px){
   .c5-8,.c8-11{grid-column:auto/span 8}
   .ftr__brand{grid-column:1/13}
-  .ftr__top .ftr__col{grid-column:auto/span 6;margin-top:8px}
+  /* the desktop nth-child placements below are more specific and otherwise win,
+     dropping the columns into implicit tracks — the tablet footer collapsed
+     into four uneven columns squeezed against the right edge */
+  .ftr__top > .ftr__col:nth-child(n){grid-column:auto/span 6;margin-top:8px}
 }
 @media (max-width:640px){
   .c5-8,.c8-11{grid-column:1/5}
@@ -1776,9 +1779,16 @@ body{line-height:1.5}
 
   /* footer — the mail address is longer than the 2-col column on 360px,
      let it wrap anywhere instead of overflowing the column */
-  .ftr__top .ftr__col{grid-column:auto/span 2;margin-top:22px}
-  .ftr__top .ftr__col:nth-child(odd){grid-column:1/3}
-  .ftr__top .ftr__col:nth-child(even){grid-column:3/5}
+  /* The link columns are children 2..5 of .ftr__top — the brand is child 1 — so
+     the odd/even placement put the first column in the right half and left a
+     hole beside it. Plain auto-placement packs them two per row correctly. */
+  /* :nth-child(n) matches every column and keeps the specificity of the desktop
+     placements above, which otherwise win by order and push the columns into
+     implicit tracks. */
+  .ftr__top > .ftr__col:nth-child(n){grid-column:auto/span 2;margin-top:22px}
+  /* the support address needs 185px and did not fit a 172px half column: it
+     broke mid-word as "gmail.co / m". Give that column the full row. */
+  .ftr__top > .ftr__col:nth-child(n):has(a[href^="mailto:"]){grid-column:1/5}
   .ftr__col a[href^="mailto:"]{overflow-wrap:anywhere;max-width:100%}
   .ftr__brand{grid-column:1/5}
   .ftr__bottom{display:block;text-transform:none;letter-spacing:.02em;font-size:11px}
