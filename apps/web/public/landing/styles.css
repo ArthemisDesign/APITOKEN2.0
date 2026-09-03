@@ -1712,6 +1712,7 @@ body{line-height:1.5}
   /* header — touch targets ≥40px: the burger hit-area grows through padding
      (the two bars keep their 16px visual size), the language pill stretches to
      40px tall via min-height, and the theme toggle grows to 40×40 */
+  .hdr{padding-top:0}
   .hdr__in{padding:14px var(--margin)}
   .hdr__acts .lnk{display:none}
   .hdr__acts .btn{display:none}
