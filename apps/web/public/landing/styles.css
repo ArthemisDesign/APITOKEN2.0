@@ -200,7 +200,7 @@ body::before{
 }
 
 .skip{position:absolute;left:-9999px}
-.skip:focus{left:12px;top:12px;background:var(--accent);color:#fff;padding:8px 14px;z-index:100}
+.skip:focus{left:12px;top:12px;background:var(--ink);color:var(--paper);padding:12px 16px;border-radius:8px;z-index:100}
 
 /* ---------- grid ---------- */
 .bleed{max-width:var(--maxw);margin:0 auto;padding:0 var(--margin)}
@@ -424,7 +424,7 @@ html{background:var(--bg)}
 [data-theme="dark"] .ftr__col a{color:var(--g200)}
 [data-theme="dark"] .ftr__col a:hover{color:#fff}
 [data-theme="dark"] .ftr__brand p{color:var(--g200)}
-[data-theme="dark"] .ftr__bottom{color:var(--g300);border-top-color:rgba(240,239,235,.10)}
+[data-theme="dark"] .ftr__bottom{color:var(--g200);border-top-color:rgba(240,239,235,.10)}
 .sec--accent{background:var(--accent);color:#fff;--line:rgba(255,255,255,.24);--line-soft:rgba(255,255,255,.14);--muted:rgba(255,255,255,.92);--fg:#fff;--shadow-xs:0 1px 2px rgba(0,0,0,.1);--shadow-s:0 2px 8px rgba(0,0,0,.15);--shadow-m:0 10px 30px rgba(0,0,0,.2);--shadow-l:0 20px 60px rgba(0,0,0,.25);--shadow-xl:0 36px 90px rgba(0,0,0,.3)}
 .sec--accent .ghost{color:rgba(255,255,255,.55)}
 .sec--accent .secnum,.sec--accent .meta{color:rgba(255,255,255,.92)}
@@ -1694,7 +1694,10 @@ body{line-height:1.5}
   .hdr__acts{gap:8px}
   .hdr__acts .theme-tgl{width:40px;height:40px;flex-basis:40px}
   .lang{transform:none;display:flex;align-items:center;min-height:40px;padding:2px}
-  .lang__link{min-width:34px;padding:7px 8px;font-size:11px}
+  /* the links, not only the pill around them, must clear the 40px touch target */
+  .lang__link{min-width:34px;padding:11px 8px;font-size:11px}
+  /* the wordmark is the "home" link: give it the same 40px hit box */
+  .brand{padding:7px 0}
   /* flex column + justify-content: the 1px bars sit inside a 40px hit box */
   .burger{display:flex;justify-content:center;padding:0;width:40px;height:40px;flex:none}
 
@@ -1843,6 +1846,7 @@ body{line-height:1.5}
 }
 .b2b-side-brand{
   display:inline-flex;align-items:center;gap:9px;margin:2px 10px 22px;
+  padding:7px 0;   /* 40px touch target: the wordmark is a link home */
   font-weight:600;font-size:17px;letter-spacing:-.03em;color:var(--fg);
 }
 .b2b-side__tag{
@@ -1870,7 +1874,7 @@ body{line-height:1.5}
 .b2b-side__link:hover{background:var(--paper-2);color:var(--fg)}
 [data-theme="dark"] .b2b-side__link:hover{background:rgba(240,239,235,.06)}
 .b2b-side__link.is-active{
-  background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent);
+  background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent-ink);
 }
 .b2b-side__foot{
   display:flex;align-items:center;gap:10px;flex:none;margin-top:12px;
@@ -1911,7 +1915,10 @@ body{line-height:1.5}
 /* ---------- mobile: sidebar becomes off-canvas ---------- */
 .b2b-scrim{display:none}
 @media (max-width:900px){
-  .b2b-app{grid-template-columns:1fr}
+  /* a grid item keeps min-width:auto, so the column could not shrink below the
+     content min-content and the page was 9px wider than a 320px screen */
+  .b2b-app{grid-template-columns:minmax(0,1fr)}
+  .b2b-main{min-width:0}
   .b2b-side{
     position:fixed;left:0;top:0;bottom:0;width:264px;height:auto;
     transform:translateX(-100%);transition:transform .25s ease;
@@ -1964,7 +1971,7 @@ body{line-height:1.5}
 }
 .b2b-ok{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
 .b2b-privacy{display:flex;flex-direction:column;gap:4px;border-top:1px solid var(--line-soft);padding-top:16px}
-.b2b-privacy b{font-size:13px;font-weight:600;letter-spacing:-.01em;color:var(--accent)}
+.b2b-privacy b{font-size:13px;font-weight:600;letter-spacing:-.01em;color:var(--accent-ink)}
 .b2b-privacy span{font-family:var(--mono);font-size:11px;letter-spacing:.04em;color:var(--muted)}
 
 /* ---------- support section (copy of openkeys support-portal structure) ---------- */
@@ -1980,7 +1987,7 @@ body{line-height:1.5}
 .b2b-bot__main{position:relative;display:flex;flex-direction:column;gap:16px}
 .b2b-bot__head{display:flex;align-items:center;gap:14px}
 .b2b-bot__av{display:inline-flex;align-items:center;justify-content:center;width:52px;height:52px;border-radius:16px;background:var(--accent);color:#fff;flex:none}
-.b2b-bot__tag{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.b2b-bot__tag{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent-ink)}
 .b2b-bot__name{font-size:clamp(20px,1.8vw,26px);font-weight:600;letter-spacing:-.02em;margin-top:2px}
 .b2b-bot__desc{font-size:clamp(14px,1.05vw,17px);line-height:1.5;color:var(--muted)}
 .b2b-bot__actions{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
