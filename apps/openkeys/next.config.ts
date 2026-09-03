@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import type { NextConfig } from "next";
 
 const securityHeaders = [
@@ -21,7 +23,10 @@ const privateHeaders = [
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  turbopack: { root: new URL("../..", import.meta.url).pathname },
+  // fileURLToPath, not URL.pathname: on Windows the latter yields "/C:/…", which
+  // Turbopack rejects as a root that navigates out of the project path, so the
+  // app could not be built or run there at all.
+  turbopack: { root: fileURLToPath(new URL("../..", import.meta.url)) },
   // pg держим вне бандла: нативный драйвер и его зависимости ломаются при сборке.
   serverExternalPackages: ["pg", "@claude-api/openkeys-db"],
   async headers() {
