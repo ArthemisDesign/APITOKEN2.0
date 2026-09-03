@@ -449,6 +449,9 @@ footer{padding:64px 0 40px;border-bottom:0}
 .site-foot-full .foot-col a,.site-foot-full .foot-col>span{color:#A8A7AA;font-size:14px}
 .site-foot-full .foot-col a:hover{color:#fff}
 .site-foot-full .foot-bottom{border-top-color:rgba(240,239,235,.14)}
+/* the site footer is an ink panel in both themes, so the light-theme quiet tone
+   reads only 3.16:1 there — it needs the dark-surface tone */
+.site-foot-full{--txt-4:#8A888C}
 .site-foot-full .foot-bottom small{color:var(--txt-4);font-size:13px}
 .site-foot-full .foot-legal{color:var(--txt-4);font-size:13px}
 .site-foot-full .foot-legal a{color:#A8A7AA}
@@ -1020,6 +1023,8 @@ a.step:hover .step-cta::after{margin-left:4px}
 .pricing-howto-link,.tier-docs-link{font-family:var(--font-mono);font-size:13.5px;color:var(--accent-ink);white-space:nowrap;font-weight:500}
 .pricing-howto-link:hover,.tier-docs-link:hover{text-decoration:underline}
 .tier-docs-link{display:inline-block;margin:0;padding:2px 22px 22px}
+/* nowrap made this 392px wide inside a 390px screen */
+@media(max-width:430px){.pricing-howto-link,.tier-docs-link{white-space:normal}}
 .pricing-status-warn strong{color:var(--warn)}
 .pricing-status-ok small{color:var(--ok)}
 .tc-head h2{margin:10px 0 6px}
@@ -1285,3 +1290,31 @@ a.step:hover .step-cta::after{margin-left:4px}
 .home-calc-more{margin:26px 0 0;text-align:center;font-family:var(--font-mono);font-size:13px}
 .home-calc-more a{color:var(--accent-ink);text-decoration:none;border-bottom:1px solid transparent;transition:.15s}
 .home-calc-more a:hover{border-bottom-color:var(--accent-line)}
+
+/* ---------------------------------------------------------
+   TOUCH TARGETS ON PHONES
+   Footer links, model names in the catalogue table, the Copy buttons in the
+   integration guides and the inline policy links measured 19-31px tall on
+   390x844. They get an invisible 44px hit box through a pseudo-element, so the
+   visual size and the layout stay as designed.
+   --------------------------------------------------------- */
+@media (max-width:900px){
+  .foot-legal a,
+  .foot-brand a.brand,
+  .mname,
+  .commercial-policy a,
+  .support-note p a,
+  .support-footmail,
+  .ib-guide-foot a{position:relative}
+  .foot-legal a::after,
+  .foot-brand a.brand::after,
+  .mname::after,
+  .commercial-policy a::after,
+  .support-note p a::after,
+  .support-footmail::after,
+  .ib-guide-foot a::after{
+    content:"";position:absolute;left:-8px;right:-8px;top:50%;
+    height:44px;transform:translateY(-50%);
+  }
+  .ib-code-bar button,.ib-endpoint button{min-height:40px}
+}
