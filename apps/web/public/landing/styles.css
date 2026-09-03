@@ -23,6 +23,11 @@
   /* accent */
   --accent:#FF5949;
   --accent-2:#E84D3E;
+  /* The brand coral reaches only 2.79:1 on paper and 3.10:1 on white, so it
+     fails AA for text. --accent-ink is the same hue darkened until small text
+     passes (4.75:1 on paper, 5.27:1 on white); fills, rules and icons keep
+     --accent. */
+  --accent-ink:#C43A2A;
   --accent-glow:rgba(255,89,73,.28);
 
   /* surfaces */
@@ -67,6 +72,7 @@
   --muted:var(--g200);
   --accent:#FF6A5A;
   --accent-2:#FF5949;
+  --accent-ink:#FF6A5A;   /* on ink the coral already reads 6.96:1 */
   --accent-glow:rgba(255,106,90,.30);
   --accent-soft:rgba(255,106,90,.14);
   --accent-line:rgba(255,106,90,.38);
@@ -221,7 +227,12 @@ body::before{
   text-wrap:balance;
 }
 .display--xxl{font-size:clamp(52px,11vw,208px);line-height:.86;letter-spacing:-.045em;display:flex;flex-direction:column}
-.ghost{color:var(--g200)}
+/* the ghosted second line of a headline is content, not decoration: g200 gives
+   2.16:1 on paper, below the 3:1 large-text floor. g300 reads 3.72:1 and stays
+   clearly lighter than the ink line above it. On the ink page g200 already
+   reads 8.19:1, so the dark theme keeps it. */
+.ghost{color:var(--g300)}
+[data-theme="dark"] .ghost{color:var(--g200)}
 .meta{
   font-family:var(--mono);
   font-size:11px;letter-spacing:.1em;text-transform:uppercase;
@@ -321,7 +332,7 @@ html{background:var(--bg)}
 .lang__sep{display:none}
 .lnk{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);cursor:pointer;transition:color .2s}
 .lnk:hover{color:var(--fg)}
-.lnk--arrow{display:inline-flex;align-items:center;gap:9px;color:var(--accent);margin-top:44px}
+.lnk--arrow{display:inline-flex;align-items:center;gap:9px;color:var(--accent-ink);margin-top:44px}
 .lnk--arrow::after{content:"→";transition:transform .25s}
 .lnk--arrow:hover::after{transform:translateX(6px)}
 .burger{display:none;flex-direction:column;gap:4px;cursor:pointer;padding:6px}
@@ -414,10 +425,10 @@ html{background:var(--bg)}
 [data-theme="dark"] .ftr__col a:hover{color:#fff}
 [data-theme="dark"] .ftr__brand p{color:var(--g200)}
 [data-theme="dark"] .ftr__bottom{color:var(--g300);border-top-color:rgba(240,239,235,.10)}
-.sec--accent{background:var(--accent);color:#fff;--line:rgba(255,255,255,.24);--line-soft:rgba(255,255,255,.14);--muted:rgba(255,255,255,.72);--fg:#fff;--shadow-xs:0 1px 2px rgba(0,0,0,.1);--shadow-s:0 2px 8px rgba(0,0,0,.15);--shadow-m:0 10px 30px rgba(0,0,0,.2);--shadow-l:0 20px 60px rgba(0,0,0,.25);--shadow-xl:0 36px 90px rgba(0,0,0,.3)}
+.sec--accent{background:var(--accent);color:#fff;--line:rgba(255,255,255,.24);--line-soft:rgba(255,255,255,.14);--muted:rgba(255,255,255,.92);--fg:#fff;--shadow-xs:0 1px 2px rgba(0,0,0,.1);--shadow-s:0 2px 8px rgba(0,0,0,.15);--shadow-m:0 10px 30px rgba(0,0,0,.2);--shadow-l:0 20px 60px rgba(0,0,0,.25);--shadow-xl:0 36px 90px rgba(0,0,0,.3)}
 .sec--accent .ghost{color:rgba(255,255,255,.55)}
-.sec--accent .secnum,.sec--accent .meta{color:rgba(255,255,255,.75)}
-.sec--accent .secdesc{color:rgba(255,255,255,.85)}
+.sec--accent .secnum,.sec--accent .meta{color:rgba(255,255,255,.92)}
+.sec--accent .secdesc{color:rgba(255,255,255,.95)}
 
 /* ambient light glows between sections */
 .sec::before{
@@ -624,9 +635,9 @@ html{background:var(--bg)}
 .vid__state{min-width:64px}
 
 .steps{margin-top:44px;border-top:1px solid var(--line);row-gap:0}
-.steps li{padding:20px 0 0;font-size:14px;color:var(--g400)}
+.steps li{padding:20px 0 0;font-size:14px;color:var(--muted)}
 .sec--dark .steps li{color:var(--g100)}
-.steps span{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--accent);margin-bottom:8px}
+.steps span{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--accent-ink);margin-bottom:8px}
 
 /* =========================================================
    04 · NUMBERS
@@ -648,15 +659,15 @@ html{background:var(--bg)}
 .pick:hover{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:none;transform:none}
 .pick:hover .pick__role,.pick:hover .pick__name,.pick:hover .pick__prov,.pick:hover .pick__why,.pick:hover .pick__specs,.pick:hover .pick__specs b,.pick:hover .pick__cta{color:#fff}
 .pick:hover .pick__specs div{border-top-color:#fff}
-.pick__role{font-family:var(--mono);font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);background:transparent;padding:4px 8px;border-radius:4px;align-self:flex-start}
+.pick__role{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent-ink);background:transparent;padding:4px 8px;border-radius:4px;align-self:flex-start}
 .pick__name{font-size:clamp(18px,1.6vw,26px);font-weight:600;letter-spacing:-.03em;line-height:1.15;color:var(--fg)}
 .pick__prov{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-.pick__why{font-size:14px;color:var(--g400);flex:1;line-height:1.55}
+.pick__why{font-size:14px;color:var(--muted);flex:1;line-height:1.55}
 .sec--dark .pick__why{color:var(--g100)}
 .pick__specs{display:flex;flex-direction:column;gap:10px;font-family:var(--mono);font-size:11px;color:var(--muted);margin-top:auto}
 .pick__specs div{display:flex;justify-content:space-between;border-top:1px solid var(--line-soft);padding-top:10px}
 .pick__specs b{font-weight:500;color:var(--fg)}
-.pick__cta{font-family:var(--sans);font-size:12px;font-weight:500;color:var(--accent);display:inline-flex;align-items:center;gap:8px;margin-top:4px;transition:gap .2s}
+.pick__cta{font-family:var(--sans);font-size:12px;font-weight:500;color:var(--accent-ink);display:inline-flex;align-items:center;gap:8px;margin-top:4px;transition:gap .2s}
 .pick__cta::after{content:"→";transition:transform .2s}
 .pick:hover .pick__cta{color:#fff}
 .pick:hover .pick__cta::after{transform:translateX(5px)}
@@ -675,9 +686,9 @@ html{background:var(--bg)}
 .tab.on{background:var(--ink);color:#fff}
 .tab:last-child{border-right:0}
 .intsteps{display:flex;border:1px solid var(--line);border-radius:0 0 12px 12px;overflow:hidden;background:#fff;border-top:0}
-.intsteps div{flex:1;padding:22px 18px;border-right:1px solid var(--line);font-size:14px;color:var(--g100)}
+.intsteps div{flex:1;padding:22px 18px;border-right:1px solid var(--line);font-size:14px;color:var(--muted)}
 .intsteps div:last-child{border-right:0}
-.intsteps b{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--accent);font-weight:400;margin-bottom:8px}
+.intsteps b{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--accent-ink);font-weight:400;margin-bottom:8px}
 
 /* =========================================================
    07 · SWITCH
@@ -695,9 +706,9 @@ html{background:var(--bg)}
 .term__body{padding:26px 28px;font-family:var(--mono);font-size:14px;line-height:1.85;letter-spacing:0;color:var(--ink);overflow:auto}
 .term__body code{color:var(--ink)}
 .term__out{border-top:1px solid var(--line-soft);padding:24px 30px}
-.term__meta{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:12px}
+.term__meta{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent-ink);margin-bottom:12px}
 .term__out p{font-size:14px;line-height:1.55;color:var(--g400)}
-.term__meta b{color:var(--accent);font-weight:400}
+.term__meta b{color:var(--accent-ink);font-weight:400}
 .term__out p{font-size:14px;color:var(--g400);min-height:46px;transition:opacity .2s}
 /* dark theme: the terminal returns to the deep ink block */
 [data-theme="dark"] .term{background:var(--ink-2);color:var(--paper)}
@@ -834,7 +845,7 @@ input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(255,89,73,.
 [data-theme="dark"] .tut__thumb::after{color:var(--paper)}
 [data-theme="dark"] .tut__grid{opacity:.28;background-image:linear-gradient(rgba(240,239,235,.2) 1px,transparent 1px),linear-gradient(90deg,rgba(240,239,235,.2) 1px,transparent 1px)}
 .tut__body{padding:18px;border-top:1px solid var(--line-soft);display:flex;flex-direction:column;gap:6px}
-.tut__num{font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--accent)}
+.tut__num{font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--accent-ink)}
 .tut__dur{margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--muted)}
 .tut__name{display:block;font-size:16px;font-weight:600;letter-spacing:-.025em}
 
@@ -1282,7 +1293,7 @@ body{line-height:1.5}
     display:block;font-size:clamp(22px,6vw,30px);font-weight:600;letter-spacing:-.03em;color:var(--ink);
   }
   .netmob__tick{
-    display:block;margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--accent);letter-spacing:.04em;
+    display:block;margin-top:8px;font-family:var(--mono);font-size:11px;color:var(--accent-ink);letter-spacing:.04em;
   }
 
   .netmob__product{
@@ -1424,7 +1435,7 @@ body{line-height:1.5}
 }
 .calc__big{color:var(--accent)}
 .calc__year{color:var(--g200)}
-.calc__out .lnk--arrow{color:var(--accent)}
+.calc__out .lnk--arrow{color:var(--accent)}   /* dark panel — the bright coral reads 6.0:1 here */
 .calc__out .adv{border-top-color:rgba(240,239,235,.14)}
 .calc__out .adv label{color:var(--g300)}
 .calc__out .adv input{
@@ -1496,7 +1507,7 @@ body{line-height:1.5}
   padding-bottom:clamp(40px,5vw,80px);
 }
 .plate__labels .meta{
-  color:rgba(255,255,255,.72);
+  color:rgba(255,255,255,.92);
   font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
 }
 
@@ -1515,7 +1526,7 @@ body{line-height:1.5}
   max-width:min(46ch,42vw);
 }
 .plate__foot .lead{
-  color:rgba(255,255,255,.82);
+  color:rgba(255,255,255,.95);
   font-size:clamp(16px,1.4vw,22px);line-height:1.45;max-width:none;font-weight:400;
 }
 .plate__foot .btn{
@@ -1645,7 +1656,7 @@ body{line-height:1.5}
   .plate__labels{padding-bottom:22px}
   .plate__claim{margin-top:6px}
   .plate__claim .claim__val{font-size:clamp(28px,9vw,48px)}
-  .plate__claim .claim__lab{font-size:9px}
+  .plate__claim .claim__lab{font-size:10px}
 }
 /* =========================================================
    MOBILE ADAPTIVE — up to 640px
@@ -1662,6 +1673,17 @@ body{line-height:1.5}
   .display--xxl{font-size:clamp(40px,14vw,72px)}
   .lead{font-size:16px}
   .secdesc{font-size:14px}
+  /* 9px mono is below the readable floor on a phone; the 10px labels of the
+     technical-drawing system stay as they are. */
+  .cap{font-size:10px;gap:4px 14px;flex-wrap:wrap;justify-content:flex-start}
+  .cap .ta-r{text-align:left}
+  /* The poster lines behind the play button are decorative (opacity .26) and
+     sit in .ln masks: a long line wrapped and its second half was hidden by
+     the mask. Keep one line and let it run under the edge instead. */
+  .vid__poster .ln{white-space:nowrap}
+  /* a soft right edge so the cut reads as a narrow terminal, not as a defect */
+  .vid__poster{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 40px),transparent);
+    mask-image:linear-gradient(90deg,#000 calc(100% - 40px),transparent)}
 
   /* header — touch targets ≥40px: the burger hit-area grows through padding
      (the two bars keep their 16px visual size), the language pill stretches to
@@ -1680,7 +1702,7 @@ body{line-height:1.5}
   .plate{min-height:0;padding-bottom:0}
   .plate__in{padding-top:calc(var(--hdr-h) + 28px);padding-bottom:28px}
   .plate__labels{gap:20px;padding-bottom:24px}
-  .plate__labels .meta{font-size:9px}
+  .plate__labels .meta{font-size:10px}
   .plate__h{font-size:clamp(36px,12vw,64px)}
   .plate__foot{padding-top:32px;gap:24px;max-width:none}
   .plate__foot .lead{font-size:16px}
@@ -1688,7 +1710,7 @@ body{line-height:1.5}
   .hero__cta .btn{width:100%}
   .plate__claim{position:static;align-items:flex-start;text-align:left;margin-top:14px}
   .plate__claim .claim__val{font-size:clamp(28px,9vw,48px)}
-  .plate__claim .claim__lab{font-size:9px}
+  .plate__claim .claim__lab{font-size:10px}
   .plate__mark{position:relative;right:auto;bottom:auto;top:auto;width:min(52%,220px);margin:24px auto 0;opacity:1}
   .plate__mark path{stroke-width:30}
 

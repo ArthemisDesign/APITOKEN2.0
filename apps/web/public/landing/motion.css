@@ -87,8 +87,11 @@ html:not(.mo-ready) .claim__val{opacity:0}
 .mo-marquee__row{display:inline-flex;gap:52px;will-change:transform}
 .mo-marquee__row span{
   font-size:clamp(26px,3.4vw,58px);font-weight:600;letter-spacing:-.04em;
-  color:var(--g200);display:inline-flex;align-items:center;gap:52px;
+  color:var(--g300);display:inline-flex;align-items:center;gap:52px;
 }
+/* g300 is the readable step on paper (3.72:1 against 2.16:1 for g200); on the
+   ink page g200 is already 8.19:1 and stays. */
+[data-theme="dark"] .mo-marquee__row span{color:var(--g200)}
 .mo-marquee__row span::after{
   content:"";width:9px;height:9px;background:var(--accent);flex:none;
 }
