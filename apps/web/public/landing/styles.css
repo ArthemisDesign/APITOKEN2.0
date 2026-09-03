@@ -264,12 +264,16 @@ body::before{
    env(safe-area-inset-top)) and the footer paints the bottom one (padding-
    bottom: env(safe-area-inset-bottom)), so neither area can show a foreign
    color. env() is 0 on desktop and notch-less devices.
-   In the unscrolled state the header is intentionally transparent over the
-   hero (.hdr:not(.small) below); there the hero coral deliberately extends
-   into the notch area as part of the hero design. */
+   WebKit bug 319479: on an element at the top edge, backdrop-filter makes
+   Safari stop sampling the element and fall back to the html background in
+   the safe-area padding zone — a white gap above the bar. Workaround: the
+   header keeps an always-on translucent background, while the blur lives on
+   an ::before layer that is transparent in the unscrolled hero state. */
 html{background:var(--bg)}
-.hdr{position:fixed;top:0;left:0;right:0;z-index:60;background:rgba(240,239,235,.86);backdrop-filter:blur(12px);transition:border-color .3s;padding-top:env(safe-area-inset-top)}
-.hdr__in{align-items:center;padding:18px var(--margin);max-width:var(--maxw);margin:0 auto;border-bottom:1px solid transparent;transition:padding .3s,border-color .3s}
+.hdr{position:fixed;top:0;left:0;right:0;z-index:60;background:rgba(240,239,235,.86);transition:border-color .3s;padding-top:env(safe-area-inset-top)}
+.hdr::before{content:"";position:absolute;inset:0;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);pointer-events:none}
+.hdr:not(.small)::before{opacity:0}
+.hdr__in{position:relative;align-items:center;padding:18px var(--margin);max-width:var(--maxw);margin:0 auto;border-bottom:1px solid transparent;transition:padding .3s,border-color .3s}
 .hdr.small .hdr__in{padding-top:11px;padding-bottom:11px;border-bottom-color:var(--line)}
 .brand{display:inline-flex;align-items:center;gap:9px;font-weight:600;font-size:17px;letter-spacing:-.03em}
 .brand__mark{width:14px;height:14px;background:var(--accent);flex:none}
@@ -1503,9 +1507,10 @@ body{line-height:1.5}
 }
 .plate__claim .claim__val em{font-style:normal;font-size:.45em;vertical-align:super;line-height:1;padding-top:.25em;display:inline-block}
 
-/* header sits directly on the plate until the page scrolls */
+/* header sits directly on the plate until the page scrolls; the bar keeps
+   its paper-tinted background (the blur ::before fades out) so iOS Safari
+   never falls back to the html canvas in the notch area (bug 319479) */
 .hdr{--hdr-h:84px}
-.hdr:not(.small){background:transparent;backdrop-filter:none}
 .hdr:not(.small) .hdr__in{border-bottom-color:transparent}
 .hdr:not(.small) .brand{color:#fff}
 .hdr:not(.small) .brand__mark{background:#fff}
