@@ -523,7 +523,13 @@ html{background:var(--bg)}
   transition:color .32s cubic-bezier(.45,.05,.25,1);white-space:nowrap;
 }
 .chip:hover{color:var(--fg);background:var(--paper-2)}
-.chip.on{color:#fff;background:transparent}
+/* The active chip is a filled pill. In .calc__opts the fill is a separate
+   gliding .chip-thumb, so there the chip itself stays transparent; every other
+   chip group (#models filters, model picker, switch) has no thumb, and without
+   a fill of its own the white caption sat on the bare paper background —
+   invisible in the light theme. */
+.chip.on{color:#fff;background:var(--ink)}
+.calc__opts .chip.on{background:transparent}
 .sec--accent .chip.on{background:#fff;color:var(--accent)}
 
 .prov{border-top:1px solid var(--line);padding:clamp(32px,3.6vw,60px) 0;display:grid;grid-template-columns:repeat(12,1fr);gap:var(--gutter)}
@@ -742,7 +748,7 @@ html{background:var(--bg)}
   pointer-events:none;will-change:transform;
 }
 [data-theme="dark"] .calc__opts .chip-thumb{background:var(--paper)}
-[data-theme="dark"] .calc__opts .chip.on{color:var(--ink)}
+[data-theme="dark"] .calc__opts .chip.on{color:var(--ink);background:transparent}
 .calc__opts .chip{padding:10px 16px;z-index:1}
 .calc__spend{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:12px;padding:14px 18px;max-width:360px;background:var(--paper)}
 .calc__spend span,.calc__spend em{font-family:var(--mono);font-size:13px;color:var(--muted);font-style:normal}
