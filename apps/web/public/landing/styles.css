@@ -311,7 +311,6 @@ html{background:var(--bg)}
 }
 .lang__link:hover{color:var(--fg)}
 .lang__link.is-active{color:#fff}
-.hdr:not(.small) .lang{border-color:rgba(17,17,17,.18);background:rgba(255,255,255,.35)}
 [data-theme="dark"] .hdr:not(.small) .lang{background:var(--surface);border-color:var(--line)}
 .hdr:not(.small) .lang__link{color:rgba(17,17,17,.65)}
 [data-theme="dark"] .hdr:not(.small) .lang__link{color:var(--muted)}
@@ -332,9 +331,6 @@ html{background:var(--bg)}
   border:1px solid var(--line);border-radius:8px;color:var(--fg);cursor:pointer;font-size:15px;line-height:1;
   background:transparent;transition:border-color .2s,background .2s}
 .theme-tgl:hover{border-color:var(--fg)}
-/* on the coral hero plate (light theme) the toggle reads white; after scroll it
-   follows the page theme */
-.hdr:not(.small) .theme-tgl,.hdr:not(.small) .theme-tgl:hover{color:#fff;border-color:rgba(255,255,255,.45)}
 /* dark theme: on the coral hero plate the toggle is dark ink; once the header
    sits on the dark page (scrolled / .small, or anywhere off the plate) it turns red */
 [data-theme="dark"] .theme-tgl,[data-theme="dark"] .theme-tgl:hover{color:var(--accent);border-color:var(--accent-line,rgba(255,106,90,.4))}
@@ -892,8 +888,36 @@ input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(255,89,73,.
   :root{--cols:8;--gutter:16px;--margin:16px}
   .c1-13,.c1-8,.c1-7,.c1-6,.c1-5,.c6-13,.c8-13,.c9-13,.c10-13{grid-column:1/9}
   .c1-2,.c1-3,.c1-4,.c3-6,.c3-8,.c4-9,.c5-7,.c7-9,.c7-10,.c9-11,.c11-13,.c10-11,.c12-13,.c4-6{grid-column:auto/span 8}
-  .nav{display:none}
+  /* Burger dropdown. It belongs to the <=1024px range, where .burger becomes
+     visible — keeping .nav.open in the <=640px block left the menu unopenable
+     between 641px and 1024px (tablets, phones in landscape). */
+  .nav{
+    display:none;
+    position:absolute;left:0;right:0;top:100%;
+    background:var(--paper);border-bottom:1px solid var(--line);
+    flex-direction:column;align-items:flex-start;gap:0;padding:12px var(--margin);
+  }
+  .nav.open{display:flex}
+  [data-theme="dark"] .nav{background:var(--ink);border-bottom-color:var(--line)}
+  .nav a{width:100%;padding:12px 0;font-size:13px;border-bottom:1px solid var(--line-soft)}
+  .nav a:last-child{border-bottom:0}
   .burger{display:flex}
+  /* The header's own Dashboard button is hidden from 1024px down, so the
+     dropdown carries it instead — over the whole burger range, not only <=640px. */
+  .nav__dash{display:inline-flex;justify-content:center;align-items:center;
+    width:100%;margin-top:14px;padding:13px 22px;border:1px solid var(--ink);
+    border-radius:8px;background:var(--ink);color:var(--paper);
+    font-family:var(--sans);font-size:13px;font-weight:500;letter-spacing:-.01em;
+    text-transform:none;border-bottom:1px solid var(--ink)}
+  /* The label-swap motion splits the caption into two offset lines; on touch
+     devices there is no hover to bring the second line back, so the caption
+     could slide out of view. Pin both lines in place on the dashboard button. */
+  .nav__dash,.nav__dash:hover{background:var(--ink);color:var(--paper)}
+  .nav a.nav__dash,.nav a.nav__dash:hover,
+  .hdr:not(.small) .nav a.nav__dash,.hdr:not(.small) .nav a.nav__dash:hover,
+  [data-theme="dark"] .hdr:not(.small) .nav a.nav__dash{color:var(--paper)}
+  .nav__dash .sw i{transform:none!important;transition:none}
+  .nav__dash .sw i:last-child{display:none}
   .hdr__acts .btn{display:none}
   .hdr__in{display:flex;justify-content:space-between;align-items:center;gap:12px;grid-template-columns:none}
   .brand{grid-column:auto}
@@ -1512,15 +1536,15 @@ body{line-height:1.5}
    never falls back to the html canvas in the notch area (bug 319479) */
 .hdr{--hdr-h:84px}
 .hdr:not(.small) .hdr__in{border-bottom-color:transparent}
-.hdr:not(.small) .brand{color:#fff}
-.hdr:not(.small) .brand__mark{background:#fff}
-.hdr:not(.small) .nav a{color:rgba(255,255,255,.78)}
-.hdr:not(.small) .nav a:hover{color:#fff}
-.hdr:not(.small) .lnk{color:rgba(255,255,255,.78)}
-.hdr:not(.small) .lnk:hover{color:#fff}
-.hdr:not(.small) .btn{background:#fff;border-color:#fff;color:var(--accent)}
-.hdr:not(.small) .btn:hover{background:transparent;color:#fff}
-.hdr:not(.small) .burger span{background:#fff}
+/* The light-theme bar is no longer transparent over the plate: it carries the
+   paper tint that works around WebKit bug 319479. White-on-coral content was
+   left over from the transparent bar and turned the wordmark, the nav, the
+   burger and the log-in link into white-on-paper — contrast 1.15, invisible.
+   Over a paper bar the header keeps its ordinary ink palette instead.
+   The dark theme keeps its own rules below: there the bar stays transparent
+   over the coral plate, so ink content is correct there. */
+.hdr:not(.small) .btn{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.hdr:not(.small) .btn:hover{background:transparent;color:var(--ink)}
 
 /* In the dark theme the hero plate keeps the coral bleed but carries dark ink
    text (the page around it is ink, so the plate reads as the single hot panel).
@@ -1548,6 +1572,27 @@ body{line-height:1.5}
 [data-theme="dark"] .hdr:not(.small) .btn{background:var(--ink);border-color:var(--ink);color:var(--accent)}
 [data-theme="dark"] .hdr:not(.small) .btn:hover{background:transparent;color:var(--ink)}
 [data-theme="dark"] .hdr:not(.small) .burger span{background:var(--ink)}
+
+/* The burger dropdown is a paper/ink panel of its own, not part of the coral
+   plate, so the "header over the plate" colors above must not leak into it:
+   they painted the links white on paper (light) and ink on ink (dark), which
+   left the whole mobile menu unreadable while the page sits at the top. */
+@media (max-width:1024px){
+  .nav a,
+  .hdr:not(.small) .nav a,
+  [data-theme="dark"] .hdr:not(.small) .nav a{color:var(--muted)}
+  .nav a:hover,.nav a:focus-visible,
+  .hdr:not(.small) .nav a:hover,
+  [data-theme="dark"] .hdr:not(.small) .nav a:hover{color:var(--fg)}
+  /* The dashboard button keeps its inverted pill: ink plate on light, paper
+     plate on dark — so its caption follows the plate, not the panel. */
+  .nav a.nav__dash,
+  .hdr:not(.small) .nav a.nav__dash,
+  .nav a.nav__dash:hover{color:var(--paper)}
+  [data-theme="dark"] .nav a.nav__dash,
+  [data-theme="dark"] .hdr:not(.small) .nav a.nav__dash,
+  [data-theme="dark"] .nav a.nav__dash:hover{color:var(--ink)}
+}
 
 /* the schematic band returns to paper right after the plate */
 .hero .band{padding-top:clamp(80px,9vw,140px)}
@@ -1624,29 +1669,6 @@ body{line-height:1.5}
   .lang__link{min-width:34px;padding:7px 8px;font-size:11px}
   /* flex column + justify-content: the 1px bars sit inside a 40px hit box */
   .burger{display:flex;justify-content:center;padding:0;width:40px;height:40px;flex:none}
-  .nav{
-    display:none;
-    position:absolute;left:0;right:0;top:100%;
-    background:var(--paper);border-bottom:1px solid var(--line);
-    flex-direction:column;align-items:flex-start;gap:0;padding:12px var(--margin);
-  }
-  .nav.open{display:flex}
-  [data-theme="dark"] .nav{background:var(--ink);border-bottom-color:var(--line)}
-  .nav a{width:100%;padding:12px 0;font-size:13px;border-bottom:1px solid var(--line-soft)}
-  .nav a:last-child{border-bottom:0}
-  .nav__dash{display:inline-flex;justify-content:center;align-items:center;
-    width:100%;margin-top:14px;padding:13px 22px;border:1px solid var(--ink);
-    border-radius:8px;background:var(--ink);color:var(--paper);
-    font-family:var(--sans);font-size:13px;font-weight:500;letter-spacing:-.01em;
-    text-transform:none;border-bottom:1px solid var(--ink)}
-  /* The label-swap motion splits the caption into two offset lines; on touch
-     devices there is no hover to bring the second line back, so the caption
-     could slide out of view. Pin both lines in place on the dashboard button. */
-  .nav__dash,.nav__dash:hover{background:var(--ink);color:var(--paper)}
-  .nav a.nav__dash,.nav a.nav__dash:hover,
-  .hdr:not(.small) .nav a.nav__dash,.hdr:not(.small) .nav a.nav__dash:hover{color:var(--paper)}
-  .nav__dash .sw i{transform:none!important;transition:none}
-  .nav__dash .sw i:last-child{display:none}
 
   /* hero */
   .plate{min-height:0;padding-bottom:0}
@@ -1966,4 +1988,18 @@ body{line-height:1.5}
 
 @media (max-width:900px){
   .b2b-steps{grid-template-columns:1fr}
+}
+
+/* Very narrow phones (320px: iPhone SE 1st gen, older Androids). The brand
+   plus the RU/EN pill, the theme toggle and the burger need 342px at the
+   <=640px sizes, so the burger was cut off by the right edge. Tighten the
+   page margin, the gaps and the wordmark instead of dropping a control. */
+@media (max-width:359px){
+  .hdr__in{padding-left:12px;padding-right:12px;gap:8px}
+  .hdr__acts{gap:6px}
+  .brand{font-size:15px}
+  .brand__mark{width:12px;height:12px}
+  /* The pill keeps its own width instead of the fixed 92px: at 320px the
+     spare 26px left the EN label off-centre inside an oversized pill. */
+  .hdr__acts .lang{width:auto}
 }
