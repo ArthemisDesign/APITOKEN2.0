@@ -396,7 +396,7 @@
   background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(14px);box-shadow:var(--shadow)}
 .learn-search{display:flex;align-items:center;gap:8px;height:40px;padding:0 12px;border:1px solid var(--line-strong);border-radius:8px;background:var(--bg-card);color:var(--txt-3)}
 .learn-search:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
-.learn-search input{min-width:0;width:100%;border:0;outline:0;background:transparent;color:var(--txt);font:13px var(--font-mono)}
+.learn-search input{min-width:0;width:100%;border:0;outline:0;background:transparent;color:var(--txt);font:16px var(--font-mono)}
 .learn-search input::placeholder{color:var(--txt-4)}
 .learn-filters{display:flex;gap:6px;min-width:0;overflow-x:auto;padding:2px;scrollbar-width:thin}
 .learn-filters button{flex:0 0 auto;min-height:36px;padding:7px 10px;border:1px solid var(--line);border-radius:7px;background:var(--bg-card);color:var(--txt-3);font:600 11px var(--font-mono);cursor:pointer}

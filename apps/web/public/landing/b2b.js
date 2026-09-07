@@ -37,25 +37,11 @@
   /* SIDEBAR — floating burger opens it off-canvas on mobile (body class,
      like body.docs-nav-open in the docs), scrim/Esc close, smooth anchors */
   (() => {
-    const burger = $('#b2bBurger');
-    const scrim = $('#b2bScrim');
-    if (!burger) return;
-    const setOpen = (open) => {
-      document.body.classList.toggle('b2b-nav-open', open);
-      scrim?.classList.toggle('show', open);
-      burger.setAttribute('aria-expanded', String(open));
-    };
-    burger.addEventListener('click', () => setOpen(!document.body.classList.contains('b2b-nav-open')));
-    scrim?.addEventListener('click', () => setOpen(false));
-    addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') setOpen(false);
-    });
     $$('.b2b-side__link[href^="#"]').forEach((link) => {
       link.addEventListener('click', (e) => {
         const target = $(link.getAttribute('href'));
         if (!target) return;
         e.preventDefault();
-        setOpen(false);
         target.scrollIntoView({ behavior: 'smooth', block: 'start' });
         history.replaceState(null, '', link.getAttribute('href'));
       });
@@ -136,12 +122,21 @@
     });
   })();
 
-  /* B2B FORM — client-only, same pattern as #b2bForm in app.js;
-     the "sent" label is page-localized via data-sent */
+  /* No submission endpoint: prepare an email, never claim it was sent. */
   $('#b2bForm')?.addEventListener('submit', (e) => {
     e.preventDefault();
+    const form = e.currentTarget;
+    if (!form.reportValidity()) return;
+    const data = new FormData(form);
+    const ru = document.documentElement.lang === 'ru';
+    const subject = ru ? 'B2B предложение apiToken' : 'apiToken B2B quote';
+    const body = [
+      `${ru ? 'Компания' : 'Company'}: ${data.get('company')}`,
+      `Email: ${data.get('email')}`,
+      `${ru ? 'Расходы, $/мес' : 'Spend, $/mo'}: ${data.get('spend') || '—'}`,
+    ].join('\n');
+    window.location.href = `mailto:apitokensale@gmail.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
     $('#b2bOk').hidden = false;
-    e.target.querySelector('button').textContent = e.target.dataset.sent;
   });
 })();
 
@@ -155,7 +150,7 @@
         wrap.dataset.active = target;
         /* persist the explicit choice in the dashboard's lang key so the
            Next.js app picks it up and the RU→EN default redirect stays off */
-        try { localStorage.setItem('lang:v1', target); } catch(e1) {}
+        try { localStorage.setItem('lang:v1', target); } catch {}
         wrap.querySelectorAll('.lang__link').forEach(function(x){ x.classList.toggle('is-active', x === a); });
       });
     });

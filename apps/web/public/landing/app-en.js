@@ -127,12 +127,6 @@ const byId = id => ALL_MODELS.find(m => m.id === id);
 
 const hdr = $('#hdr');
 addEventListener('scroll', () => hdr.classList.toggle('small', scrollY > 40), { passive: true });
-$('#burger')?.addEventListener('click', () => {
-  const nav = $('.nav'), btn = $('#burger');
-  const open = nav.classList.toggle('open');
-  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-  document.body.style.overflow = open ? 'hidden' : '';
-});
 
 const io = new IntersectionObserver(entries => {
   entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
@@ -401,12 +395,6 @@ $$('[data-count]').forEach(n => countIO.observe(n));
 
   renderParams(); recalc(true);
 })();
-
-$('#b2bForm')?.addEventListener('submit', e => {
-  e.preventDefault();
-  $('#b2bOk').hidden = false;
-  e.target.querySelector('button').textContent = 'Sent';
-});
 
 (() => {
   const lib = $('#lib');

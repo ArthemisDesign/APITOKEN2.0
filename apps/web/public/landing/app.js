@@ -138,12 +138,6 @@ const byId = id => ALL_MODELS.find(m => m.id === id);
    --------------------------------------------------------- */
 const hdr = $('#hdr');
 addEventListener('scroll', () => hdr.classList.toggle('small', scrollY > 40), { passive: true });
-$('#burger')?.addEventListener('click', () => {
-  const nav = $('.nav'), btn = $('#burger');
-  const open = nav.classList.toggle('open');
-  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-  document.body.style.overflow = open ? 'hidden' : '';
-});
 
 /* ---------------------------------------------------------
    THEME TOGGLE — light (warm paper) ↔ dark (deep ink), persisted.
@@ -485,15 +479,6 @@ $$('[data-count]').forEach(n => countIO.observe(n));
 
   renderParams(); recalc(true);
 })();
-
-/* ---------------------------------------------------------
-   10 · B2B FORM
-   --------------------------------------------------------- */
-$('#b2bForm')?.addEventListener('submit', e => {
-  e.preventDefault();
-  $('#b2bOk').hidden = false;
-  e.target.querySelector('button').textContent = 'Отправлено';
-});
 
 /* ---------------------------------------------------------
    12 · VIDEO LIBRARY

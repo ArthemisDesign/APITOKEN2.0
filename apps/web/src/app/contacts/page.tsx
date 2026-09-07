@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import "../docs/docs.css";
 import { JsonLd } from "@/components/json-ld";
 import { absoluteUrl, breadcrumbNode, createPageMetadata, SITE_NAME, SITE_ORIGIN } from "@/lib/seo";
 

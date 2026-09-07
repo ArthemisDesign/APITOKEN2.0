@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { memo, useCallback, type MouseEvent as ReactMouseEvent } from "react";
+import { useMobileMenu } from "@/components/use-mobile-menu";
 import type { AccountView, AuthUser } from "@/lib/api";
 import { ThemeToggle } from "@/components/site-chrome";
 import type { DashboardCopy } from "@/lib/dashboard-copy";
@@ -49,6 +50,7 @@ type DashboardSidebarProps = {
   logoutLabel: string;
   onLanguageChange(language: DashboardLanguage): void;
   onNavigate(section: DashboardSection): void;
+  onClose(): void;
   onLogout(): void;
   /** A pending Team invitation waiting on the Referral page, marked with a quiet dot. */
   referralInvitation?: boolean;
@@ -64,16 +66,21 @@ export const DashboardSidebar = memo(function DashboardSidebar({
   logoutLabel,
   onLanguageChange,
   onNavigate,
+  onClose,
   onLogout,
   referralInvitation = false,
 }: DashboardSidebarProps) {
+  useMobileMenu(sideOpen, onClose, "#dashboard-navigation", ".app-burger", 1080);
   const handleSectionNav = useCallback((event: ReactMouseEvent<HTMLAnchorElement>, next: DashboardSection) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
     onNavigate(next);
   }, [onNavigate]);
 
-  return <aside className={`side ${sideOpen ? "open" : ""}`} data-lang={language}>
+  return <aside id="dashboard-navigation" className={`side ${sideOpen ? "open" : ""}`} data-lang={language} onClick={(event) => {
+    if ((event.target as HTMLElement).closest("a[href]")) onClose();
+  }}>
+    <button className="side-close" type="button" aria-label={copy.closeMenu} onClick={onClose}>×</button>
     <Link className="brand side-brand" href={landingHref(language)} aria-label="apiToken home">
       <span className="side-brand__mark" aria-hidden="true" />apiToken<sup>®</sup>
     </Link>
@@ -99,7 +106,7 @@ export const DashboardSidebar = memo(function DashboardSidebar({
 });
 
 export const DashboardScrim = memo(function DashboardScrim({ open, label, onClose }: { open: boolean; label: string; onClose(): void }) {
-  return <button className={`side-scrim ${open ? "show" : ""}`} onClick={onClose} aria-label={label} />;
+  return <button className={`side-scrim ${open ? "show" : ""}`} onClick={onClose} aria-label={label} tabIndex={open ? 0 : -1} aria-hidden={!open} />;
 });
 
 type DashboardTopBarProps = {
@@ -108,14 +115,15 @@ type DashboardTopBarProps = {
   copy: DashboardCopy;
   locale: string;
   onMenu(): void;
+  menuOpen: boolean;
   onOpenCredits(): void;
 };
 
-export const DashboardTopBar = memo(function DashboardTopBar({ activeSection, account, copy, locale, onMenu, onOpenCredits }: DashboardTopBarProps) {
+export const DashboardTopBar = memo(function DashboardTopBar({ activeSection, account, copy, locale, onMenu, menuOpen, onOpenCredits }: DashboardTopBarProps) {
   const titleKey = navigation.find((item) => item.section === activeSection)?.label ?? "navOverview";
   return <header className="app-top">
     <div className="app-top-in">
-      <button className="app-burger" onClick={onMenu} aria-label={copy.menu}>☰</button>
+      <button className="app-burger" onClick={onMenu} aria-label={copy.menu} aria-expanded={menuOpen} aria-controls="dashboard-navigation">☰</button>
       <div className="app-top-h"><div className="app-title">{copy[titleKey]}</div></div>
       <div className="app-top-actions">
         <button className="app-top-bal" onClick={onOpenCredits} title={copy.navTopUp}>

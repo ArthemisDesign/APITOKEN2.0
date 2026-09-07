@@ -337,3 +337,31 @@ Keep `deviceScaleFactor: 1` and use `cssContentSize` from `Page.getLayoutMetrics
 The feature-specific readiness selector may be stale, the fixture may not match the frontend response,
 or a route may have changed. Read the serialized browser state in the thrown error before increasing a
 timeout; fixed sleeps should be a last resort.
+
+## Mobile regression suite
+
+The supplemental `scripts/audit-mobile.mjs` and `scripts/test-mobile-interactions.mjs` use Playwright
+with an existing Chrome installation. They do not add browser tooling to the production dependency graph.
+Install `playwright-core` in a separate temporary tooling directory and set `PLAYWRIGHT_MODULE` to its
+absolute package directory; set `CHROME_PATH` to the browser executable. Node 24 is required.
+
+Start a local build with `NEXT_PUBLIC_PREVIEW_FIXTURES=1`; set `SITE_URL` to its origin (default
+`http://localhost:3031`). From `apps/web`, run:
+
+```sh
+node scripts/audit-mobile.mjs
+node scripts/test-mobile-interactions.mjs
+```
+
+The layout script covers 41 route/template groups in four mobile/tablet locale/theme combinations.
+It saves results under `.artifacts/mobile-audit` (`AUDIT_OUTPUT` overrides it). `AUDIT_FILTER` selects
+comma-separated group names; `AUDIT_QUICK=1` limits widths to 320 px RU/light. The script exits nonzero
+on measured layout/input/runtime/anchor failures. Decorative or intentionally scrollable content is
+excluded, so screenshot review remains necessary. Scroll sweeps use instant positioning to avoid
+capturing halfway through the site's smooth scrolling.
+
+The interaction script only accepts localhost origins. It checks navigation in portrait/landscape,
+breakpoint changes, keyboard focus, scroll locking and key-dialog/profile/credit fixture behaviors.
+`MOBILE_FORMS_ONLY=1` skips menus. Never point form checks at a live account backend. Authentication
+pages redirect to dashboard in fixture mode and require a separate non-fixture server with mocked
+backend responses. Emulation does not replace physical Safari/Android verification.

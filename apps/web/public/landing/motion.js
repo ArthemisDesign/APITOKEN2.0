@@ -30,8 +30,11 @@ const D    = 1.1;
    Line breaks must be measured on the real typeface, not the
    fallback — otherwise SplitType produces the wrong lines.
    --------------------------------------------------------- */
-try { await document.fonts.ready; } catch (e) {}
+try { await document.fonts.ready; } catch {}
 document.documentElement.classList.add('mo-ready');
+// CSS animation:none cannot stop GSAP timelines or SplitType masks.
+// Keep the original readable layout when the OS requests reduced motion.
+if (REDUCED) return;
 
 /* ---------------------------------------------------------
    1 · SMOOTH SCROLL (Lenis)

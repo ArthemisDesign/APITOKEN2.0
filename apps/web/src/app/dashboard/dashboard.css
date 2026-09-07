@@ -352,7 +352,7 @@
 .keys-search input::placeholder{color:var(--txt-4)}
 .keys-sort{height:42px;display:flex;align-items:center;gap:8px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg-card)}
 .keys-sort span{font:600 10px var(--font-mono);letter-spacing:.07em;text-transform:uppercase;color:var(--txt-4);white-space:nowrap}
-.keys-sort select{max-width:150px;border:0;outline:0;background:transparent;color:var(--txt-2);font:11px var(--font-mono);cursor:pointer}
+.keys-sort select{min-width:0;max-width:150px;border:0;outline:0;background:transparent;color:var(--txt-2);font:11px var(--font-mono);cursor:pointer}
 .keys-filter-tabs{display:inline-flex;align-items:center;gap:2px;padding:3px;border:1px solid var(--line);
   border-radius:9px;background:var(--bg-soft)}
 .keys-filter-tab{min-height:34px;display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:6px 10px;
@@ -993,7 +993,7 @@ body.app-body .bg-decor{display:none!important}
     mask-image:linear-gradient(to right,#000 calc(100% - 26px),transparent 100%)}
   .app .credits-history .table-scroll{-webkit-mask-image:none;mask-image:none}
 }
-.uid-copy-button{width:112px;justify-content:center}
+.uid-copy-button{min-width:130px;flex-shrink:0;justify-content:center}
 .uid-copy-button:active{transform:translateY(1px)}
 .profile-save-success{color:#16a34a!important}
 .profile-save-error{font-family:var(--font-mono);font-size:11px;color:#dc2626}
@@ -1193,10 +1193,15 @@ body.app-body .bg-decor{display:none!important}
 
 @media(prefers-reduced-motion:reduce){.referral-subnav button,.referral-field input,.referral-field select,.referral-field textarea,.referral-checkbox-card{transition:none}}
 
+.side-close{display:none}
+@media(max-width:620px){.referral-earnings-graph .uchart-axis span:not(:first-child):not(:last-child){display:none}}
 @media(max-width:1080px){
+  .side-close{display:grid;place-items:center;position:absolute;right:8px;top:8px;width:44px;height:44px;border:0;background:transparent;color:var(--txt);font-size:26px;cursor:pointer}
+  .side .side-brand{margin-right:36px}
+  .app .set-in:not(:disabled),.keys-search input,.keys-sort select,.app .rp-reflink input{font-size:16px}
   .app{grid-template-columns:1fr}
   .side{position:fixed;top:0;left:0;width:280px;z-index:60;transform:translateX(-100%);
-    transition:transform .22s ease}
+    transition:transform .22s ease;height:100dvh;overflow-y:auto;overscroll-behavior:contain;padding-bottom:max(20px,env(safe-area-inset-bottom))}
   .side.open{transform:none;box-shadow:0 0 40px rgba(0,0,0,.25)}
   .side-scrim{display:block;position:fixed;inset:0;z-index:55;background:rgba(0,0,0,.4);
     opacity:0;pointer-events:none;transition:opacity .2s}

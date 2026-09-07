@@ -82,10 +82,10 @@
       <header class="b2b-head">
         <span class="meta">B2B</span>
         <h2 class="b2b-h">Получить B2B предложение</h2>
-        <p class="b2b-sub">Компаниям с регулярными расходами на AI API — персональные условия и объёмные скидки. Оставьте контакты, вернёмся с предложением.</p>
+        <p class="b2b-sub">Компаниям с регулярными расходами на AI API — персональные условия и объёмные скидки. Заполните поля и отправьте подготовленное письмо через почтовое приложение.</p>
       </header>
 
-      <form class="b2b-card" id="b2bForm" data-sent="Отправлено">
+      <form class="b2b-card" id="b2bForm">
         <label class="b2b-field" for="b2bCompany">
           <span>Компания</span>
           <input id="b2bCompany" name="company" type="text" autocomplete="organization" required>
@@ -98,8 +98,8 @@
           <span>Текущие расходы, $/мес</span>
           <input id="b2bSpend" name="spend" type="text" inputmode="numeric" placeholder="20 000">
         </label>
-        <p class="b2b-ok" id="b2bOk" hidden>Отправлено — вернёмся с предложением на указанную почту.</p>
-        <button class="btn btn--solid btn--full" type="submit">Получить предложение</button>
+        <p class="b2b-ok" id="b2bOk" role="status" hidden>Отправьте черновик в почтовом приложении. Если оно не открылось, напишите на <a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a>. Эта страница не отправляет сообщения.</p>
+        <button class="btn btn--solid btn--full" type="submit">Подготовить письмо</button>
       </form>
     </section>
 
@@ -175,5 +175,6 @@
 </div>
 
 <script src="/landing/b2b.js"></script>
+<script src="/landing/mobile-nav.js"></script>
 </body>
 </html>

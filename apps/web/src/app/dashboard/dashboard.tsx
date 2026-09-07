@@ -339,12 +339,13 @@ export function Dashboard() {
       logoutLabel={localCopy.loggingOut}
       onLanguageChange={setLanguage}
       onNavigate={open}
+      onClose={closeSide}
       onLogout={logout}
       referralInvitation={referralInvitation}
     />
     <DashboardScrim open={sideOpen} label={copy.closeMenu} onClose={closeSide} />
     <main className="app-main">
-      <DashboardTopBar activeSection={section} account={account} copy={copy} locale={locale} onMenu={openMenu} onOpenCredits={openCredits} />
+      <DashboardTopBar activeSection={section} account={account} copy={copy} locale={locale} onMenu={openMenu} menuOpen={sideOpen} onOpenCredits={openCredits} />
       <DashboardContent
         section={section}
         copy={copy}

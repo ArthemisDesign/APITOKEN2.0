@@ -82,10 +82,10 @@
       <header class="b2b-head">
         <span class="meta">B2B</span>
         <h2 class="b2b-h">Get a B2B offer</h2>
-        <p class="b2b-sub">Companies with regular AI API spend get personal terms and volume discounts. Leave your contacts and we will come back with an offer.</p>
+        <p class="b2b-sub">Companies with regular AI API spend get personal terms and volume discounts. Fill in the fields and send the prepared draft through your email app.</p>
       </header>
 
-      <form class="b2b-card" id="b2bForm" data-sent="Sent">
+      <form class="b2b-card" id="b2bForm">
         <label class="b2b-field" for="b2bCompany">
           <span>Company</span>
           <input id="b2bCompany" name="company" type="text" autocomplete="organization" required>
@@ -98,8 +98,8 @@
           <span>Current spend, $/mo</span>
           <input id="b2bSpend" name="spend" type="text" inputmode="numeric" placeholder="20 000">
         </label>
-        <p class="b2b-ok" id="b2bOk" hidden>Sent — we will come back with an offer to the given email.</p>
-        <button class="btn btn--solid btn--full" type="submit">Get a B2B offer</button>
+        <p class="b2b-ok" id="b2bOk" role="status" hidden>Send the draft in your email app. If it did not open, email <a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a>. This page does not send messages.</p>
+        <button class="btn btn--solid btn--full" type="submit">Prepare email</button>
       </form>
     </section>
 
@@ -175,5 +175,6 @@
 </div>
 
 <script src="/landing/b2b.js"></script>
+<script src="/landing/mobile-nav.js"></script>
 </body>
 </html>

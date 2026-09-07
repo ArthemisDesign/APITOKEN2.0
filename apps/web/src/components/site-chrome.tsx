@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { landingHref, localeHref, supportsRussianRoute } from "@/lib/locale-routes";
 import { DOCS_URL, GITHUB_URL } from "@/lib/site-links";
@@ -11,6 +11,7 @@ import { browserStorage, readSavedTheme, saveTheme, type SavedTheme } from "@/li
 import { BackendPreconnect } from "./backend-preconnect";
 import { useI18n } from "./i18n-provider";
 import { T } from "./translated";
+import { useMobileMenu } from "./use-mobile-menu";
 
 function localizeHref(language: string, href: string): string {
   return localeHref(href, language === "ru" ? "ru" : "en");
@@ -31,6 +32,8 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
   const [menuOpen, setMenuOpen] = useState(false);
   const [authenticated, setAuthenticated] = useState(false);
   const burgerRef = useRef<HTMLButtonElement>(null);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  useMobileMenu(menuOpen, closeMenu, "#site-navigation", ".nav-burger", 1240);
 
   // Проверка идентичности стартует сразу при гидрации: сессионная кука HttpOnly и host-only,
   // поэтому ни JS, ни SSR не знают о логине без запроса — а залогиненный пользователь не должен
@@ -47,16 +50,6 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
     const frame = window.requestAnimationFrame(() => setMenuOpen(false));
     return () => window.cancelAnimationFrame(frame);
   }, [pathname]);
-  useEffect(() => {
-    if (!menuOpen) return;
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      setMenuOpen(false);
-      window.requestAnimationFrame(() => burgerRef.current?.focus());
-    }
-    document.addEventListener("keydown", closeOnEscape);
-    return () => document.removeEventListener("keydown", closeOnEscape);
-  }, [menuOpen]);
 
   const ru = language === "ru";
   const loc = (path: string) => localeHref(path, language);
@@ -64,7 +57,7 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
   const languageLabel = ru ? "Язык" : "Language";
   const russianUnavailable = ru ? "Русская версия недоступна" : "Russian version unavailable";
   const links = <>
-    <Link href={home ? "#how" : `${loc("/")}#how`}><T k="nav_how">How it works</T></Link>
+    <Link href={`${landingHref(language)}#start`}><T k="nav_how">How it works</T></Link>
     <Link href={loc("/integrations")}><T k="nav_int">Integrations</T></Link>
     <Link href={loc("/models")}><T k="nav_models">Models</T></Link>
     <Link href={loc("/docs/learn")}><T k="nav_guides">Guides</T></Link>
@@ -100,6 +93,7 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
       {!compact && <button ref={burgerRef} type="button" className="nav-burger" aria-label={menuOpen ? (ru ? "Закрыть меню" : "Close menu") : (ru ? "Открыть меню" : "Open menu")} aria-controls="site-navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>{menuOpen ? "×" : "☰"}</button>}
     </div>
   </header>
+  {menuOpen && <button type="button" className="site-nav-scrim" tabIndex={-1} onClick={closeMenu} aria-label={ru ? "Закрыть меню" : "Close menu"} />}
   </>;
 }
 
