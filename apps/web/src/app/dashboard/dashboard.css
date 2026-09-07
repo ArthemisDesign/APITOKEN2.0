@@ -438,35 +438,50 @@
    at the bottom of the 100vh column regardless of nav/legal height; previously a tall nav pushed
    the footer into the sidebar's own scroll area and the avatar got sliced at compact widths. */
 .side{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
-  background:var(--bg-card);border-right:1px solid var(--line);padding:24px 18px;overflow:hidden;overscroll-behavior:contain}
+  --side-hover:rgba(12,11,17,.055);--side-icon:rgba(12,11,17,.045);
+  --side-active:#18161D;--side-active-text:#F4F3EF;--side-active-icon:rgba(255,255,255,.09);
+  background:
+    radial-gradient(260px 220px at 0 0,rgba(255,89,73,.105),transparent 70%),
+    linear-gradient(180deg,#FBFAF7 0%,#F4F3EF 100%);
+  border-right:1px solid rgba(12,11,17,.1);padding:24px 18px;overflow:hidden;overscroll-behavior:contain}
+[data-theme="dark"] .side{
+  --side-hover:rgba(244,243,239,.065);--side-icon:rgba(244,243,239,.055);
+  --side-active:#F4F3EF;--side-active-text:#18161D;--side-active-icon:rgba(12,11,17,.08);
+  background:
+    radial-gradient(280px 240px at 0 0,rgba(255,106,90,.14),transparent 72%),
+    linear-gradient(180deg,#18161D 0%,#100F14 100%);
+  border-right-color:rgba(244,243,239,.1)}
 /* Brand in the landing style: red square mark + tight wordmark on the sidebar surface. */
-.side-brand{display:inline-flex;align-items:center;gap:9px;margin:2px 10px 24px;
-  font-family:var(--font-display);font-weight:600;font-size:17px;letter-spacing:-.03em;color:var(--txt)}
+.side-brand{display:inline-flex;align-items:center;gap:10px;margin:2px 10px 27px;
+  font-family:var(--font-display);font-weight:700;font-size:18px;letter-spacing:-.04em;color:var(--txt)}
 .side-brand sup{font-size:.5em;font-weight:500;vertical-align:super}
-.side-brand__mark{width:14px;height:14px;background:var(--accent);flex:none}
-.side-nav{display:flex;flex-direction:column;gap:3px;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding-bottom:10px}
+.side-brand__mark{width:13px;height:13px;background:var(--accent);border-radius:2px;flex:none;
+  box-shadow:0 0 0 5px var(--accent-soft)}
+.side-nav{display:flex;flex-direction:column;gap:4px;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 2px 12px}
 .side-nav button{display:flex;align-items:center;gap:12px;width:100%;min-height:38px;padding:10px 12px;
   border:1px solid transparent;background:transparent;border-radius:8px;cursor:pointer;text-align:left;
   font-family:var(--font-mono);font-size:13px;color:var(--txt-3);transition:background-color .14s,color .14s,border-color .14s}
 .side-nav button:hover{background:var(--bg-soft);color:var(--txt)}
 .side-nav button.on{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent-ink)}
 .side-nav button:focus-visible,.side-nav .side-link:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.side-nav .si{width:18px;display:inline-flex;align-items:center;justify-content:center;flex:none;opacity:.9}
-.side-nav .si svg{width:16px;height:16px;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.side-nav .si{width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;
+  flex:none;background:var(--side-icon);color:var(--txt-3);transition:background-color .16s ease,color .16s ease,transform .16s ease}
+.side-nav .si svg{width:16px;height:16px;stroke:currentColor;stroke-width:1.75;fill:none;stroke-linecap:round;stroke-linejoin:round}
 /* Footer never leaves the visible column: the nav above absorbs overflow (see .side/.side-nav). */
-.side-foot{display:flex;flex-direction:column;gap:10px;padding:12px 2px 0;border-top:1px solid var(--line);
-  flex:none;margin-top:12px;background:var(--bg-card)}
+.side-foot{display:flex;flex-direction:column;gap:11px;padding:14px 2px 0;border-top:1px solid var(--line);
+  flex:none;margin-top:10px;background:transparent}
 .side-tools{display:flex;align-items:center;gap:10px;justify-content:space-between}
 .side-legal{display:flex;gap:5px 11px;flex-wrap:wrap;padding:0 4px}
 .side-legal a{font-family:var(--font-mono);font-size:10px;color:var(--txt-4);transition:color .15s ease}
 .side-legal a:hover{color:var(--accent-ink)}
-.side-user{display:flex;align-items:center;gap:11px;padding:2px 4px}
+.side-user{display:flex;align-items:center;gap:11px;padding:9px;border:1px solid var(--line);border-radius:11px;
+  background:color-mix(in srgb,var(--bg-card) 58%,transparent)}
 /* white on the coral avatar is 3.10:1 — the ceiling for white on this coral;
    ink on the same fill reads 6.32:1 */
 .side-av{width:36px;height:36px;border-radius:50%;flex:none;display:flex;align-items:center;
   justify-content:center;background:var(--accent);color:var(--ink);font-weight:600;font-size:15px}
 .side-uinfo{display:flex;flex-direction:column;min-width:0}
-.side-uinfo b{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.side-uinfo b{font-family:var(--font-ui);font-size:13px;font-weight:650;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .side-uinfo span{font-family:var(--font-mono);font-size:11px;color:var(--txt-4);
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .side-logout{width:100%;justify-content:center}
@@ -531,12 +546,20 @@
 body.app-body{background:var(--bg-soft);background-image:none}
 body.app-body .bg-decor{display:none!important}
 
-.side-group{font-family:var(--font-mono);font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.12em;
-  color:var(--txt-4);padding:10px 12px 7px}
-.side-nav .side-link{display:flex;align-items:center;gap:12px;min-height:38px;padding:10px 12px;border:1px solid transparent;border-radius:8px;
-  font-family:var(--font-mono);font-size:13px;color:var(--txt-3);transition:background-color .14s,color .14s,border-color .14s}
-.side-nav .side-link:hover{background:var(--bg-soft);color:var(--txt)}
-.side-nav .side-link.on{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent-ink)}
+.side-group{display:flex;align-items:center;gap:9px;font-family:var(--font-mono);font-size:9px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.145em;color:var(--txt-4);padding:13px 10px 6px}
+.side-group::after{content:"";height:1px;flex:1;background:var(--line)}
+.side-nav .side-link{position:relative;display:flex;align-items:center;gap:11px;min-height:44px;padding:6px 9px;
+  border:1px solid transparent;border-radius:11px;font-family:var(--font-ui);font-size:14px;font-weight:550;
+  letter-spacing:-.01em;color:var(--txt-3);transition:background-color .16s ease,color .16s ease,border-color .16s ease,transform .16s ease}
+.side-nav .side-link:hover{background:var(--side-hover);color:var(--txt);transform:translateX(2px)}
+.side-nav .side-link:hover .si{color:var(--accent-ink);transform:scale(1.04)}
+.side-nav .side-link.on{background:var(--side-active);border-color:transparent;color:var(--side-active-text);
+  box-shadow:0 8px 22px -16px rgba(12,11,17,.65)}
+.side-nav .side-link.on::before{content:"";position:absolute;left:-3px;top:11px;bottom:11px;width:3px;
+  border-radius:99px;background:var(--accent)}
+.side-nav .side-link.on .si{background:var(--side-active-icon);color:var(--accent);transform:none}
+[data-theme="dark"] .side-nav .side-link.on{box-shadow:0 10px 28px -18px rgba(0,0,0,.9)}
 .app-top-h{flex:1;display:flex;flex-direction:column;line-height:1.2;min-width:0}
 
 .page-heading{display:flex;flex-direction:column;align-items:flex-start;margin-bottom:28px}
