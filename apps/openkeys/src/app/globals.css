@@ -1,3 +1,10 @@
+@font-face{font-family:'TT Runs';font-style:normal;font-weight:300;font-display:swap;src:url('https://apitoken-2-0-admin.vercel.app/landing/fonts/TTRuns-Light.woff2') format('woff2')}
+@font-face{font-family:'TT Runs';font-style:normal;font-weight:400;font-display:swap;src:url('https://apitoken-2-0-admin.vercel.app/landing/fonts/TTRuns-Regular.woff2') format('woff2')}
+@font-face{font-family:'TT Runs';font-style:normal;font-weight:500;font-display:swap;src:url('https://apitoken-2-0-admin.vercel.app/landing/fonts/TTRuns-Medium.woff2') format('woff2')}
+@font-face{font-family:'TT Runs';font-style:normal;font-weight:600;font-display:swap;src:url('https://apitoken-2-0-admin.vercel.app/landing/fonts/TTRuns-DemiBold.woff2') format('woff2')}
+@font-face{font-family:'TT Runs';font-style:normal;font-weight:700;font-display:swap;src:url('https://apitoken-2-0-admin.vercel.app/landing/fonts/TTRuns-Bold.woff2') format('woff2')}
+@font-face{font-family:'TT Runs';font-style:normal;font-weight:800;font-display:swap;src:url('https://apitoken-2-0-admin.vercel.app/landing/fonts/TTRuns-ExtraBold.woff2') format('woff2')}
+
 /* apiToken.sale — design system (3sl.fund DNA: near-black, mono/pixel, single blue accent) */
 /* pixel display font — self-hosted so it renders identically everywhere (Google's css2 build didn't rasterize in some engines) */
 @font-face{font-family:'Bitcount Grid Single';font-style:normal;font-weight:400;font-display:swap;
@@ -47,15 +54,13 @@
   --term-text:rgba(10,10,10,.88); --term-comment:rgba(10,10,10,.60);
   --term-key:#3767f0; --term-green:#1a9e57; --term-white:#0a0a0a;
   --term-dot:#d3d3ce; --term-shadow:0 18px 50px rgba(10,10,10,.12);
-  /* pixel display — Bitcount Grid Single: ONLY on large accents (hero, logo, big stats) where it reads as crisp LED-art, never on small text/numbers where the grid looks like strikethrough */
-  --font-pixel:'Bitcount Grid Single', 'JetBrains Mono', ui-monospace, monospace;
-  --font-i18n-display:'Handjet', 'JetBrains Mono', ui-monospace, monospace;
-  /* mid headings & numbers — clean technical mono (Latin+Cyrillic, no pixel-grid bars) */
-  --font-bit:'JetBrains Mono', ui-monospace, monospace;
-  --font-display:'JetBrains Mono', ui-monospace, monospace;
-  /* secondary / body — 3sl.fund mono */
-  --font-mono:'JetBrains Mono', ui-monospace, monospace;
-  --font-ui:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --font-runs:'TT Runs',system-ui,sans-serif;
+  --font-pixel:var(--font-runs);
+  --font-i18n-display:var(--font-runs);
+  --font-bit:var(--font-runs);
+  --font-display:var(--font-runs);
+  --font-mono:var(--font-runs);
+  --font-ui:var(--font-runs);
   --maxw:1200px;
   --radius:4px;
 }
@@ -105,6 +110,9 @@ body{
     linear-gradient(90deg,var(--grid) 1px,transparent 1px);
   background-size:44px 44px;
 }
+
+/* One product voice: every visible text glyph uses the brand family. */
+html body,html body *,html body *::before,html body *::after,svg text{font-family:var(--font-runs)!important}
 
 /* Dynamically published editorial content. */
 .blog-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;padding-top:56px;padding-bottom:80px}

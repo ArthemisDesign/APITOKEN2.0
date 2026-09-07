@@ -54,7 +54,7 @@
   --maxw:1600px;
 
   --sans:"TT Runs", "Inter Tight", Inter, system-ui, sans-serif;
-  --mono:"JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --mono:"TT Runs", "Inter Tight", Inter, system-ui, sans-serif;
 
   --sec:clamp(84px,9vw,160px);
 }
@@ -1876,6 +1876,8 @@ body{line-height:1.5}
   border-right:1px solid rgba(12,11,17,.1);
   background:linear-gradient(180deg,#FBFAF7 0%,#F4F3EF 100%);
 }
+/* All landing, docs and B2B copy — including code and SVG labels — uses TT Runs. */
+html body,html body *,html body *::before,html body *::after,svg text{font-family:var(--sans)!important}
 [data-theme="dark"] .b2b-side{--side-hover:rgba(244,243,239,.065);--side-active:#F4F3EF;--side-active-text:#18161D;
   border-right-color:rgba(244,243,239,.1);background:linear-gradient(180deg,#18161D 0%,#100F14 100%)}
 .b2b-side-brand{
