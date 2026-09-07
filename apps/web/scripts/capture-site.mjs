@@ -1223,6 +1223,30 @@ async function verifyCreditsLayout(client) {
   process.stdout.write("Verified Credits summary, top-up form, responsive stacking, history layout, and preset interaction\n");
 }
 
+async function verifyCalculatorCurrency(client) {
+  await setViewport(client, 390, 844);
+  const loaded = client.once("Page.loadEventFired");
+  await client.send("Page.navigate", { url: new URL("/tools/claude-api-cost-calculator", baseUrl).href });
+  await loaded;
+  await waitForCondition(client, `document.querySelector('.calc-currencies button')?.textContent === 'USD'`, "calculator currency selector");
+  await clickSelector(client, ".calc-currencies button:nth-child(3)");
+  await waitForCondition(client, `document.querySelector('.calc-now')?.textContent?.startsWith('₽')`, "RUB calculator values");
+  const result = await client.send("Runtime.evaluate", {
+    expression: `JSON.stringify({
+      selected: document.querySelector('.calc-currencies button.on')?.textContent,
+      hero: document.querySelector('.calc-now')?.textContent,
+      rowsConverted: [...document.querySelectorAll('.calc-mtable .calc-your')].every((cell) => cell.textContent?.startsWith('₽')),
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    })`,
+    returnByValue: true,
+  });
+  const state = JSON.parse(result.result.value);
+  if (state.selected !== "RUB" || state.hero !== "₽5,864.31" || !state.rowsConverted || state.overflow > 1) {
+    throw new Error(`Calculator currency switch failed: ${JSON.stringify(state)}`);
+  }
+  process.stdout.write("Verified calculator USD/RUB conversion and mobile currency layout\n");
+}
+
 async function verifyUsageByKeyTable(client) {
   await setViewport(client, 1440, 1000);
   await client.send("Runtime.evaluate", {
@@ -2270,6 +2294,7 @@ try {
   if (shouldVerifyPricing) await verifyPricingCardsLayout(client);
   if (shouldVerifyKeys) await verifyApiKeysLayout(client);
   if (shouldVerifyCredits) await verifyCreditsLayout(client);
+  if (captures.some(([name]) => name.startsWith("calculator-"))) await verifyCalculatorCurrency(client);
   if (shouldVerifyUsage) await verifyUsageByKeyTable(client);
   if (shouldVerifyReferral) await verifyReferralLayout(client);
   if (shouldVerifyDocsTheme) await verifyDocsTheme(client);

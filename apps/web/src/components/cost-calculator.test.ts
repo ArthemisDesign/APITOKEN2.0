@@ -21,6 +21,23 @@ describe("CostCalculator", () => {
     expect(container.textContent).not.toContain("gpt-5.6-sol");
     expect(container.querySelector(".calc-now")?.textContent).toBe("$68.13");
 
+    const rubButton = [...container.querySelectorAll(".calc-currencies button")]
+      .find((button) => button.textContent === "RUB");
+    expect(rubButton).toBeDefined();
+
+    await act(async () => {
+      rubButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector(".calc-now")?.textContent).toBe("₽5,864.31");
+    expect(container.querySelector(".calc-mtable .calc-your")?.textContent).toMatch(/^₽/);
+
+    const usdButton = [...container.querySelectorAll(".calc-currencies button")]
+      .find((button) => button.textContent === "USD");
+    await act(async () => {
+      usdButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
     const gptButton = [...container.querySelectorAll("button")]
       .find((button) => button.textContent === "GPT models");
     expect(gptButton).toBeDefined();
