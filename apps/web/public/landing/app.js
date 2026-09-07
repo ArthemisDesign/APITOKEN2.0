@@ -51,23 +51,16 @@ const PROVIDERS = [
       { name: 'Kimi K2.5',      id: 'kimi-k2-5',      ctx: '256K', in: '$0.28', out: '$1.40', caps: ['cheap','coding','long'], badge: 'Лучшая цена' },
       { name: 'Kimi K2 Turbo',  id: 'kimi-k2-turbo',  ctx: '128K', in: '$0.15', out: '$0.75', caps: ['fast','cheap'] }
     ]
-  },
-  {
-    name: 'Mistral', note: 'Open weights',
-    models: [
-      { name: 'Mistral Large 3', id: 'mistral-large-3', ctx: '128K', in: '$0.60', out: '$3.00', caps: ['coding','agents'] },
-      { name: 'Mistral Small',   id: 'mistral-small',   ctx: '128K', in: '$0.10', out: '$0.50', caps: ['fast','cheap'] }
-    ]
   }
 ];
 
 const TASKS = [
   { id: 'coding',  name: 'Код',              picks: ['claude-opus-5','gpt-5-6-sol','claude-sonnet-5','kimi-k2-5'] },
-  { id: 'agents',  name: 'AI-агент',         picks: ['claude-opus-5','gpt-5-6-terra','claude-haiku-4-5','mistral-large-3'] },
+  { id: 'agents',  name: 'AI-агент',         picks: ['claude-opus-5','gpt-5-6-terra','claude-haiku-4-5','kimi-k2-5'] },
   { id: 'support', name: 'Поддержка',        picks: ['claude-sonnet-5','gpt-5-6-luna','claude-haiku-4-5','kimi-k2-turbo'] },
   { id: 'content', name: 'Контент',          picks: ['claude-fable-5','gpt-5-6-sol','gemini-3-pro','kimi-k2-5'] },
-  { id: 'image',   name: 'Изображения',      picks: ['gemini-image','gemini-3-pro','gpt-5-6-terra','mistral-small'] },
-  { id: 'volume',  name: 'Высокие объёмы',   picks: ['gemini-3-flash','kimi-k2-turbo','claude-haiku-4-5','mistral-small'] },
+  { id: 'image',   name: 'Изображения',      picks: ['gemini-image','gemini-3-pro','gpt-5-6-terra'] },
+  { id: 'volume',  name: 'Высокие объёмы',   picks: ['gemini-3-flash','kimi-k2-turbo','claude-haiku-4-5','gpt-5-6-luna'] },
   { id: 'reason',  name: 'Рассуждение',      picks: ['claude-opus-5','gpt-5-5','gemini-3-pro','claude-sonnet-5'] }
 ];
 
@@ -119,7 +112,7 @@ const TUTORIALS = [
 
 const FAQ = [
   ['Откуда берётся скидка до 50%?','Мы закупаем доступ к моделям объёмом и перераспределяем его между клиентами. Вы платите по официальным ставкам провайдера за вычетом скидки — сам запрос уходит в тот же официальный API.'],
-  ['Какие модели доступны?','Модели Anthropic, OpenAI, Google, Kimi, Mistral и других провайдеров. Каталог пополняется по мере выхода новых моделей — менять интеграцию для этого не нужно.'],
+  ['Какие модели доступны?','Модели Anthropic, OpenAI, Google, Kimi и других провайдеров. Каталог пополняется по мере выхода новых моделей — менять интеграцию для этого не нужно.'],
   ['Можно ли использовать apiToken вместо существующего OpenAI API?','Да. Достаточно поменять base URL и ключ — формат запросов и ответов остаётся прежним, включая стриминг и вызов инструментов.'],
   ['Как быстро можно подключиться?','Около двух минут: регистрация, создание ключа, замена endpoint. Отдельные аккаунты у провайдеров не нужны.'],
   ['Поддерживаются ли Claude Code и Cursor?','Да, как и Codex CLI, opencode, Cline и любые SDK, работающие с Anthropic-, OpenAI- или Gemini-совместимыми маршрутами.'],
@@ -130,7 +123,7 @@ const FAQ = [
   ['Как получить B2B предложение?','Заполните короткую форму в разделе «Бизнес-условия» — мы вернёмся с расчётом под ваш объём.']
 ];
 
-const GROW_ITEMS = ['GPT','Claude','Gemini','Kimi','Mistral','Llama','Qwen','DeepSeek','+ новый провайдер','+ новая модель','+ ...'];
+const GROW_ITEMS = ['GPT','Claude','Gemini','Kimi','Llama','Qwen','DeepSeek','+ новый провайдер','+ новая модель','+ ...'];
 
 /* ---------------------------------------------------------
    HELPERS

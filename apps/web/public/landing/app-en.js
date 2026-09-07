@@ -46,23 +46,16 @@ const PROVIDERS = [
       { name: 'Kimi K2.5',      id: 'kimi-k2-5',      ctx: '256K', in: '$0.28', out: '$1.40', caps: ['cheap','coding','long'], badge: 'Best price' },
       { name: 'Kimi K2 Turbo',  id: 'kimi-k2-turbo',  ctx: '128K', in: '$0.15', out: '$0.75', caps: ['fast','cheap'] }
     ]
-  },
-  {
-    name: 'Mistral', note: 'Open weights',
-    models: [
-      { name: 'Mistral Large 3', id: 'mistral-large-3', ctx: '128K', in: '$0.60', out: '$3.00', caps: ['coding','agents'] },
-      { name: 'Mistral Small',   id: 'mistral-small',   ctx: '128K', in: '$0.10', out: '$0.50', caps: ['fast','cheap'] }
-    ]
   }
 ];
 
 const TASKS = [
   { id: 'coding',  name: 'Code',              picks: ['claude-opus-5','gpt-5-6-sol','claude-sonnet-5','kimi-k2-5'] },
-  { id: 'agents',  name: 'AI agent',          picks: ['claude-opus-5','gpt-5-6-terra','claude-haiku-4-5','mistral-large-3'] },
+  { id: 'agents',  name: 'AI agent',          picks: ['claude-opus-5','gpt-5-6-terra','claude-haiku-4-5','kimi-k2-5'] },
   { id: 'support', name: 'Support',           picks: ['claude-sonnet-5','gpt-5-6-luna','claude-haiku-4-5','kimi-k2-turbo'] },
   { id: 'content', name: 'Content',           picks: ['claude-fable-5','gpt-5-6-sol','gemini-3-pro','kimi-k2-5'] },
-  { id: 'image',   name: 'Images',            picks: ['gemini-image','gemini-3-pro','gpt-5-6-terra','mistral-small'] },
-  { id: 'volume',  name: 'High volumes',      picks: ['gemini-3-flash','kimi-k2-turbo','claude-haiku-4-5','mistral-small'] },
+  { id: 'image',   name: 'Images',            picks: ['gemini-image','gemini-3-pro','gpt-5-6-terra'] },
+  { id: 'volume',  name: 'High volumes',      picks: ['gemini-3-flash','kimi-k2-turbo','claude-haiku-4-5','gpt-5-6-luna'] },
   { id: 'reason',  name: 'Reasoning',         picks: ['claude-opus-5','gpt-5-5','gemini-3-pro','claude-sonnet-5'] }
 ];
 
@@ -114,7 +107,7 @@ const TUTORIALS = [
 
 const FAQ = [
   ['Where does the up to 50% discount come from?','We purchase model access in volume and redistribute it across clients. You pay the provider\'s official rate minus the discount — the request still goes to the same official API.'],
-  ['Which models are available?','Models from Anthropic, OpenAI, Google, Kimi, Mistral and other providers. The catalog grows as new models are released, with no changes needed on your side.'],
+  ['Which models are available?','Models from Anthropic, OpenAI, Google, Kimi and other providers. The catalog grows as new models are released, with no changes needed on your side.'],
   ['Can I use apiToken instead of my existing OpenAI API?','Yes. Just change the base URL and key — request and response formats stay the same, including streaming and tool calls.'],
   ['How fast can I connect?','About two minutes: sign up, create a key, swap the endpoint. No separate provider accounts needed.'],
   ['Are Claude Code and Cursor supported?','Yes, as well as Codex CLI, opencode, Cline and any SDK that supports Anthropic-, OpenAI- or Gemini-compatible routes.'],
@@ -125,7 +118,7 @@ const FAQ = [
   ['How do I get a B2B quote?','Fill out the short form in the Business terms section and we will return a calculation tailored to your volume.']
 ];
 
-const GROW_ITEMS = ['GPT','Claude','Gemini','Kimi','Mistral','Llama','Qwen','DeepSeek','+ new provider','+ new model','+ ...'];
+const GROW_ITEMS = ['GPT','Claude','Gemini','Kimi','Llama','Qwen','DeepSeek','+ new provider','+ new model','+ ...'];
 
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];

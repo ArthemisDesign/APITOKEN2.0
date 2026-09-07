@@ -248,7 +248,7 @@ $$('.num__val').forEach(n => {
 if (!REDUCED) {
   const host = $('#value');
   if (host) {
-    const names = ['Claude Opus 5','GPT-5.6 Sol','Gemini 3 Pro','Kimi K2.5','Mistral Large 3','Claude Sonnet 5','Gemini 3 Flash','GPT-5.6 Luna'];
+    const names = ['Claude Opus 5','GPT-5.6 Sol','Gemini 3 Pro','Kimi K2.5','Claude Haiku 4.5','Claude Sonnet 5','Gemini 3 Flash','GPT-5.6 Luna'];
     const band = document.createElement('div');
     band.className = 'mo-marquee';
     const row = document.createElement('div');
