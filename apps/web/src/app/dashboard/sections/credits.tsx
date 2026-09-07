@@ -13,8 +13,8 @@ const CHECKOUT_ORIGINS: Record<CheckoutView["provider"], ReadonlySet<string>> = 
   cryptomus: new Set(["https://pay.cryptomus.com"]),
   platega: new Set(["https://pay.platega.io", "https://app.platega.io"]),
 };
-// Payment methods actually enabled on our Platega merchant (SBP + crypto). Each has an icon and a
-// one-line description so it is obvious what it is; other Platega method ids are not available to us.
+// Payment methods enabled on our Platega merchant. The currency grouping must match the adapter's
+// usdMethods contract: international cards and crypto are charged in USD; local methods in RUB.
 const PLATEGA_METHODS = [
   {
     id: 2, currency: "RUB", en: "SBP", ru: "СБП",
@@ -29,6 +29,11 @@ const PLATEGA_METHODS = [
     icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="14" x="2" y="5" rx="2" /><path d="M2 10h20" /><path d="M6 15h4" /></svg>,
   },
   {
+    id: 12, currency: "USD", en: "International card", ru: "Иностранная карта",
+    enDesc: "Visa and Mastercard issued abroad", ruDesc: "Visa и Mastercard зарубежных банков",
+    icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><rect width="20" height="14" x="2" y="5" rx="2" /><path d="M2 10h20" /><path d="M6 15h4" /><path d="M17 14h1" /></svg>,
+  },
+  {
     id: 13, currency: "USD", en: "Crypto", ru: "Криптовалюта",
     enDesc: "USDT and other coins", ruDesc: "USDT и другие монеты",
     icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="6" /><path d="M18.09 10.37A6 6 0 1 1 10.34 18" /><path d="M7 6h1v4" /><path d="m16.71 13.88.7.71-2.82 2.82" /></svg>,
@@ -41,17 +46,37 @@ const pricingCopy = {
     addPaid: "Added to your balance",
     creditAmount: "Amount",
     paymentCurrency: "Payment currency",
+    rubRate: "Approximate conversion: ₽86 = $1. The provider shows the final amount before payment.",
+    invalidAmount: "Enter a positive whole amount using digits only.",
+    rubAmountTitle: "Top up in rubles",
+    usdAmountTitle: "Top up in US dollars",
+    rubAmountHelp: "Enter a whole RUB amount. Choose a payment method below; the provider shows the final amount before payment.",
+    usdAmountHelp: "Enter a whole USD amount. Choose a payment method below; the provider shows the final amount before payment.",
   },
   ru: {
     offListPrice: "от официального тарифа",
     addPaid: "Будет зачислено на баланс",
     creditAmount: "Сумма",
     paymentCurrency: "Валюта оплаты",
+    rubRate: "Ориентировочный пересчёт: ₽86 = $1. Точную сумму провайдер покажет перед оплатой.",
+    invalidAmount: "Введите целую положительную сумму только цифрами.",
+    rubAmountTitle: "Пополнить баланс в рублях",
+    usdAmountTitle: "Пополнить баланс в долларах",
+    rubAmountHelp: "Введите целую сумму в RUB. Выберите способ оплаты ниже — точную сумму к оплате покажет провайдер.",
+    usdAmountHelp: "Введите целую сумму в USD. Выберите способ оплаты ниже — точную сумму к оплате покажет провайдер.",
   },
 } as const;
 
 const TOPUP_PRESETS = [100, 250, 500, 1000] as const;
+const RUB_TOPUP_PRESETS = [1000, 5000, 10000, 25000] as const;
+const RUB_PER_USD = 86n;
 const WHOLE_USD_AMOUNT = /^[1-9]\d*$/;
+
+function rubToWholeUsd(amountRub: string): string {
+  if (!WHOLE_USD_AMOUNT.test(amountRub)) return "";
+  const roundedUsd = (BigInt(amountRub) + RUB_PER_USD / 2n) / RUB_PER_USD;
+  return (roundedUsd > 0n ? roundedUsd : 1n).toString();
+}
 
 export function Credits({ account, ledger, ledgerAvailable }: { account: AccountView; ledger: LedgerEntry[]; ledgerAvailable: boolean }) {
   const copy = useDashboardCopy();
@@ -59,23 +84,24 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
   const localCopy = localDashboardCopy[language];
   const policyCopy = pricingCopy[language];
   const locale = language === "ru" ? "ru-RU" : "en-US";
-  const [amount, setAmount] = useState("100");
+  const [amount, setAmount] = useState("1000");
   const [method, setMethod] = useState<number>(PLATEGA_METHODS[0]!.id);
   const [currency, setCurrency] = useState<"USD" | "RUB">("RUB");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkout, setCheckout] = useState<CheckoutView | null>(null);
   const amountValid = WHOLE_USD_AMOUNT.test(amount);
-  const amountValidation = amount === "" || amountValid ? null : localCopy.invalidWholeUsd;
+  const amountValidation = amount === "" || amountValid ? null : policyCopy.invalidAmount;
+  const amountUsd = currency === "USD" && amountValid ? amount : rubToWholeUsd(amount);
   const discountPercent = account.pricing?.discountPercent ?? null;
   async function start() {
-    if (!amountValid) { setError(localCopy.invalidWholeUsd); return; }
+    if (!amountValid || !amountUsd) { setError(policyCopy.invalidAmount); return; }
     setBusy(true); setError(null);
     try {
-      const created = await api.createCheckout(amount, method); setCheckout(created);
-      const methodName = method === 2 ? "sbp" : method === 11 ? "card" : method === 13 ? "crypto" : "other";
-      trackProductEvent("Checkout Created", { provider: created.provider, payment_method: methodName, amount_bucket: checkoutAmountBucket(amount) });
-      trackFirstProductEvent("checkout", "First Checkout Created", { provider: created.provider, payment_method: methodName, amount_bucket: checkoutAmountBucket(amount) });
+      const created = await api.createCheckout(amountUsd, method); setCheckout(created);
+      const methodName = method === 2 ? "sbp" : method === 11 ? "card" : method === 12 ? "international_card" : method === 13 ? "crypto" : "other";
+      trackProductEvent("Checkout Created", { provider: created.provider, payment_method: methodName, amount_bucket: checkoutAmountBucket(amountUsd) });
+      trackFirstProductEvent("checkout", "First Checkout Created", { provider: created.provider, payment_method: methodName, amount_bucket: checkoutAmountBucket(amountUsd) });
       if (created.checkoutUrl) {
         const checkoutUrl = safeCheckoutUrl(created.checkoutUrl, created.provider);
         if (!checkoutUrl) { setError(localCopy.invalidCheckoutUrl); return; }
@@ -85,14 +111,21 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
     finally { setBusy(false); }
   }
 
-  const amountNano = amountValid ? BigInt(amount) * NANO_PER_USD : 0n;
+  const amountNano = amountUsd ? BigInt(amountUsd) * NANO_PER_USD : 0n;
   const topups = ledger.filter((entry) => entry.kind === "topup");
   const ledgerMayBePartial = ledger.length >= 100;
   const paymentMethods = PLATEGA_METHODS.filter((item) => item.currency === currency);
 
   function selectCurrency(nextCurrency: "USD" | "RUB") {
+    if (nextCurrency === currency) return;
+    if (amountValid) {
+      const numericAmount = BigInt(amount);
+      setAmount(nextCurrency === "RUB"
+        ? (numericAmount * RUB_PER_USD).toString()
+        : rubToWholeUsd(amount));
+    }
     setCurrency(nextCurrency);
-    setMethod(nextCurrency === "RUB" ? 2 : 13);
+    setMethod(nextCurrency === "RUB" ? 2 : 12);
   }
 
   return <section className="panel"><PageHeading eyebrow={copy.creditsEyebrow} title={copy.creditsTitle} subtitle={copy.creditsSubtitle} />
@@ -109,17 +142,18 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
       </section>
 
       <section className="card topup-simple">
-        <div className="tc-head"><h2>{copy.anyWholeAmount}</h2><p className="p-sub" id="topup-amount-help">{copy.checkoutHelp}</p></div>
+        <div className="tc-head"><h2>{currency === "RUB" ? policyCopy.rubAmountTitle : policyCopy.usdAmountTitle}</h2><p className="p-sub" id="topup-amount-help">{currency === "RUB" ? policyCopy.rubAmountHelp : policyCopy.usdAmountHelp}</p></div>
         <div className="tc-currency">
           <span className="tc-pay-label">{policyCopy.paymentCurrency}</span>
           <div role="radiogroup" aria-label={policyCopy.paymentCurrency}>
             {(["RUB", "USD"] as const).map((code) => <button key={code} type="button" className={currency === code ? "on" : ""} role="radio" aria-checked={currency === code} onClick={() => selectCurrency(code)}>{code}</button>)}
           </div>
         </div>
+        {currency === "RUB" && <p className="tc-currency-note">{policyCopy.rubRate}</p>}
         <div className="topup-simple-body">
           <div className="tc-input">
-            <label className="tc-field"><span className="currency-prefix">$</span><input className="set-in" name="topup-amount" autoComplete="off" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => { setAmount(event.target.value); setError(null); }} placeholder="100" aria-label={copy.anyWholeAmount} aria-describedby={amountValidation ? "topup-amount-help topup-amount-error" : "topup-amount-help"} aria-invalid={amountValidation ? true : undefined} /></label>
-            <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}>${preset}</button>)}</div>
+            <label className="tc-field"><span className="currency-prefix">{currency === "RUB" ? "₽" : "$"}</span><input className="set-in" name="topup-amount" autoComplete="off" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => { setAmount(event.target.value); setError(null); }} placeholder={currency === "RUB" ? "1000" : "100"} aria-label={currency === "RUB" ? policyCopy.rubAmountTitle : policyCopy.usdAmountTitle} aria-describedby={amountValidation ? "topup-amount-help topup-amount-error" : "topup-amount-help"} aria-invalid={amountValidation ? true : undefined} /></label>
+            <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{(currency === "RUB" ? RUB_TOPUP_PRESETS : TOPUP_PRESETS).map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}>{currency === "RUB" ? "₽" : "$"}{preset}</button>)}</div>
           </div>
           <div className="tc-pay">
             <span className="tc-pay-label">{localCopy.payWith}</span>

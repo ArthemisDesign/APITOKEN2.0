@@ -1049,6 +1049,7 @@ a.step:hover .step-cta::after{margin-left:4px}
 .tc-currency button{min-width:72px;padding:8px 14px;border:1px solid transparent;border-radius:5px;background:transparent;font:650 12px/1 var(--font-mono);color:var(--txt-3);cursor:pointer;transition:.14s}
 .tc-currency button:hover{border-color:var(--line);color:var(--txt)}
 .tc-currency button.on{border-color:var(--accent);background:var(--accent);color:#fff}
+.tc-currency-note{margin:-12px 0 0;font:400 11px/1.5 var(--font-mono);color:var(--txt-4)}
 .topup-simple-body{display:grid;grid-template-columns:minmax(240px,.72fr) minmax(0,1.28fr);gap:24px;align-items:end}
 .tc-input{display:flex;flex-direction:column;gap:14px}
 .tc-field{position:relative;display:flex;align-items:center}
@@ -1307,6 +1308,7 @@ a.step:hover .step-cta::after{margin-left:4px}
 @media(max-width:520px){
   .calc-field input{font-size:22px}
 }
+@media(max-width:430px){.tc-presets{grid-template-columns:repeat(2,1fr)}}
 /* calculator embedded on the home page (#products) */
 .home-calc .calc{margin-top:0}
 .home-calc-more{margin:26px 0 0;text-align:center;font-family:var(--font-mono);font-size:13px}

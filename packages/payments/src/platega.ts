@@ -64,7 +64,7 @@ export interface PlategaOptions {
   fxMarginBps?: number;
   /** Platega payment-method id used when the checkout does not request a specific one. */
   defaultPaymentMethod?: number;
-  /** Method ids charged directly in USD (no RUB conversion) — e.g. crypto shows dollars. Default [13]. */
+  /** Method ids charged directly in USD (no RUB conversion) — international card and crypto. Default [12, 13]. */
   usdMethods?: readonly number[];
   fetch?: typeof globalThis.fetch;
 }
@@ -91,7 +91,7 @@ export class PlategaProvider implements WebhookPaymentProviderAdapter {
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.fxMarginBps = options.fxMarginBps ?? 0;
     this.defaultPaymentMethod = options.defaultPaymentMethod ?? 2;
-    this.usdMethods = options.usdMethods ?? [13];
+    this.usdMethods = options.usdMethods ?? [12, 13];
     if (!options.merchantId) throw new PlategaError("Platega merchant ID is required", false);
     if (!options.secret) throw new PlategaError("Platega secret is required", false);
     if (this.fxMarginBps < 0 || this.fxMarginBps > 5000) {

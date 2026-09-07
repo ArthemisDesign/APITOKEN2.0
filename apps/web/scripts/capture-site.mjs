@@ -1211,10 +1211,9 @@ async function verifyCreditsLayout(client) {
       await clickSelector(client, ".tc-currency button:nth-child(2)");
       await waitForCondition(
         client,
-        `document.querySelector('.tc-currency button.on')?.textContent === 'USD' && document.querySelectorAll('.tc-methods .pm-card').length === 1 && document.querySelector('.pm-card .pm-txt b')?.textContent === 'Crypto'`,
+        `document.querySelector('.tc-currency button.on')?.textContent === 'USD' && document.querySelector('.tc-field .currency-prefix')?.textContent === '$' && document.querySelector('.tc-field input')?.value === '12' && document.querySelectorAll('.tc-methods .pm-card').length === 2 && [...document.querySelectorAll('.pm-card .pm-txt b')].map((node) => node.textContent).join('|') === 'International card|Crypto'`,
         "the Credits USD payment currency",
       );
-      await clickSelector(client, ".tc-currency button:nth-child(1)");
       await clickSelector(client, '[data-topup-preset="500"]');
       await waitForCondition(
         client,
@@ -1228,6 +1227,12 @@ async function verifyCreditsLayout(client) {
       if (!updated.result.value || updated.result.value === state.receiveText) {
         throw new Error(`The Credits receive value did not update: ${state.receiveText} -> ${updated.result.value}`);
       }
+      await clickSelector(client, ".tc-currency button:nth-child(1)");
+      await waitForCondition(
+        client,
+        `document.querySelector('.tc-field .currency-prefix')?.textContent === '₽' && document.querySelector('.tc-field input')?.value === '43000' && document.querySelectorAll('.tc-methods .pm-card').length === 2`,
+        "the Credits RUB amount and payment methods",
+      );
     }
   }
   process.stdout.write("Verified Credits summary, payment currency, top-up form, responsive stacking, history layout, and preset interaction\n");

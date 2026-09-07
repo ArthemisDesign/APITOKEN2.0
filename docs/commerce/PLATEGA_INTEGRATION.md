@@ -10,7 +10,7 @@ processing — `apps/api/src/checkout.service.ts`, safety net — `apps/worker/s
 
 ## Selected flow
 
-Platega accepts payment in RUB (SBP / ERIP / card) and in USD (crypto). The client's balance
+Platega accepts payment in RUB (SBP / ERIP / local card) and in USD (international card / crypto). The client's balance
 is metered in whole USD, so USD → RUB conversion is needed only to decide
 how much to charge the buyer. The engine credit is always the USD recorded in the checkout
 (a database-level invariant), never the actually paid rubles.
@@ -20,7 +20,7 @@ an authenticated client sends whole-USD digits, e.g. "37"
   → POST /v1/checkouts {"amountUsd":"37","provider":"platega","paymentMethod":2}
   → the commerce API stores the checkout: user, 37 USD (bigint)
   → the adapter converts USD → RUB at the Rapira USDT/RUB rate + margin
-     (for crypto method 13 — charged directly in USD)
+     (for international-card method 12 and crypto method 13 — charged directly in USD)
   → Platega POST /transaction/process, payload = checkoutId (UUID)
   → the browser is redirected to the returned Platega pay URL
   → Platega POSTs the status change to
@@ -45,7 +45,7 @@ Endpoint: `POST /v1/checkouts` under a server session. The body is validated by
 The `MIN_TOPUP_USD` / `MAX_TOPUP_USD` limits are checked by `CheckoutService.create`
 before calling the provider. If `paymentMethod` is not passed, the adapter uses
 `PLATEGA_DEFAULT_PAYMENT_METHOD` (defaults to 2 — SBP). In `apps/web` in production,
-only the methods actually enabled on our merchant account are available (SBP + crypto).
+the methods enabled in the balance form are SBP and local card for RUB, plus international card and crypto for USD.
 
 The adapter calls `POST {PLATEGA_API_BASE_URL}/transaction/process` with
 `X-MerchantId` / `X-Secret` headers and a body containing: `paymentMethod`, `paymentDetails` (charge
@@ -57,12 +57,12 @@ into an absolute `expiresAt`.
 
 ## USD → RUB conversion
 
-For all methods except `usdMethods` (defaults to `[13]` — crypto), the charge amount
+For all methods except `usdMethods` (defaults to `[12, 13]` — international card and crypto), the charge amount
 is computed from the public Rapira rate (`PLATEGA_RATE_URL`,
 `https://api.rapira.net/open/market/rates`): the `askPrice` (fallback — `close`)
 of the USDT/RUB pair is taken, `PLATEGA_FX_MARGIN_BPS` (basis points, 0–5000,
 covering the Platega fee and rate drift) is added on top, and the result is rounded up
-to a whole RUB. The crypto method is metered directly in USD so the buyer sees
+to a whole RUB. International-card and crypto methods are metered directly in USD so the buyer sees
 dollars. In both cases the engine credit is the whole USD recorded in the checkout.
 
 ## Webhook and its authorization
