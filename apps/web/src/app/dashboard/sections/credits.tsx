@@ -5,7 +5,7 @@ import { api, type AccountView, type CheckoutView, type LedgerEntry } from "@/li
 import { useI18n } from "@/components/i18n-provider";
 import { checkoutAmountBucket, trackFirstProductEvent, trackProductEvent } from "@/lib/product-analytics";
 import {
-  NANO_PER_USD, PageHeading, Stat,
+  NANO_PER_USD, PageHeading,
   formatLedgerTime, formatNanoUsd, interpolate, localDashboardCopy, useDashboardCopy,
 } from "./shared";
 
@@ -35,35 +35,15 @@ const PLATEGA_METHODS = [
   },
 ] as const;
 
-function PricingBanner({ account }: { account: AccountView }) {
-  const copy = useDashboardCopy();
-  const { language } = useI18n();
-  const local = pricingCopy[language];
-  const discountPercent = account.pricing?.discountPercent ?? null;
-  return <section className="pricing-banner pricing-banner-business">
-    <div className="pricing-summary">
-      <div><span className="pricing-kicker">{copy.currentPricing}</span><strong>{local.yourDiscount}</strong></div>
-      <div className="pricing-discount"><b>{discountPercent === null ? "—" : `${discountPercent}%`}</b><span>{local.offListPrice}</span></div>
-    </div>
-    <p>{local.policyExplainer}</p>
-  </section>;
-}
-
 const pricingCopy = {
   en: {
-    yourDiscount: "Your discount",
     offListPrice: "off the official rate",
-    policyExplainer: "Every request is charged at the official provider rate minus your discount.",
     addPaid: "Added to your balance",
-    paidExactly: "Your balance increases by exactly this amount.",
     creditAmount: "Amount",
   },
   ru: {
-    yourDiscount: "Ваша скидка",
     offListPrice: "от официального тарифа",
-    policyExplainer: "Каждый запрос списывается по официальному тарифу провайдера минус ваша скидка.",
     addPaid: "Будет зачислено на баланс",
-    paidExactly: "Баланс увеличится ровно на эту сумму.",
     creditAmount: "Сумма",
   },
 } as const;
@@ -84,6 +64,7 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
   const [checkout, setCheckout] = useState<CheckoutView | null>(null);
   const amountValid = WHOLE_USD_AMOUNT.test(amount);
   const amountValidation = amount === "" || amountValid ? null : localCopy.invalidWholeUsd;
+  const discountPercent = account.pricing?.discountPercent ?? null;
   async function start() {
     if (!amountValid) { setError(localCopy.invalidWholeUsd); return; }
     setBusy(true); setError(null);
@@ -107,43 +88,42 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
 
   return <section className="panel"><PageHeading eyebrow={copy.creditsEyebrow} title={copy.creditsTitle} subtitle={copy.creditsSubtitle} />
     <div className="credits-stack">
-      <div className="ov-stats bill4 tc-stats">
-        <Stat label={copy.available} value={formatNanoUsd(account.balanceNano, locale)} detail={copy.available} />
-        <Stat label={copy.used} value={formatNanoUsd(account.spentNano, locale)} detail={copy.balanceAfterDiscount} />
-        <div className="ovstat"><span className="dlabel">{copy.currentPricing}</span><b className="num tc-tier-name">{account.pricing ? `${account.pricing.discountPercent}%` : "—"}</b><span className="dtrend">{policyCopy.offListPrice}</span></div>
-      </div>
+      <section className="card credits-balance-summary" aria-label={copy.currentBalance}>
+        <div className="credits-balance-primary">
+          <span className="dlabel">{copy.currentBalance}</span>
+          <strong>{formatNanoUsd(account.balanceNano, locale)}</strong>
+        </div>
+        <dl className="credits-balance-facts">
+          <div><dt>{copy.used}</dt><dd>{formatNanoUsd(account.spentNano, locale)}</dd></div>
+          <div><dt>{copy.currentPricing}</dt><dd>{discountPercent === null ? "—" : `${discountPercent}%`} <small>{policyCopy.offListPrice}</small></dd></div>
+        </dl>
+      </section>
 
-      <div className="card topup-convert">
+      <section className="card topup-simple">
         <div className="tc-head"><h2>{copy.anyWholeAmount}</h2><p className="p-sub" id="topup-amount-help">{copy.checkoutHelp}</p></div>
-        <div className="tc-body">
+        <div className="topup-simple-body">
           <div className="tc-input">
             <label className="tc-field"><span className="currency-prefix">$</span><input className="set-in" name="topup-amount" autoComplete="off" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => { setAmount(event.target.value); setError(null); }} placeholder="100" aria-label={copy.anyWholeAmount} aria-describedby={amountValidation ? "topup-amount-help topup-amount-error" : "topup-amount-help"} aria-invalid={amountValidation ? true : undefined} /></label>
-            <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}><b>${preset}</b><span>{policyCopy.addPaid}</span></button>)}</div>
+            <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}>${preset}</button>)}</div>
           </div>
-          <div className="tc-arrow" aria-hidden="true">→</div>
-          <div className="tc-receive tc-receive-up">
-            <span className="tc-recv-label">{policyCopy.addPaid}</span>
-            <b className="tc-recv-value">{amountNano > 0n ? formatNanoUsd(amountNano, locale) : "—"}</b>
-            <span className="tc-recv-sub">{amountNano <= 0n ? copy.enterAmount : policyCopy.paidExactly}</span>
-          </div>
-        </div>
-        <p className="tc-explain">{policyCopy.policyExplainer}</p>
-        <div className="tc-pay">
-          <span className="tc-pay-label">{localCopy.payWith}</span>
-          <div className="tc-methods" role="radiogroup" aria-label={localCopy.payWith}>
-            {PLATEGA_METHODS.map((m) => <label key={m.id} className={`pm-card ${method === m.id ? "on" : ""}`}>
-              <input type="radio" name="topup-payment-method" className="sr-only" checked={method === m.id} onChange={() => setMethod(m.id)} />
-              <span className={`pm-ic${"logo" in m ? " pm-ic-logo" : ""}`} aria-hidden="true">{m.icon}</span>
-              <span className="pm-txt"><b>{language === "ru" ? m.ru : m.en}</b><span>{language === "ru" ? m.ruDesc : m.enDesc}</span></span>
-            </label>)}
+          <div className="tc-pay">
+            <span className="tc-pay-label">{localCopy.payWith}</span>
+            <div className="tc-methods" role="radiogroup" aria-label={localCopy.payWith}>
+              {PLATEGA_METHODS.map((m) => <label key={m.id} className={`pm-card ${method === m.id ? "on" : ""}`}>
+                <input type="radio" name="topup-payment-method" className="sr-only" checked={method === m.id} onChange={() => setMethod(m.id)} />
+                <span className={`pm-ic${"logo" in m ? " pm-ic-logo" : ""}`} aria-hidden="true">{m.icon}</span>
+                <span className="pm-txt"><b>{language === "ru" ? m.ru : m.en}</b><span>{language === "ru" ? m.ruDesc : m.enDesc}</span></span>
+              </label>)}
+            </div>
           </div>
         </div>
-        <div className="tc-actions"><button className="btn btn-primary" disabled={busy || !amountValid} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button></div>
+        <div className="topup-simple-footer">
+          <div><span>{policyCopy.addPaid}</span><strong>{amountNano > 0n ? formatNanoUsd(amountNano, locale) : "—"}</strong></div>
+          <button className="btn btn-primary" disabled={busy || !amountValid} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button>
+        </div>
         {amountValidation && <div className="auth-msg err" id="topup-amount-error">{amountValidation}</div>}
         {error && <div className="auth-msg err">{error}</div>}{checkout && !checkout.checkoutUrl && <div className="banner">{interpolate(copy.checkoutPending, { id: checkout.id, status: checkout.status })}</div>}
-      </div>
-
-      <PricingBanner account={account} />
+      </section>
 
       {ledgerAvailable && ledgerMayBePartial && <div className="banner">{localCopy.partialLedger}</div>}
       {ledgerAvailable && <section className="dsec credits-history"><div className="dsec-head"><h2 id="topup-history-title">{copy.topupHistory}</h2></div>

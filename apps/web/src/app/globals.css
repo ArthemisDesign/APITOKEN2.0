@@ -1018,12 +1018,19 @@ a.step:hover .step-cta::after{margin-left:4px}
 @media(max-width:900px){
   .prod-grid{grid-template-columns:1fr}
 }
-/* --- Top-up converter: показываем, сколько реального Claude API получает клиент --- */
-.credits-stack{display:grid;gap:22px}
-.credits-stack>.tc-stats,.credits-stack>.topup-convert,.credits-stack>.pricing-banner,.credits-stack>.credits-history{width:100%;min-width:0;margin:0;max-width:none}
-.credits-stack .tc-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
+/* --- Balance and top-up --- */
+.credits-stack{display:grid;gap:18px}
+.credits-stack>.credits-balance-summary,.credits-stack>.topup-simple,.credits-stack>.credits-history{width:100%;min-width:0;margin:0;max-width:none}
 .credits-history .table-scroll{overflow-x:auto}
-.topup-convert{display:grid;gap:18px;min-width:0}
+.credits-balance-summary{display:flex;align-items:center;justify-content:space-between;gap:32px;padding:26px 28px}
+.credits-balance-primary{display:flex;min-width:0;flex-direction:column;gap:8px}
+.credits-balance-primary strong{font-family:var(--font-ui);font-size:clamp(38px,5vw,54px);font-weight:700;line-height:1;letter-spacing:-.055em;color:var(--txt);font-variant-numeric:tabular-nums lining-nums}
+.credits-balance-facts{display:flex;align-items:stretch;margin:0}
+.credits-balance-facts>div{display:flex;min-width:150px;flex-direction:column;gap:5px;padding:3px 22px;border-left:1px solid var(--line)}
+.credits-balance-facts dt{font:650 9px/1.35 var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--txt-4)}
+.credits-balance-facts dd{margin:0;font:680 16px/1.35 var(--font-ui);color:var(--txt)}
+.credits-balance-facts small{display:block;margin-top:2px;font:400 10px/1.35 var(--font-mono);color:var(--txt-4)}
+.topup-simple{display:grid;gap:22px;padding:26px 28px;min-width:0}
 .docs-h3{font-family:var(--font-mono);font-weight:700;font-size:17px;margin:26px 0 10px;color:var(--txt)}
 .docs-para{font-family:var(--font-mono);font-size:15px;line-height:1.75;color:var(--txt-2);margin:0 0 8px;max-width:74ch}
 .pricing-howto-row{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
@@ -1035,19 +1042,17 @@ a.step:hover .step-cta::after{margin-left:4px}
 @media(max-width:430px){.pricing-howto-link,.tier-docs-link{white-space:normal}}
 .pricing-status-warn strong{color:var(--warn)}
 .pricing-status-ok small{color:var(--ok)}
-.tc-head h2{margin:10px 0 6px}
-.tc-body{display:grid;grid-template-columns:minmax(240px,.9fr) auto minmax(300px,1.1fr);gap:20px;align-items:stretch}
+.tc-head h2{margin:0 0 6px}
+.topup-simple-body{display:grid;grid-template-columns:minmax(240px,.72fr) minmax(0,1.28fr);gap:24px;align-items:end}
 .tc-input{display:flex;flex-direction:column;gap:14px}
 .tc-field{position:relative;display:flex;align-items:center}
 .tc-field .set-in{width:100%;max-width:none;padding-left:34px;font-family:var(--font-mono);font-size:28px;font-weight:700;letter-spacing:-.03em}
 .tc-field .currency-prefix{top:50%;transform:translateY(-50%);font-size:22px}
-.tc-presets{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
-.tc-preset{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:10px 13px;border:1px solid var(--line-strong);border-radius:8px;background:var(--bg-card);cursor:pointer;transition:.15s;font-family:var(--font-mono);text-align:left}
+.tc-presets{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.tc-preset{display:grid;place-items:center;min-height:38px;padding:8px 10px;border:1px solid var(--line-strong);border-radius:8px;background:var(--bg-card);cursor:pointer;transition:.15s;font:650 12px/1 var(--font-mono);color:var(--txt);text-align:center}
 .tc-preset:hover{border-color:var(--accent-line)}
 .tc-preset.on{border-color:var(--accent);background:var(--accent-soft)}
-.tc-preset b{font-size:15px;color:var(--txt)}
-.tc-preset span{font-size:12px;color:var(--accent-ink);font-variant-numeric:tabular-nums}
-.tc-pay{margin-top:18px}
+.tc-pay{min-width:0}
 .tc-pay-label{display:block;font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt-4);margin-bottom:10px}
 .tc-methods{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
 .pm-card{display:flex;align-items:center;gap:12px;padding:14px 16px;border:1px solid var(--line-strong);border-radius:12px;background:var(--bg-card);cursor:pointer;text-align:left;transition:.15s}
@@ -1062,19 +1067,12 @@ a.step:hover .step-cta::after{margin-left:4px}
 .pm-txt b{font-family:var(--font-mono);font-size:14px;color:var(--txt);line-height:1.2}
 .pm-txt span{font-size:12px;color:var(--txt-3);line-height:1.3}
 @media(max-width:560px){.tc-methods{grid-template-columns:1fr}}
-.tc-arrow{display:flex;align-items:center;justify-content:center;color:var(--txt-4);font-size:22px}
-.tc-receive{display:flex;flex-direction:column;justify-content:center;gap:6px;padding:18px 20px;border:1px solid var(--accent-line);border-radius:10px;background:var(--accent-soft)}
-.tc-recv-label{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent-ink)}
-.tc-recv-value{font-family:var(--font-mono);font-weight:700;font-size:34px;line-height:1.05;letter-spacing:-.045em;color:var(--txt);font-variant-numeric:tabular-nums}
-.tc-recv-sub{font-family:var(--font-mono);font-size:12px;line-height:1.5;color:var(--txt-3)}
 .tc-recv-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
 .tc-badge{font-family:var(--font-mono);font-size:12px;font-weight:700;color:#fff;background:var(--accent);border-radius:99px;padding:3px 11px;letter-spacing:.02em}
 .tc-badge-soft{color:var(--accent-ink);background:transparent;border:1px solid var(--accent-line);font-weight:500}
-.tc-explain{font-family:var(--font-mono);font-size:12.5px;line-height:1.6;color:var(--txt-2);margin:0}
 .tc-nudge{font-family:var(--font-mono);font-size:12.5px;line-height:1.6;color:var(--accent-ink);margin:0}
 .tc-upgrade{display:flex;align-items:flex-start;gap:8px;font-family:var(--font-mono);font-size:12.5px;font-weight:500;line-height:1.55;color:var(--txt-2);margin:0;padding:10px 13px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft)}
 .tc-upgrade-ic{flex:0 0 auto;color:var(--accent-ink);font-weight:700}
-.tc-receive-up{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 8px 30px rgba(55,103,240,.14)}
 /* маркетинг: живая ценность под полем суммы */
 .topup-live{display:flex;flex-direction:column;gap:12px}
 .topup-live-out{display:flex;flex-direction:column;gap:8px;padding:18px 18px 16px;border:1px solid var(--accent-line);border-radius:8px;background:var(--accent-soft)}
@@ -1086,14 +1084,21 @@ a.step:hover .step-cta::after{margin-left:4px}
 /* Keep both pricing explanations on the same row with equal breathing room after their data panels. */
 .topup-live + p,.business-preview + p{margin-top:18px}
 .tier-mult{font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--accent-ink);white-space:nowrap}
-.tc-actions{display:flex}
-.tc-actions .btn{white-space:nowrap}
+.topup-simple-footer{display:flex;align-items:center;justify-content:space-between;gap:20px;padding-top:20px;border-top:1px solid var(--line)}
+.topup-simple-footer>div{display:flex;min-width:0;flex-direction:column;gap:4px}
+.topup-simple-footer span{font:650 9px/1.35 var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--txt-4)}
+.topup-simple-footer strong{font:700 22px/1.2 var(--font-ui);letter-spacing:-.025em;color:var(--txt);font-variant-numeric:tabular-nums}
+.topup-simple-footer .btn{white-space:nowrap}
 .pricing-mult{display:block;font-style:normal;font-family:var(--font-mono);font-size:11px;color:var(--txt-3);margin-top:2px;letter-spacing:.02em}
 @media(max-width:700px){
-  .credits-stack .tc-stats{grid-template-columns:1fr}
-  .tc-body{grid-template-columns:1fr;gap:14px}
-  .tc-arrow{transform:rotate(90deg)}
-  .tc-actions .btn{width:100%;justify-content:center}
+  .credits-balance-summary{align-items:flex-start;flex-direction:column;gap:20px;padding:22px}
+  .credits-balance-facts{width:100%}
+  .credits-balance-facts>div{min-width:0;flex:1;padding:0 16px}
+  .credits-balance-facts>div:first-child{padding-left:0;border-left:0}
+  .topup-simple{padding:22px}
+  .topup-simple-body{grid-template-columns:1fr;gap:22px}
+  .topup-simple-footer{align-items:stretch;flex-direction:column}
+  .topup-simple-footer .btn{width:100%;justify-content:center}
   .credits-history .table-scroll{overflow:visible;border:0;background:transparent;box-shadow:none}
   .credits-history .topup-history-table{display:block;min-width:0;border:0;background:transparent;overflow:visible}
   .topup-history-table thead{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}

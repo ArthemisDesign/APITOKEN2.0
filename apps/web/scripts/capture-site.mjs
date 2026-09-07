@@ -1146,9 +1146,9 @@ async function verifyPricingCardsLayout(client) {
 
 async function verifyCreditsLayout(client) {
   const cases = [
-    { name: "desktop", width: 1440, height: 1000, statRows: 1, converterRow: true, mobileHistory: false },
-    { name: "tablet", width: 768, height: 1024, statRows: 1, converterRow: true, mobileHistory: false },
-    { name: "mobile", width: 390, height: 844, statRows: 1, converterRow: false, mobileHistory: true },
+    { name: "desktop", width: 1440, height: 1000, formRow: true, mobileHistory: false },
+    { name: "tablet", width: 768, height: 1024, formRow: true, mobileHistory: false },
+    { name: "mobile", width: 390, height: 844, formRow: false, mobileHistory: true },
   ];
 
   for (const layoutCase of cases) {
@@ -1163,7 +1163,7 @@ async function verifyCreditsLayout(client) {
     await loaded;
     await waitForCondition(
       client,
-      `Boolean(document.querySelector('.credits-stack .topup-convert')) && Boolean(document.querySelector('.pricing-banner-business')) && Boolean(document.querySelector('.topup-history-table tbody tr'))`,
+      `Boolean(document.querySelector('.credits-stack .credits-balance-summary')) && Boolean(document.querySelector('.credits-stack .topup-simple')) && Boolean(document.querySelector('.topup-history-table tbody tr'))`,
       `${layoutCase.name} Credits layout`,
     );
     await client.send("Runtime.evaluate", {
@@ -1173,12 +1173,9 @@ async function verifyCreditsLayout(client) {
 
     const result = await client.send("Runtime.evaluate", {
       expression: `(() => {
-        const rects = (selector) => [...document.querySelectorAll(selector)].map((element) => element.getBoundingClientRect());
-        const rowCount = (items) => new Set(items.map((rect) => Math.round(rect.top))).size;
-        const stats = rects('.credits-stack .tc-stats .ovstat');
         const input = document.querySelector('.tc-input')?.getBoundingClientRect();
-        const receive = document.querySelector('.tc-receive')?.getBoundingClientRect();
-        const rail = ['.credits-stack .tc-stats', '.credits-stack .topup-convert', '.credits-stack .pricing-banner', '.credits-history']
+        const methods = document.querySelector('.tc-pay')?.getBoundingClientRect();
+        const rail = ['.credits-stack .credits-balance-summary', '.credits-stack .topup-simple', '.credits-history']
           .map((selector) => document.querySelector(selector)?.getBoundingClientRect())
           .filter(Boolean);
         const history = document.querySelector('.credits-history .table-scroll');
@@ -1186,19 +1183,18 @@ async function verifyCreditsLayout(client) {
         const historyCells = [...document.querySelectorAll('.topup-history-table td:not(.empty-cell)')];
         return JSON.stringify({
           overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-          statRows: rowCount(stats),
-          flatPricing: document.querySelector('.pricing-banner-business')?.textContent?.includes('50%') && !document.querySelector('.pricing-milestone-status'),
-          converterRow: Boolean(input && receive && Math.abs(input.top - receive.top) < 2),
-          aligned: rail.length === 4 && Math.max(...rail.map((rect) => rect.left)) - Math.min(...rail.map((rect) => rect.left)) < 2 && Math.max(...rail.map((rect) => rect.right)) - Math.min(...rail.map((rect) => rect.right)) < 2,
+          pricingVisible: document.querySelector('.credits-balance-facts')?.textContent?.includes('50%'),
+          formRow: Boolean(input && methods && Math.abs(input.bottom - methods.bottom) < 2),
+          aligned: rail.length === 3 && Math.max(...rail.map((rect) => rect.left)) - Math.min(...rail.map((rect) => rect.left)) < 2 && Math.max(...rail.map((rect) => rect.right)) - Math.min(...rail.map((rect) => rect.right)) < 2,
           historyFits: Boolean(history && history.scrollWidth <= history.clientWidth + 1),
-          mobileHistory: Boolean(historyTable && historyCells.length === 5 && getComputedStyle(historyTable).display === 'block' && historyCells.every((cell) => cell.dataset.label && !['none', '""'].includes(getComputedStyle(cell, '::before').content))),
-          receiveText: document.querySelector('.tc-recv-value')?.textContent?.trim(),
+          mobileHistory: Boolean(historyTable && historyCells.length > 0 && getComputedStyle(historyTable).display === 'block' && historyCells.every((cell) => cell.dataset.label && !['none', '""'].includes(getComputedStyle(cell, '::before').content))),
+          receiveText: document.querySelector('.topup-simple-footer strong')?.textContent?.trim(),
         });
       })()`,
       returnByValue: true,
     });
     const state = JSON.parse(result.result.value);
-    if (state.overflow > 1 || state.statRows !== layoutCase.statRows || !state.flatPricing || state.converterRow !== layoutCase.converterRow) {
+    if (state.overflow > 1 || !state.pricingVisible || state.formRow !== layoutCase.formRow) {
       throw new Error(`Credits ${layoutCase.name} responsive layout failed: ${JSON.stringify(state)}`);
     }
     if (layoutCase.name === "desktop" && !state.aligned) {
@@ -1212,11 +1208,11 @@ async function verifyCreditsLayout(client) {
       await clickSelector(client, '[data-topup-preset="500"]');
       await waitForCondition(
         client,
-        `document.querySelector('.tc-field input')?.value === '500' && document.querySelector('.tc-preset.on b')?.textContent?.trim() === '$500'`,
-        "the Credits preset to update the converter",
+        `document.querySelector('.tc-field input')?.value === '500' && document.querySelector('.tc-preset.on')?.textContent?.trim() === '$500'`,
+        "the Credits preset to update the amount",
       );
       const updated = await client.send("Runtime.evaluate", {
-        expression: `document.querySelector('.tc-recv-value')?.textContent?.trim()`,
+        expression: `document.querySelector('.topup-simple-footer strong')?.textContent?.trim()`,
         returnByValue: true,
       });
       if (!updated.result.value || updated.result.value === state.receiveText) {
@@ -1224,7 +1220,7 @@ async function verifyCreditsLayout(client) {
       }
     }
   }
-  process.stdout.write("Verified Credits alignment, responsive stacking, history layout, and preset interaction\n");
+  process.stdout.write("Verified Credits summary, top-up form, responsive stacking, history layout, and preset interaction\n");
 }
 
 async function verifyUsageByKeyTable(client) {

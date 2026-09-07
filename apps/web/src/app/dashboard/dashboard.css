@@ -837,7 +837,6 @@ body.app-body .bg-decor{display:none!important}
 .dashboard-data-notice{display:flex;align-items:center;justify-content:space-between;gap:14px}
 .dashboard-data-notice .btn{flex:none}
 .table-scroll-hint{display:none;margin:0 0 8px;font-family:var(--font-mono);font-size:11px;color:var(--txt-4)}
-.tc-tier-name{font-size:clamp(18px,2vw,25px)!important;line-height:1.15;overflow-wrap:break-word;hyphens:none}
 
 /* --- Section loading skeletons: shimmer placeholders instead of blank panels --- */
 @keyframes sklPulse{0%,100%{opacity:1}50%{opacity:.4}}
@@ -1088,7 +1087,6 @@ body.app-body .bg-decor{display:none!important}
   .overview-onboarding>.btn{justify-self:start}
   .setup-card{gap:14px}
   .ov-stats,.bill3,.bill4{grid-template-columns:repeat(2,1fr)}
-  .credits-stack .tc-stats{grid-template-columns:repeat(3,minmax(0,1fr))}
   .ov-tiles{grid-template-columns:1fr}
   .cc-steps{grid-template-columns:1fr}
   .ep-grid{grid-template-columns:1fr}
