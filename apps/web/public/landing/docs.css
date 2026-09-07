@@ -147,6 +147,12 @@
 .docs-sidebar__nav a.active::before{content:"";position:absolute;left:-3px;top:11px;bottom:11px;width:3px;border-radius:99px;background:var(--accent)}
 .docs-sidebar__nav a.active svg{background:rgba(255,255,255,.09);color:var(--accent)}
 [data-theme="dark"] .docs-sidebar__nav a.active svg{background:rgba(12,11,17,.08)}
+
+/* Landing-consistent TT Runs weights for the complete docs shell. */
+.docs-sidebar,.docs-main{font-weight:400}
+.docs-sidebar *,.docs-main *{font-weight:400!important}
+.docs-sidebar :where(a,button,label),.docs-main :where(a,button,label,th,.meta,.secnum){font-weight:500!important}
+.docs-sidebar :where(strong,strong *,b,b *,.docs-side-brand,.docs-side-brand *),.docs-main :where(h1,h1 *,h2,h2 *,h3,h3 *,h4,h4 *,h5,h5 *,h6,h6 *,strong,strong *,b,b *){font-weight:600!important}
 .docs-side-foot{
   display:flex;align-items:center;gap:10px;flex:none;margin-top:12px;
   padding:12px 18px 0 2px;border-top:1px solid var(--line);

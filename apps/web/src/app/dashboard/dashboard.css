@@ -557,6 +557,12 @@ body.app-body .bg-decor{display:none!important}
 [data-theme="dark"] .side-nav .side-link.on{box-shadow:0 10px 28px -18px rgba(0,0,0,.9)}
 .app-top-h{flex:1;display:flex;flex-direction:column;line-height:1.2;min-width:0}
 
+/* TT Runs weight scale: calm body, clear controls, restrained headings. */
+.app{font-weight:400}
+.app *{font-weight:400!important}
+.app :where(a,button,label,th,.side-link,.side-group,.eyebrow,.pill){font-weight:500!important}
+.app :where(h1,h1 *,h2,h2 *,h3,h3 *,h4,h4 *,h5,h5 *,h6,h6 *,strong,strong *,b,b *,.app-title,.app-title *,.side-brand,.side-brand *){font-weight:600!important}
+
 .page-heading{display:flex;flex-direction:column;align-items:flex-start;margin-bottom:28px}
 .page-heading .eyebrow{margin-bottom:12px;font:650 10px/1.4 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--txt-4)}
 .page-heading .eyebrow::before{display:none}

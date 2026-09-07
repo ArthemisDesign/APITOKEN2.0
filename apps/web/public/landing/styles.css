@@ -1915,6 +1915,12 @@ html body,html body *,html body *::before,html body *::after,svg text{font-famil
 .b2b-side__link.is-active::before{content:"";position:absolute;left:-3px;top:11px;bottom:11px;width:3px;border-radius:99px;background:var(--accent)}
 .b2b-side__link.is-active svg{background:rgba(255,255,255,.09);color:var(--accent)}
 [data-theme="dark"] .b2b-side__link.is-active svg{background:rgba(12,11,17,.08)}
+
+/* Landing-consistent TT Runs weights for the B2B/OpenKeys shell. */
+.b2b-app{font-weight:400}
+.b2b-app *{font-weight:400!important}
+.b2b-app :where(a,button,label,th,.b2b-side__link,.b2b-side__label){font-weight:500!important}
+.b2b-app :where(h1,h1 *,h2,h2 *,h3,h3 *,h4,h4 *,h5,h5 *,h6,h6 *,strong,strong *,b,b *,.b2b-side-brand,.b2b-side-brand *){font-weight:600!important}
 .b2b-side__foot{
   display:flex;align-items:center;gap:10px;flex:none;margin-top:12px;
   padding:12px 0 0;border-top:1px solid var(--line);

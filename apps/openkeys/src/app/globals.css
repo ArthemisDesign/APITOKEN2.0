@@ -114,6 +114,12 @@ body{
 /* One product voice: every visible text glyph uses the brand family. */
 html body,html body *,html body *::before,html body *::after,svg text{font-family:var(--font-runs)!important}
 
+/* Sidebar pages use the same restrained TT Runs weight rhythm as the landing. */
+.app,.docs-site{font-weight:400}
+.app *,.docs-site *{font-weight:400!important}
+.app :where(a,button,label,th,.side-link,.side-group,.eyebrow),.docs-site :where(a,button,label,th,.docs-sidebar a,.docs-sidebar>span,.eyebrow){font-weight:500!important}
+.app :where(h1,h1 *,h2,h2 *,h3,h3 *,h4,h4 *,h5,h5 *,h6,h6 *,strong,strong *,b,b *,.app-title,.app-title *,.side-brand,.side-brand *),.docs-site :where(h1,h1 *,h2,h2 *,h3,h3 *,h4,h4 *,h5,h5 *,h6,h6 *,strong,strong *,b,b *,.docs-brand,.docs-brand *){font-weight:600!important}
+
 /* Dynamically published editorial content. */
 .blog-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;padding-top:56px;padding-bottom:80px}
 .blog-card{min-height:280px;padding:28px;border:1px solid var(--line);background:var(--bg-card);display:flex;flex-direction:column;box-shadow:var(--shadow)}
