@@ -218,12 +218,15 @@
 .usage-dashboard .usage-analytics-card .usum-row>b{font-size:16px}
 .usage-dashboard .usage-models-section,.usage-dashboard .usage-keys-section{margin-top:20px;padding:24px;border:1px solid var(--line);border-radius:var(--usage-card-radius);background:var(--bg-card)}
 .usage-dashboard .usage-models-section,.usage-dashboard .usage-keys-section{min-width:0;overflow:hidden}
-.usage-dashboard .usage-models-section .analytics-heading,.usage-dashboard .usage-keys-section .analytics-heading{padding:0 2px}
+.usage-dashboard .usage-models-section .analytics-heading,.usage-dashboard .usage-keys-section .analytics-heading{padding:4px 2px 0}
+.usage-dashboard .usage-models-section .analytics-heading h2{padding:2px 0 1px;overflow:visible;line-height:1.15}
+.usage-dashboard .usage-models-section .analytics-heading p{margin-top:8px;line-height:1.55}
 .usage-dashboard .usage-models-section .tok-buckets{gap:10px;border:0;background:transparent;overflow:visible}
 .usage-dashboard .usage-models-section .tokb{min-width:0;min-height:112px;justify-content:flex-end;overflow:hidden;padding:17px;border:1px solid var(--line);border-radius:14px;background:var(--bg-soft)}
-.usage-dashboard .usage-models-section .tokb .dlabel{margin-bottom:auto}
-.usage-dashboard .usage-models-section .tokb .dlabel,.usage-dashboard .usage-models-section .tokb>b{max-width:100%;overflow-wrap:anywhere}
-.usage-dashboard .usage-models-section .tokb>b{font-size:25px;line-height:1.05;letter-spacing:-.04em}
+.usage-dashboard .usage-models-section .tokb .dlabel{max-width:100%;margin-bottom:auto;font-size:10px;line-height:1.35;letter-spacing:.035em;overflow-wrap:break-word;word-break:normal;hyphens:auto}
+.usage-dashboard .usage-models-section .tokb>b{max-width:100%;margin-top:12px;font-family:var(--font-ui);font-size:25px;font-weight:650;line-height:1.08;letter-spacing:-.035em;overflow-wrap:break-word;word-break:normal;hyphens:auto}
+.usage-dashboard .usage-models-section .tokb-legacy>b{font-size:clamp(18px,2vw,24px);line-height:1.12}
+.usage-dashboard .usage-models-section .tokb-usd{margin-top:2px;line-height:1.35}
 .usage-dashboard .usage-keys-section .ubreak-sum{gap:10px;border:0;background:transparent;overflow:visible}
 .usage-dashboard .usage-keys-section .ubreak-sum>div{min-width:0;min-height:92px;justify-content:flex-end;overflow:hidden;padding:16px;border:1px solid var(--line);border-radius:13px;background:var(--bg-soft)}
 .usage-dashboard .usage-keys-section .ubreak-sum .dlabel{margin-bottom:auto}
