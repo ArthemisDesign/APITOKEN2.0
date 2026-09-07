@@ -1384,10 +1384,10 @@ a.step:hover .step-cta::after{margin-left:4px}
 .side{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
   --side-hover:rgba(12,11,17,.055);--side-icon:rgba(12,11,17,.045);
   --side-active:#18161D;--side-active-text:#F4F3EF;--side-active-icon:rgba(255,255,255,.09);
-  background:radial-gradient(260px 220px at 0 0,rgba(255,89,73,.105),transparent 70%),linear-gradient(180deg,#FBFAF7 0%,#F4F3EF 100%);
+  background:linear-gradient(180deg,#FBFAF7 0%,#F4F3EF 100%);
   border-right:1px solid rgba(12,11,17,.1);padding:24px 18px;overflow:hidden}
 [data-theme="dark"] .side{--side-hover:rgba(244,243,239,.065);--side-icon:rgba(244,243,239,.055);--side-active:#F4F3EF;--side-active-text:#18161D;--side-active-icon:rgba(12,11,17,.08);
-  background:radial-gradient(280px 240px at 0 0,rgba(255,106,90,.14),transparent 72%),linear-gradient(180deg,#18161D 0%,#100F14 100%);border-right-color:rgba(244,243,239,.1)}
+  background:linear-gradient(180deg,#18161D 0%,#100F14 100%);border-right-color:rgba(244,243,239,.1)}
 .side-brand{margin:2px 10px 27px;font-family:var(--font-display);font-weight:700;font-size:18px;letter-spacing:-.04em}
 .side-nav{display:flex;flex-direction:column;gap:3px;flex:1;min-height:max-content;padding:0 2px 12px;overflow:visible}
 .side-nav button{display:flex;align-items:center;gap:12px;width:100%;min-height:42px;padding:10px 12px;
