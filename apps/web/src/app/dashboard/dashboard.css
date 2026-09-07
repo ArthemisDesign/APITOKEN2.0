@@ -1728,3 +1728,67 @@ body.app-body .bg-decor{display:none!important}
   .keys-filter-tab b,
   .overview-status{font-size:10px}
 }
+
+/* Usage typography: readable labels, aligned figures and room for localized copy.
+   Keep these scoped rules after the shared dashboard baseline. */
+.app .usage-dashboard .p-h1{line-height:1.2;letter-spacing:-.025em}
+.app .usage-dashboard .dsec h2{font-size:24px;line-height:1.3;letter-spacing:-.02em;text-wrap:balance}
+.app .usage-dashboard .p-sub,
+.app .usage-dashboard .analytics-heading p{font-size:14px;line-height:1.6}
+.app .usage-dashboard .banner{font-size:13px;line-height:1.65}
+.app .usage-dashboard .usage-kpis .ovstat{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:1fr auto minmax(3em,auto);justify-content:normal;gap:10px;min-height:168px;font-size:12px}
+.app .usage-dashboard .usage-kpis .dlabel,
+.app .usage-dashboard .usage-models-section .tokb .dlabel,
+.app .usage-dashboard .usage-keys-section .ubreak-sum .dlabel{margin:0;min-height:2.8em;font-size:12px;line-height:1.4;letter-spacing:0;text-transform:none;overflow-wrap:normal;hyphens:none}
+.app .usage-dashboard .usage-kpis .num{font-size:clamp(28px,2.5vw,36px);line-height:1.2;letter-spacing:-.025em;font-variant-numeric:tabular-nums;white-space:nowrap}
+.app .usage-dashboard .dtrend{font-size:12px;line-height:1.5}
+.app .usage-dashboard .uprovider-name strong{font-size:16px;line-height:1.3}
+.app .usage-dashboard .uprovider-name>span{font-size:11px;line-height:1.5;letter-spacing:0}
+.app .usage-dashboard .uprovider-status{font-size:10px;letter-spacing:0;text-transform:none}
+.app .usage-dashboard .uprovider-discount{font-size:11px;letter-spacing:0}
+.app .usage-dashboard .uprovider-stats strong{font-size:32px;line-height:1.2;letter-spacing:-.025em}
+.app .usage-dashboard .uprovider-stats>span,
+.app .usage-dashboard .uprovider-guide{font-size:12px;line-height:1.5}
+.app .usage-dashboard .uprovider-endpoint>button{font-size:11px;letter-spacing:0;text-transform:none}
+.app .usage-dashboard .uchart-head>b,
+.app .usage-dashboard .usum-t{font-size:16px;line-height:1.4;letter-spacing:0;text-transform:none}
+.app .usage-dashboard .uchart-head span,
+.app .usage-dashboard .uchart-head .usage-chart-legend span{font-size:11px;line-height:1.5;letter-spacing:0}
+.app .usage-dashboard .uchart-yaxis,
+.app .usage-dashboard .uchart-axis{font-size:11px;line-height:1.4;letter-spacing:0}
+.app .usage-dashboard .uchart-empty{color:inherit;font-size:13px;line-height:1.5}
+.app .usage-dashboard .usum-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:12px}
+.app .usage-dashboard .usum-row>span{font-size:13px;line-height:1.5}
+.app .usage-dashboard .usum-row>b{font-size:14px;line-height:1.5;letter-spacing:0;white-space:nowrap}
+/* The shared .app .dsec padding reset otherwise removes the card's text inset. */
+.app .usage-dashboard .usage-models-section,
+.app .usage-dashboard .usage-keys-section{padding:28px}
+.app .usage-dashboard .usage-models-section .analytics-heading h2{line-height:1.3}
+.app .usage-dashboard .usage-models-section .tokb{gap:8px;padding:18px;min-height:132px}
+.app .usage-dashboard .usage-models-section .tokb>b{margin-top:auto;font-size:26px;line-height:1.2;letter-spacing:-.02em;overflow-wrap:normal;hyphens:none;white-space:nowrap}
+.app .usage-dashboard .usage-models-section .tokb-legacy>b{font-size:16px;line-height:1.4;letter-spacing:0;white-space:normal}
+.app .usage-dashboard .usage-models-section .tokb-usd{margin:0;font-size:12px;line-height:1.5;letter-spacing:0}
+.app .usage-dashboard .usage-keys-section .ubreak-sum>div>b{font-size:24px;line-height:1.2;letter-spacing:-.02em;overflow-wrap:normal;white-space:nowrap}
+.app .usage-dashboard .bucket-note{font-size:12px;line-height:1.6}
+.app .usage-dashboard .mdist-legend{font-size:12px;line-height:1.5;gap:8px}
+.app .usage-dashboard .mtable th{font-size:12px;line-height:1.4;letter-spacing:0;text-transform:none}
+.app .usage-dashboard .mtable td{font-size:13px;line-height:1.5}
+@media(min-width:821px){
+  .app .usage-dashboard .usage-models-section .tok-buckets{grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))}
+}
+@media(max-width:640px){
+  .app .usage-dashboard .p-h1{font-size:28px}
+  .app .usage-dashboard .dsec h2{font-size:21px}
+  .app .usage-dashboard .usage-kpis .ovstat{min-height:156px;padding:16px}
+  .app .usage-dashboard .usage-kpis .num{font-size:26px}
+  .app .usage-dashboard .usage-models-section,
+  .app .usage-dashboard .usage-keys-section{padding:20px 16px}
+  .app .usage-dashboard .usage-models-section .tokb{padding:14px}
+  .app .usage-dashboard .usage-models-section .tokb>b{font-size:23px}
+  .app .usage-dashboard .usage-models-section .tokb-legacy>b{font-size:16px}
+  .app .usage-dashboard .usage-keys-section .ubreak-sum>div>b{font-size:clamp(20px,6vw,24px)}
+  .app .usage-dashboard .uchart-axis span:nth-child(even){display:none}
+}
+@media(max-width:360px){
+  .app .usage-dashboard .uprovider-head{gap:8px}
+}
