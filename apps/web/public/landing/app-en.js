@@ -84,13 +84,6 @@ const INTEGRATIONS = [
     lines:[['','POST https://router.apitoken.sale/v1/messages'],['','x-api-key: sk-pool-••••'],['','{ "model": "claude-opus-5", ... }'],['','200 OK · 1.24s'],['','{ "content": [{ "type": "text", ... }] }'],['','streaming: "stream": true → SSE']] }
 ];
 
-const SWITCH_MODELS = [
-  { id:'claude-opus-5',  prov:'Anthropic', lat:'1.2s', cost:'$0.0042', ans:'The first approach wins on cost, the second on latency. From 1M requests onwards the gap becomes decisive…' },
-  { id:'gpt-5-6-sol',    prov:'OpenAI',    lat:'0.9s', cost:'$0.0038', ans:'Both options are viable. The key difference is long-haul maintenance cost…' },
-  { id:'gemini-3-pro',   prov:'Google',    lat:'0.7s', cost:'$0.0026', ans:'Comparison across three axes: price, speed, response quality. The second approach is preferable under high load…' },
-  { id:'kimi-k2-5',      prov:'Kimi',      lat:'0.6s', cost:'$0.0009', ans:'The cost difference is almost fivefold. With comparable quality on this task the choice is clear…' }
-];
-
 const PROFILES = [
   { id:'product', name:'AI product',        base:14000 },
   { id:'devteam', name:'Dev team',          base:20000, seats:true },
@@ -325,34 +318,6 @@ $$('[data-count]').forEach(n => countIO.observe(n));
     steps.innerHTML = active.steps.map((s, i) => `<div><b>${String(i + 1).padStart(2, '0')}</b>${s}</div>`).join('');
   }
   render();
-})();
-
-(() => {
-  const pick = $('#switchPick');
-  if (!pick) return;
-  let idx = 0, auto;
-
-  const apply = i => {
-    idx = i;
-    const m = SWITCH_MODELS[i];
-    $$('.chip', pick).forEach((x, j) => x.classList.toggle('on', j === i));
-    $('#swModel').textContent = `"${m.id}"`;
-    $('#swProvider').textContent = m.prov;
-    $('#swLatency').textContent = m.lat;
-    $('#swCost').textContent = m.cost;
-    const ans = $('#swAnswer');
-    ans.style.opacity = 0;
-    setTimeout(() => { ans.textContent = m.ans; ans.style.opacity = 1; }, 200);
-  };
-
-  SWITCH_MODELS.forEach((m, i) => {
-    const b = el('button', 'chip' + (i === 0 ? ' on' : ''), m.id);
-    b.onclick = () => { clearInterval(auto); apply(i); };
-    pick.appendChild(b);
-  });
-  $('#swAnswer').style.transition = 'opacity .2s';
-  apply(0);
-  auto = setInterval(() => apply((idx + 1) % SWITCH_MODELS.length), 3600);
 })();
 
 (() => {

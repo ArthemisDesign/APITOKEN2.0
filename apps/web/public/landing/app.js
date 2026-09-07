@@ -89,13 +89,6 @@ const INTEGRATIONS = [
     lines:[['','POST https://router.apitoken.sale/v1/messages'],['','x-api-key: sk-pool-••••'],['','{ "model": "claude-opus-5", ... }'],['','200 OK · 1.24s'],['','{ "content": [{ "type": "text", ... }] }'],['','стриминг: "stream": true → SSE']] }
 ];
 
-const SWITCH_MODELS = [
-  { id:'claude-opus-5',  prov:'Anthropic', lat:'1.2s', cost:'$0.0042', ans:'Первый подход выигрывает по стоимости, второй — по латентности. При объёме от 1M запросов разница становится решающей…' },
-  { id:'gpt-5-6-sol',    prov:'OpenAI',    lat:'0.9s', cost:'$0.0038', ans:'Оба варианта рабочие. Ключевое отличие — в стоимости обслуживания на длинной дистанции…' },
-  { id:'gemini-3-pro',   prov:'Google',    lat:'0.7s', cost:'$0.0026', ans:'Сравнение по трём осям: цена, скорость, качество ответа. Второй подход предпочтителен при высокой нагрузке…' },
-  { id:'kimi-k2-5',      prov:'Kimi',      lat:'0.6s', cost:'$0.0009', ans:'Разница в стоимости — почти пятикратная. При равном качестве на этой задаче выбор очевиден…' }
-];
-
 const PROFILES = [
   { id:'product', name:'AI-продукт',        base:14000 },
   { id:'devteam', name:'Команда разработки',base:20000, seats:true },
@@ -383,37 +376,6 @@ $$('[data-count]').forEach(n => countIO.observe(n));
     steps.innerHTML = active.steps.map((s, i) => `<div><b>${String(i + 1).padStart(2, '0')}</b>${s}</div>`).join('');
   }
   render();
-})();
-
-/* ---------------------------------------------------------
-   07 · MODEL SWITCH
-   --------------------------------------------------------- */
-(() => {
-  const pick = $('#switchPick');
-  if (!pick) return;
-  let idx = 0, auto;
-
-  const apply = i => {
-    idx = i;
-    const m = SWITCH_MODELS[i];
-    $$('.chip', pick).forEach((x, j) => x.classList.toggle('on', j === i));
-    $('#swModel').textContent = `"${m.id}"`;
-    $('#swProvider').textContent = m.prov;
-    $('#swLatency').textContent = m.lat;
-    $('#swCost').textContent = m.cost;
-    const ans = $('#swAnswer');
-    ans.style.opacity = 0;
-    setTimeout(() => { ans.textContent = m.ans; ans.style.opacity = 1; }, 200);
-  };
-
-  SWITCH_MODELS.forEach((m, i) => {
-    const b = el('button', 'chip' + (i === 0 ? ' on' : ''), m.id);
-    b.onclick = () => { clearInterval(auto); apply(i); };
-    pick.appendChild(b);
-  });
-  $('#swAnswer').style.transition = 'opacity .2s';
-  apply(0);
-  auto = setInterval(() => apply((idx + 1) % SWITCH_MODELS.length), 3600);
 })();
 
 /* ---------------------------------------------------------

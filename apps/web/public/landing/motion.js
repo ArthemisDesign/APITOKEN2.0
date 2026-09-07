@@ -170,7 +170,7 @@ function stagGroup(sel, childSel) {
     reveal(kids, { from: { y: 30 }, stagger: .06 }, box, { start: 'top 88%' });
   });
 }
-['.filters', '.ask__opts', '.calc__opts', '.switch__pick', '.steps', '.bigfacts', '.ent__args',
+  ['.filters', '.ask__opts', '.calc__opts', '.steps', '.bigfacts', '.ent__args',
  '.flow__targets', '.compare__list', '.compare__meta', '.intsteps', '.ftr__cols'].forEach(s => stagGroup(s));
 
 /* ---------------------------------------------------------
