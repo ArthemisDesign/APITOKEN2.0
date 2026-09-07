@@ -433,10 +433,8 @@
 .app{display:grid;grid-template-columns:264px minmax(0,1fr);min-height:100vh;position:relative;z-index:2;background:var(--bg-card)}
 /* No double-tap-zoom delay on dashboard controls; panning/pinch stay intact. */
 .app button,.app a,.app summary,.app select,.app .btn{touch-action:manipulation}
-/* App-shell scroll model: the sidebar itself never scrolls — only the nav does (min-height:0
-   lets the flex item shrink below its content height). The footer (user/logout) stays anchored
-   at the bottom of the 100vh column regardless of nav/legal height; previously a tall nav pushed
-   the footer into the sidebar's own scroll area and the avatar got sliced at compact widths. */
+/* The desktop navigation fits as one composition and follows the page scroll without an inner
+   scroll track. The mobile drawer restores its own overflow below. */
 .side{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
   --side-hover:rgba(12,11,17,.055);--side-icon:rgba(12,11,17,.045);
   --side-active:#18161D;--side-active-text:#F4F3EF;--side-active-icon:rgba(255,255,255,.09);
@@ -457,7 +455,7 @@
 .side-brand sup{font-size:.5em;font-weight:500;vertical-align:super}
 .side-brand__mark{width:13px;height:13px;background:var(--accent);border-radius:2px;flex:none;
   box-shadow:0 0 0 5px var(--accent-soft)}
-.side-nav{display:flex;flex-direction:column;gap:4px;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 2px 12px}
+.side-nav{display:flex;flex-direction:column;gap:2px;flex:1;min-height:max-content;overflow:visible;padding:0 2px 8px}
 .side-nav button{display:flex;align-items:center;gap:12px;width:100%;min-height:38px;padding:10px 12px;
   border:1px solid transparent;background:transparent;border-radius:8px;cursor:pointer;text-align:left;
   font-family:var(--font-mono);font-size:13px;color:var(--txt-3);transition:background-color .14s,color .14s,border-color .14s}
@@ -468,8 +466,8 @@
   flex:none;background:var(--side-icon);color:var(--txt-3);transition:background-color .16s ease,color .16s ease,transform .16s ease}
 .side-nav .si svg{width:16px;height:16px;stroke:currentColor;stroke-width:1.75;fill:none;stroke-linecap:round;stroke-linejoin:round}
 /* Footer never leaves the visible column: the nav above absorbs overflow (see .side/.side-nav). */
-.side-foot{display:flex;flex-direction:column;gap:11px;padding:14px 2px 0;border-top:1px solid var(--line);
-  flex:none;margin-top:10px;background:transparent}
+.side-foot{display:flex;flex-direction:column;gap:9px;padding:11px 2px 0;border-top:1px solid var(--line);
+  flex:none;margin-top:6px;background:transparent}
 .side-tools{display:flex;align-items:center;gap:10px;justify-content:space-between}
 .side-legal{display:flex;gap:5px 11px;flex-wrap:wrap;padding:0 4px}
 .side-legal a{font-family:var(--font-mono);font-size:10px;color:var(--txt-4);transition:color .15s ease}
@@ -547,7 +545,7 @@ body.app-body{background:var(--bg-soft);background-image:none}
 body.app-body .bg-decor{display:none!important}
 
 .side-group{display:flex;align-items:center;gap:9px;font-family:var(--font-mono);font-size:9px;font-weight:600;
-  text-transform:uppercase;letter-spacing:.145em;color:var(--txt-4);padding:13px 10px 6px}
+  text-transform:uppercase;letter-spacing:.145em;color:var(--txt-4);padding:8px 10px 4px}
 .side-group::after{content:"";height:1px;flex:1;background:var(--line)}
 .side-nav .side-link{position:relative;display:flex;align-items:center;gap:11px;min-height:44px;padding:6px 9px;
   border:1px solid transparent;border-radius:11px;font-family:var(--font-ui);font-size:14px;font-weight:550;
