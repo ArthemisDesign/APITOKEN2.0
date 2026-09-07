@@ -97,7 +97,7 @@
    ============================================================ */
 
 .docs-layout{
-  max-width:1280px;margin:0 auto;
+  max-width:1544px;margin:0 auto;
   padding:clamp(28px,3vw,56px) clamp(18px,2.5vw,40px) clamp(60px,6vw,110px)
     calc(264px + clamp(18px,2.5vw,40px));
 }

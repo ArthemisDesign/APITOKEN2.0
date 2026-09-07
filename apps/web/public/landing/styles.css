@@ -1975,9 +1975,10 @@ body{line-height:1.5}
 /* ---------- content ---------- */
 .b2b-body{
   display:flex;flex-direction:column;gap:clamp(72px,8vw,120px);
+  width:100%;max-width:1280px;margin:0 auto;
   padding:clamp(56px,8vh,104px) clamp(20px,5vw,64px) clamp(80px,8vw,140px);
 }
-.b2b-section{width:100%;max-width:600px;margin:0 auto;scroll-margin-top:96px}
+.b2b-section{width:100%;max-width:1280px;margin:0 auto;scroll-margin-top:96px}
 .b2b-head{display:flex;flex-direction:column;gap:12px;margin-bottom:28px}
 .b2b-h{font-size:clamp(28px,3vw,44px);font-weight:600;letter-spacing:-.03em;line-height:1.08}
 .b2b-sub{font-size:clamp(14px,1.05vw,17px);line-height:1.55;color:var(--muted)}
