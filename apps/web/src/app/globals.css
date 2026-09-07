@@ -1043,6 +1043,12 @@ a.step:hover .step-cta::after{margin-left:4px}
 .pricing-status-warn strong{color:var(--warn)}
 .pricing-status-ok small{color:var(--ok)}
 .tc-head h2{margin:0 0 6px}
+.tc-currency{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:18px;border-bottom:1px solid var(--line)}
+.tc-currency>.tc-pay-label{margin:0}
+.tc-currency>div{display:flex;gap:4px;padding:4px;border:1px solid var(--line-strong);border-radius:8px;background:var(--bg-soft)}
+.tc-currency button{min-width:72px;padding:8px 14px;border:1px solid transparent;border-radius:5px;background:transparent;font:650 12px/1 var(--font-mono);color:var(--txt-3);cursor:pointer;transition:.14s}
+.tc-currency button:hover{border-color:var(--line);color:var(--txt)}
+.tc-currency button.on{border-color:var(--accent);background:var(--accent);color:#fff}
 .topup-simple-body{display:grid;grid-template-columns:minmax(240px,.72fr) minmax(0,1.28fr);gap:24px;align-items:end}
 .tc-input{display:flex;flex-direction:column;gap:14px}
 .tc-field{position:relative;display:flex;align-items:center}
@@ -1096,6 +1102,9 @@ a.step:hover .step-cta::after{margin-left:4px}
   .credits-balance-facts>div{min-width:0;flex:1;padding:0 16px}
   .credits-balance-facts>div:first-child{padding-left:0;border-left:0}
   .topup-simple{padding:22px}
+  .tc-currency{align-items:flex-start;flex-direction:column}
+  .tc-currency>div{width:100%}
+  .tc-currency button{flex:1;min-width:0}
   .topup-simple-body{grid-template-columns:1fr;gap:22px}
   .topup-simple-footer{align-items:stretch;flex-direction:column}
   .topup-simple-footer .btn{width:100%;justify-content:center}
@@ -1214,14 +1223,6 @@ a.step:hover .step-cta::after{margin-left:4px}
 
 /* ============ Claude API cost calculator (/tools/claude-api-cost-calculator) ============ */
 .calc{margin-top:8px}
-.calc-currency-bar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:18px;padding:14px 16px;border:1px solid var(--line);border-radius:10px;background:var(--bg-card);box-shadow:var(--shadow)}
-.calc-currency-bar>div:first-child{display:flex;min-width:0;flex-direction:column;gap:3px}
-.calc-currency-bar strong{font:650 12px/1.35 var(--font-mono);letter-spacing:.04em;text-transform:uppercase;color:var(--txt-2)}
-.calc-currency-bar span{font:400 11px/1.4 var(--font-mono);color:var(--txt-4)}
-.calc-currencies{display:flex;flex:none;gap:4px;padding:4px;border:1px solid var(--line-strong);border-radius:8px;background:var(--bg-soft)}
-.calc-currencies button{min-width:54px;padding:8px 11px;border:1px solid transparent;border-radius:5px;background:transparent;font:650 12px/1 var(--font-mono);color:var(--txt-3);cursor:pointer;transition:.14s}
-.calc-currencies button:hover{border-color:var(--line);color:var(--txt)}
-.calc-currencies button.on{border-color:var(--accent);background:var(--accent);color:#fff}
 .calc-grid{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:22px;align-items:start}
 .calc-panel{min-width:0;border:1px solid var(--line);border-radius:10px;background:var(--bg-card);padding:26px;box-shadow:var(--shadow)}
 
@@ -1304,9 +1305,6 @@ a.step:hover .step-cta::after{margin-left:4px}
   .calc-mtable{min-width:640px}
 }
 @media(max-width:520px){
-  .calc-currency-bar{align-items:flex-start;flex-direction:column}
-  .calc-currencies{width:100%}
-  .calc-currencies button{flex:1;min-width:0}
   .calc-field input{font-size:22px}
 }
 /* calculator embedded on the home page (#products) */

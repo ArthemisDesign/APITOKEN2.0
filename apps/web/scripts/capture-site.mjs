@@ -1163,7 +1163,7 @@ async function verifyCreditsLayout(client) {
     await loaded;
     await waitForCondition(
       client,
-      `Boolean(document.querySelector('.credits-stack .credits-balance-summary')) && Boolean(document.querySelector('.credits-stack .topup-simple')) && Boolean(document.querySelector('.topup-history-table tbody tr'))`,
+      `Boolean(document.querySelector('.credits-stack .credits-balance-summary')) && Boolean(document.querySelector('.tc-currency')) && Boolean(document.querySelector('.credits-stack .topup-simple')) && Boolean(document.querySelector('.topup-history-table tbody tr'))`,
       `${layoutCase.name} Credits layout`,
     );
     await client.send("Runtime.evaluate", {
@@ -1174,6 +1174,7 @@ async function verifyCreditsLayout(client) {
     const result = await client.send("Runtime.evaluate", {
       expression: `(() => {
         const input = document.querySelector('.tc-input')?.getBoundingClientRect();
+        const currency = document.querySelector('.tc-currency')?.getBoundingClientRect();
         const methods = document.querySelector('.tc-pay')?.getBoundingClientRect();
         const rail = ['.credits-stack .credits-balance-summary', '.credits-stack .topup-simple', '.credits-history']
           .map((selector) => document.querySelector(selector)?.getBoundingClientRect())
@@ -1184,6 +1185,8 @@ async function verifyCreditsLayout(client) {
         return JSON.stringify({
           overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
           pricingVisible: document.querySelector('.credits-balance-facts')?.textContent?.includes('50%'),
+          currencyAboveAmount: Boolean(currency && input && currency.bottom <= input.top),
+          rubMethods: document.querySelectorAll('.tc-methods .pm-card').length,
           formRow: Boolean(input && methods && Math.abs(input.bottom - methods.bottom) < 2),
           aligned: rail.length === 3 && Math.max(...rail.map((rect) => rect.left)) - Math.min(...rail.map((rect) => rect.left)) < 2 && Math.max(...rail.map((rect) => rect.right)) - Math.min(...rail.map((rect) => rect.right)) < 2,
           historyFits: Boolean(history && history.scrollWidth <= history.clientWidth + 1),
@@ -1194,7 +1197,7 @@ async function verifyCreditsLayout(client) {
       returnByValue: true,
     });
     const state = JSON.parse(result.result.value);
-    if (state.overflow > 1 || !state.pricingVisible || state.formRow !== layoutCase.formRow) {
+    if (state.overflow > 1 || !state.pricingVisible || !state.currencyAboveAmount || state.rubMethods !== 2 || state.formRow !== layoutCase.formRow) {
       throw new Error(`Credits ${layoutCase.name} responsive layout failed: ${JSON.stringify(state)}`);
     }
     if (layoutCase.name === "desktop" && !state.aligned) {
@@ -1205,6 +1208,13 @@ async function verifyCreditsLayout(client) {
     }
 
     if (layoutCase.name === "desktop") {
+      await clickSelector(client, ".tc-currency button:nth-child(2)");
+      await waitForCondition(
+        client,
+        `document.querySelector('.tc-currency button.on')?.textContent === 'USD' && document.querySelectorAll('.tc-methods .pm-card').length === 1 && document.querySelector('.pm-card .pm-txt b')?.textContent === 'Crypto'`,
+        "the Credits USD payment currency",
+      );
+      await clickSelector(client, ".tc-currency button:nth-child(1)");
       await clickSelector(client, '[data-topup-preset="500"]');
       await waitForCondition(
         client,
@@ -1220,31 +1230,7 @@ async function verifyCreditsLayout(client) {
       }
     }
   }
-  process.stdout.write("Verified Credits summary, top-up form, responsive stacking, history layout, and preset interaction\n");
-}
-
-async function verifyCalculatorCurrency(client) {
-  await setViewport(client, 390, 844);
-  const loaded = client.once("Page.loadEventFired");
-  await client.send("Page.navigate", { url: new URL("/tools/claude-api-cost-calculator", baseUrl).href });
-  await loaded;
-  await waitForCondition(client, `document.querySelector('.calc-currencies button')?.textContent === 'USD'`, "calculator currency selector");
-  await clickSelector(client, ".calc-currencies button:nth-child(3)");
-  await waitForCondition(client, `document.querySelector('.calc-now')?.textContent?.startsWith('₽')`, "RUB calculator values");
-  const result = await client.send("Runtime.evaluate", {
-    expression: `JSON.stringify({
-      selected: document.querySelector('.calc-currencies button.on')?.textContent,
-      hero: document.querySelector('.calc-now')?.textContent,
-      rowsConverted: [...document.querySelectorAll('.calc-mtable .calc-your')].every((cell) => cell.textContent?.startsWith('₽')),
-      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-    })`,
-    returnByValue: true,
-  });
-  const state = JSON.parse(result.result.value);
-  if (state.selected !== "RUB" || state.hero !== "₽5,864.31" || !state.rowsConverted || state.overflow > 1) {
-    throw new Error(`Calculator currency switch failed: ${JSON.stringify(state)}`);
-  }
-  process.stdout.write("Verified calculator USD/RUB conversion and mobile currency layout\n");
+  process.stdout.write("Verified Credits summary, payment currency, top-up form, responsive stacking, history layout, and preset interaction\n");
 }
 
 async function verifyUsageByKeyTable(client) {
@@ -2294,7 +2280,6 @@ try {
   if (shouldVerifyPricing) await verifyPricingCardsLayout(client);
   if (shouldVerifyKeys) await verifyApiKeysLayout(client);
   if (shouldVerifyCredits) await verifyCreditsLayout(client);
-  if (captures.some(([name]) => name.startsWith("calculator-"))) await verifyCalculatorCurrency(client);
   if (shouldVerifyUsage) await verifyUsageByKeyTable(client);
   if (shouldVerifyReferral) await verifyReferralLayout(client);
   if (shouldVerifyDocsTheme) await verifyDocsTheme(client);

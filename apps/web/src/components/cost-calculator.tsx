@@ -14,15 +14,6 @@ import { LocalizedLink } from "./translated";
  */
 
 type Provider = "anthropic" | "openai";
-type Currency = "USD" | "EUR" | "RUB";
-
-// Indicative display-only snapshot from open.er-api.com. Billing and catalog rates stay in USD.
-const CURRENCIES: Record<Currency, { symbol: string; usdRate: number }> = {
-  USD: { symbol: "$", usdRate: 1 },
-  EUR: { symbol: "€", usdRate: 0.861072 },
-  RUB: { symbol: "₽", usdRate: 86.081584 },
-};
-const FX_RATE_DATE = "September 7, 2026";
 
 type Model = {
   name: string;
@@ -169,12 +160,10 @@ const DEFAULT_TASK = 0; // "A month of coding"
 const DISCOUNT = B2C_DISCOUNT_PERCENT;
 const MULT = 1 - DISCOUNT / 100;
 
-function money(v: number, currency: Currency): string {
-  const { symbol, usdRate } = CURRENCIES[currency];
-  const converted = v * usdRate;
-  if (!isFinite(converted) || converted <= 0) return `${symbol}0.00`;
-  const d = converted < 0.01 ? 5 : converted < 1 ? 4 : 2;
-  return symbol + converted.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: d });
+function usd(v: number): string {
+  if (!isFinite(v) || v <= 0) return "$0.00";
+  const d = v < 0.01 ? 5 : v < 1 ? 4 : 2;
+  return "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: d });
 }
 
 function fmt(n: number): string {
@@ -204,7 +193,6 @@ export function CostCalculator({ openaiCatalog = openaiModels }: { openaiCatalog
   const [cacheW, setCacheW] = useState(TASKS[DEFAULT_TASK].cacheW);
   const [selected, setSelected] = useState(CLAUDE_MODELS[0].id);
   const [advanced, setAdvanced] = useState(false);
-  const [currency, setCurrency] = useState<Currency>("USD");
 
   const providerInfo = PROVIDERS[provider];
   const models = provider === "openai" ? gptCalculatorModels(openaiCatalog) : providerInfo.models;
@@ -242,14 +230,6 @@ export function CostCalculator({ openaiCatalog = openaiModels }: { openaiCatalog
 
   return (
     <div className="calc">
-      <div className="calc-currency-bar">
-        <div><strong>Display currency</strong><span>API rates stay in USD; EUR and RUB are indicative conversions.</span></div>
-        <div className="calc-currencies" role="group" aria-label="Display currency">
-          {(Object.keys(CURRENCIES) as Currency[]).map((code) => (
-            <button key={code} type="button" className={currency === code ? "on" : ""} aria-pressed={currency === code} onClick={() => setCurrency(code)}>{code}</button>
-          ))}
-        </div>
-      </div>
       <div className="calc-grid">
         {/* ---------- Inputs ---------- */}
         <div className="calc-panel">
@@ -346,9 +326,9 @@ export function CostCalculator({ openaiCatalog = openaiModels }: { openaiCatalog
           </div>
 
           <div className="calc-hero-price">
-            <div className="calc-now">{money(hero.yours, currency)}</div>
+            <div className="calc-now">{usd(hero.yours)}</div>
             <div className="calc-was">
-              <s>{money(hero.official, currency)}</s>
+              <s>{usd(hero.official)}</s>
               <span className="tlo-badge">−{discount}%</span>
             </div>
           </div>
@@ -358,7 +338,7 @@ export function CostCalculator({ openaiCatalog = openaiModels }: { openaiCatalog
 
           <div className="calc-save">
             <span>You save</span>
-            <b>{money(hero.save, currency)}</b>
+            <b>{usd(hero.save)}</b>
             <em>≈ ×{scaleMult.toLocaleString("en-US", { maximumFractionDigits: 2 })} more work per $</em>
           </div>
 
@@ -398,11 +378,11 @@ export function CostCalculator({ openaiCatalog = openaiModels }: { openaiCatalog
                   <br />
                   <code>{m.id}</code>
                 </td>
-                <td className="mprice tnum">{money(m.input, currency)}</td>
-                <td className="mprice tnum">{money(m.output, currency)}</td>
-                <td className="mprice tnum calc-official">{money(official, currency)}</td>
-                <td className="mprice tnum calc-your">{money(yours, currency)}</td>
-                <td className="mprice tnum calc-savecell">{money(save, currency)}</td>
+                <td className="mprice tnum">${m.input}</td>
+                <td className="mprice tnum">${m.output}</td>
+                <td className="mprice tnum calc-official">{usd(official)}</td>
+                <td className="mprice tnum calc-your">{usd(yours)}</td>
+                <td className="mprice tnum calc-savecell">{usd(save)}</td>
               </tr>
             ))}
           </tbody>
@@ -413,7 +393,7 @@ export function CostCalculator({ openaiCatalog = openaiModels }: { openaiCatalog
         yourself&rdquo; to tune it. {provider === "anthropic"
           ? "Claude Sonnet 5 shows its introductory $2 / $10 rate through 2026-08-31; cache reads use 0.1× input and 5-minute cache writes use 1.25× input."
           : "GPT rows use standard rates from the pinned catalog. GPT-5.6 cache writes use 1.25× input; GPT-5.5/5.4 use 1×. A single request over 272K input tokens has a long-context premium not inferred from these whole-task totals."}{" "}
-        Estimates only — your real bill depends on exact token usage. EUR and RUB use indicative rates as of {FX_RATE_DATE}; checkout and API billing remain in USD.
+        Estimates only — your real bill depends on exact token usage.
       </p>
     </div>
   );
