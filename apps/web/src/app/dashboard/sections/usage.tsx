@@ -462,10 +462,10 @@ function formatAxisNanoUsd(value: bigint, locale: string): string {
 
 // Brand-led chart palettes: coral is primary, ink and warm neutral steps keep dense segments distinct.
 const USAGE_CHART_COLORS = [
-  "var(--accent)",
-  "color-mix(in srgb,var(--accent) 66%,var(--txt))",
-  "color-mix(in srgb,var(--accent) 42%,var(--txt-3))",
-  "color-mix(in srgb,var(--accent) 24%,var(--txt-4))",
+  "#0c0b11",
+  "#fffaf5",
+  "#7f302c",
+  "#ffd1cc",
 ] as const;
 const MODEL_COLORS = [
   "var(--accent)",
