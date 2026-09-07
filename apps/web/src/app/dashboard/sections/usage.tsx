@@ -118,7 +118,10 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
       const rightRank = providerOrder.get(right) ?? Number.MAX_SAFE_INTEGER;
       return leftRank - rightRank || left.localeCompare(right);
     })
-    .map(providerMetadata);
+    .map((id, index) => ({
+      ...providerMetadata(id),
+      chartColor: USAGE_CHART_COLORS[index % USAGE_CHART_COLORS.length]!,
+    }));
   const showUnattributed = series.some((point) => point.unattributed > 0n);
   const unattributedProvider = providerMetadata("unattributed");
   const chartDayAriaLabel = (point: (typeof series)[number]) => {
@@ -174,17 +177,17 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
   const ledgerMayBePartial = ledger.length >= 100;
   const legacyOfficialNano = BigInt(usage.buckets.unattributedLegacy.officialNano);
 
-  return <section className="panel usage-dashboard"><PageHeading eyebrow={copy.usageEyebrow} title={copy.usageTitle} subtitle={copy.usageSubtitle} />
-    <div className="banner usage-insight">💡 <b>{copy.sessionSavingTitle}</b><span> {copy.sessionSavingText}</span></div>
+  return <section className="panel"><PageHeading eyebrow={copy.usageEyebrow} title={copy.usageTitle} subtitle={copy.usageSubtitle} />
+    <div className="banner">💡 <b>{copy.sessionSavingTitle}</b><span> {copy.sessionSavingText}</span></div>
 
-    <div className="ov-stats bill4 usage-kpis">
+    <div className="ov-stats bill4">
       <div className="ovstat"><span className="dlabel">{copy.officialValue30d}</span><b className="num accent">{formatNanoUsd(summaryOfficialNano, locale)}</b><span className="dtrend">{copy.listPriceEquivalent}</span></div>
       <Stat label={copy.charged30d} value={formatNanoUsd(summaryChargedNano, locale)} detail={copy.settledCredits} />
       <div className="ovstat"><span className="dlabel">{localPolicyCopy.yourDiscount}</span><b className="num">{accountDiscountLabel(account.markupBasisPoints, localPolicyCopy)}</b><span className="dtrend">{localPolicyCopy.offListPrice}</span></div>
       <Stat label={copy.available} value={formatNanoUsd(account.balanceNano, locale)} detail={copy.available} />
     </div>
 
-    <section className="dsec uproviders usage-providers-section">
+    <section className="dsec uproviders">
       <div className="dsec-head analytics-heading"><div><h2>{copy.usageProviders}</h2><p>{copy.usageProvidersSub}</p></div></div>
       <div className="uprovider-grid">
         {providerCards.map((card) => {
@@ -246,7 +249,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
             <span className="uchart-window">{copy.chartWindowLabel}</span>
             <div className="usage-chart-legend" aria-label={copy.usageProviders}>
               {chartProviders.map((provider) => <span key={provider.id}>
-                <i style={{ background: provider.color }} />{provider.name}
+                <i style={{ background: provider.chartColor }} />{provider.name}
               </span>)}
               {showUnattributed && <span>
                 <i style={{ background: unattributedProvider.color }} />{unattributedProvider.name}
@@ -265,7 +268,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
                     {chartProviders.map((provider) => {
                       const segment = point.providers.find((candidate) => candidate.provider === provider.id);
                       return segment && segment.officialNano > 0n
-                        ? <div key={provider.id} className="uchart-seg" style={{ height: `${boundedPercent(segment.officialNano, scale.max)}%`, background: provider.color }} />
+                        ? <div key={provider.id} className="uchart-seg" style={{ height: `${boundedPercent(segment.officialNano, scale.max)}%`, background: provider.chartColor }} />
                         : null;
                     })}
                     {point.unattributed > 0n && <div className="uchart-seg" style={{ height: `${boundedPercent(point.unattributed, scale.max)}%`, background: unattributedProvider.color }} />}
@@ -279,7 +282,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
                     {chartProviders.map((provider) => {
                       const segment = point.providers.find((candidate) => candidate.provider === provider.id);
                       return segment && segment.officialNano > 0n
-                        ? <div className="chart-tip-row" key={provider.id}><span className="chart-tip-dot" style={{ background: provider.color }} /><span className="chart-tip-nm">{provider.name}</span><b>{formatNanoUsdSmart(segment.officialNano, locale)}</b></div>
+                        ? <div className="chart-tip-row" key={provider.id}><span className="chart-tip-dot" style={{ background: provider.chartColor }} /><span className="chart-tip-nm">{provider.name}</span><b>{formatNanoUsdSmart(segment.officialNano, locale)}</b></div>
                         : null;
                     })}
                     {point.unattributed > 0n && <div className="chart-tip-row"><span className="chart-tip-dot" style={{ background: unattributedProvider.color }} /><span className="chart-tip-nm">{unattributedProvider.name}</span><b>{formatNanoUsdSmart(point.unattributed, locale)}</b></div>}
@@ -304,7 +307,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
       </div>
     </div>
 
-    <section className="dsec usage-section usage-models-section">
+    <section className="dsec usage-models-section">
       <div className="dsec-head analytics-heading"><div><h2>{copy.tokensAndModels}</h2><p>{copy.tokensAndModelsSub}</p></div></div>
       <div className="tok-buckets">
         <div className="tokb"><span className="dlabel">{copy.inputTokens}</span><b>{fmtTokens(usage.buckets.input.tokens, locale)}</b><span className="tokb-usd">{fmtNanoUsd(usage.buckets.input.officialNano, locale)}</span></div>
@@ -332,8 +335,8 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
         <div className="mdist-legend">{mdistPlaced.map((seg) => <span key={seg.model.model}><i style={{ background: modelColor.get(seg.model.model) }} />{modelLabel(seg.model.model)}<b>{(seg.share * 100).toFixed(seg.share < 0.1 ? 1 : 0)}%</b></span>)}</div>
         <p className="table-scroll-hint" id="models-table-scroll-hint">{copy.tableScrollHint}</p>
         <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.tokensAndModels}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.billedEvents}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
-          <tbody>{models.map((model, index) => <tr key={model.model}>
-            <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: MODEL_COLORS[index % MODEL_COLORS.length] }} />{modelLabel(model.model)}{showProviderBadge && <span className="provider-tag">{providerDisplayName(model.provider, localPolicyCopy.providerUnattributed)}</span>}</span></td>
+          <tbody>{models.map((model) => <tr key={model.model}>
+            <td><span className="tkmdl"><span className="tkmdl-dot" style={{ background: modelColor.get(model.model) }} />{modelLabel(model.model)}{showProviderBadge && <span className="provider-tag">{providerDisplayName(model.provider, localPolicyCopy.providerUnattributed)}</span>}</span></td>
             <td className="tnum">{model.requests.toLocaleString(locale)}</td>
             <td className="tnum">{fmtTokens(model.inputTokens, locale)}</td>
             <td className="tnum">{fmtTokens(model.outputTokens, locale)}</td>
@@ -345,7 +348,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
       </>}
     </section>
 
-    <section className="dsec usage-section usage-keys-section">
+    <section className="dsec">
       <div className="dsec-head analytics-heading"><div><h2>{copy.usageByKey}</h2><p>{copy.usageByKeySub}</p></div></div>
       <div className="ubreak-sum">
         <div><span className="dlabel">{copy.keysCount}</span><b>{keyRows.length}</b></div>
@@ -457,8 +460,21 @@ function formatAxisNanoUsd(value: bigint, locale: string): string {
   return formatNanoUsd(value, locale, 0, 9);
 }
 
-// Палитра сегментов по моделям — средние тона, читаются и на светлой, и на тёмной теме.
-const MODEL_COLORS = ["#3767f0", "#7c5cff", "#12a594", "#e0913a", "#d6455d", "#8b8f9a"];
+// Brand-led chart palettes: coral is primary, ink and warm neutral steps keep dense segments distinct.
+const USAGE_CHART_COLORS = [
+  "var(--accent)",
+  "color-mix(in srgb,var(--accent) 66%,var(--txt))",
+  "color-mix(in srgb,var(--accent) 42%,var(--txt-3))",
+  "color-mix(in srgb,var(--accent) 24%,var(--txt-4))",
+] as const;
+const MODEL_COLORS = [
+  "var(--accent)",
+  "color-mix(in srgb,var(--accent) 72%,var(--txt))",
+  "color-mix(in srgb,var(--accent) 50%,var(--txt-2))",
+  "color-mix(in srgb,var(--accent) 34%,var(--txt-3))",
+  "color-mix(in srgb,var(--accent) 20%,var(--txt-4))",
+  "var(--txt-3)",
+] as const;
 function fmtTokens(n: number, locale: string): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toLocaleString(locale, { maximumFractionDigits: 2 })}M`;
   if (n >= 1_000) return `${(n / 1_000).toLocaleString(locale, { maximumFractionDigits: 1 })}K`;

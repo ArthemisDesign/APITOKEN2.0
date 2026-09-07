@@ -171,28 +171,30 @@
  .provider-tag{font-family:var(--font-sans);font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--txt-3);border:1px solid var(--line);border-radius:4px;padding:2px 5px;line-height:1}
 @media(max-width:820px){.tok-buckets{grid-template-columns:repeat(2,minmax(0,1fr))}.tokb-legacy{grid-column:1/-1}}
 
-/* Usage dashboard polish. Keep the proven layout intact; improve only surfaces and chart clarity. */
-.usage-dashboard .usage-insight{margin-bottom:20px;border-color:var(--accent-line);border-radius:10px;background:var(--accent-soft);box-shadow:none}
-.usage-kpis .ovstat:first-child{border-color:var(--accent-line);background:var(--accent-soft)}
-.usage-dashboard .uprovider-card{border-radius:12px;box-shadow:none;transition:border-color .16s ease,box-shadow .16s ease}
-.usage-dashboard .uprovider-card:hover{border-color:color-mix(in srgb,var(--provider-color) 35%,var(--line));box-shadow:0 12px 28px -24px color-mix(in srgb,var(--provider-color) 55%,transparent)}
-.usage-analytics-card .uchart{border-radius:12px;box-shadow:var(--shadow)}
-.usage-analytics-card .usum{border-radius:12px}
-.usage-analytics-card .uchart-head>b{font-size:15px}
-.usage-analytics-card .uchart-window{padding:4px 8px;border:1px solid var(--line);border-radius:99px;background:var(--bg-soft)}
-.usage-analytics-card .usage-chart-legend i{width:8px;height:8px;border-radius:50%}
-.usage-analytics-card .uchart-lines i{border-color:color-mix(in srgb,var(--line) 75%,transparent)}
-.usage-analytics-card .uchart-plot{gap:3px}
-.usage-analytics-card .uchart-col{border-radius:4px;transition:background .15s ease}
-.usage-analytics-card .uchart-col:hover,.usage-analytics-card .uchart-col.is-hover{background:color-mix(in srgb,var(--accent) 6%,transparent)}
-.usage-analytics-card .uchart-col-fill{padding:0 1px}
-.usage-analytics-card .uchart-seg:first-child{border-radius:0 0 3px 3px}
-.usage-analytics-card .uchart-seg:last-child{border-radius:3px 3px 0 0}
-.usage-section .tokb,.usage-section .ubreak-sum>div{transition:background .15s ease}
-.usage-section .tokb:hover,.usage-section .ubreak-sum>div:hover{background:var(--accent-soft)}
-.usage-section .mdist{height:15px;border-radius:8px;padding:2px}
-.usage-section .mdist-seg{border-radius:5px}
-.usage-section .mdist-legend>span{padding:4px 7px;border-radius:6px;background:var(--bg-soft)}
+/* Usage graphs only: brand palette, softer plotting surface and clearer interaction. */
+.usage-analytics-card .uchart{overflow:hidden;border-radius:14px;background:linear-gradient(155deg,var(--bg-card) 55%,color-mix(in srgb,var(--accent) 5%,var(--bg-card)));box-shadow:var(--shadow)}
+.usage-analytics-card .uchart-head>b{font-size:15px;letter-spacing:-.01em}
+.usage-analytics-card .uchart-window{padding:5px 9px;border:1px solid var(--accent-line);border-radius:99px;background:var(--accent-soft);color:var(--accent-ink)}
+.usage-analytics-card .usage-chart-legend{gap:8px 14px}
+.usage-analytics-card .usage-chart-legend i{width:8px;height:8px;border-radius:50%;box-shadow:0 0 0 3px var(--bg-soft)}
+.usage-analytics-card .uchart-lines i{border-top-style:solid;border-color:color-mix(in srgb,var(--line) 70%,transparent)}
+.usage-analytics-card .uchart-plot{gap:4px}
+.usage-analytics-card .uchart-col{border-radius:5px;transition:background .16s ease,transform .16s ease}
+.usage-analytics-card .uchart-col:hover,.usage-analytics-card .uchart-col.is-hover{background:color-mix(in srgb,var(--accent) 7%,transparent);transform:translateY(-2px)}
+.usage-analytics-card .uchart-col-fill{padding:0 2px}
+.usage-analytics-card .uchart-seg{min-height:2px;box-shadow:inset 0 1px rgba(255,255,255,.16)}
+.usage-analytics-card .uchart-seg:first-child{border-radius:0 0 4px 4px}
+.usage-analytics-card .uchart-seg:last-child{border-radius:4px 4px 0 0}
+.usage-models-section .mdist-wrap{padding:5px;border:1px solid var(--line);border-radius:12px;background:var(--bg-soft)}
+.usage-models-section .mdist{height:16px;gap:3px;border-radius:8px;background:transparent}
+.usage-models-section .mdist-seg{border-radius:5px;box-shadow:inset 0 1px rgba(255,255,255,.18)}
+.usage-models-section .mdist-seg.is-hover{transform:scaleY(1.18)}
+.usage-models-section .mdist-legend>span{padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg-soft)}
+@media(max-width:520px){
+  .usage-analytics-card .uchart-plot{gap:2px}
+  .usage-analytics-card .uchart-col-fill{padding:0 1px}
+  .usage-models-section .mdist-legend>span{padding:4px 6px}
+}
 
 /* Transactions history — grouped by day, expandable (no infinite flat list) */
 .txh{display:flex;flex-direction:column;gap:14px}
