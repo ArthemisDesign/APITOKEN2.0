@@ -177,17 +177,17 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
   const ledgerMayBePartial = ledger.length >= 100;
   const legacyOfficialNano = BigInt(usage.buckets.unattributedLegacy.officialNano);
 
-  return <section className="panel"><PageHeading eyebrow={copy.usageEyebrow} title={copy.usageTitle} subtitle={copy.usageSubtitle} />
+  return <section className="panel usage-dashboard"><PageHeading eyebrow={copy.usageEyebrow} title={copy.usageTitle} subtitle={copy.usageSubtitle} />
     <div className="banner">💡 <b>{copy.sessionSavingTitle}</b><span> {copy.sessionSavingText}</span></div>
 
-    <div className="ov-stats bill4">
+    <div className="ov-stats bill4 usage-kpis">
       <div className="ovstat"><span className="dlabel">{copy.officialValue30d}</span><b className="num accent">{formatNanoUsd(summaryOfficialNano, locale)}</b><span className="dtrend">{copy.listPriceEquivalent}</span></div>
       <Stat label={copy.charged30d} value={formatNanoUsd(summaryChargedNano, locale)} detail={copy.settledCredits} />
       <div className="ovstat"><span className="dlabel">{localPolicyCopy.yourDiscount}</span><b className="num">{accountDiscountLabel(account.markupBasisPoints, localPolicyCopy)}</b><span className="dtrend">{localPolicyCopy.offListPrice}</span></div>
       <Stat label={copy.available} value={formatNanoUsd(account.balanceNano, locale)} detail={copy.available} />
     </div>
 
-    <section className="dsec uproviders">
+    <section className="dsec uproviders usage-providers-section">
       <div className="dsec-head analytics-heading"><div><h2>{copy.usageProviders}</h2><p>{copy.usageProvidersSub}</p></div></div>
       <div className="uprovider-grid">
         {providerCards.map((card) => {
@@ -348,7 +348,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
       </>}
     </section>
 
-    <section className="dsec">
+    <section className="dsec usage-keys-section">
       <div className="dsec-head analytics-heading"><div><h2>{copy.usageByKey}</h2><p>{copy.usageByKeySub}</p></div></div>
       <div className="ubreak-sum">
         <div><span className="dlabel">{copy.keysCount}</span><b>{keyRows.length}</b></div>

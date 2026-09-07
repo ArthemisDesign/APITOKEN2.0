@@ -196,6 +196,51 @@
   .usage-models-section .mdist-legend>span{padding:4px 6px}
 }
 
+/* Reference-inspired bento treatment. Geometry stays on the existing responsive grids. */
+.usage-dashboard{--usage-card-radius:20px}
+.usage-dashboard>.page-heading h1{letter-spacing:-.055em}
+.usage-dashboard>.banner{border-radius:14px;padding:14px 18px}
+.usage-dashboard .usage-kpis{gap:12px;margin-bottom:30px}
+.usage-dashboard .usage-kpis .ovstat{min-height:138px;justify-content:flex-end;padding:22px;border-radius:var(--usage-card-radius);box-shadow:none}
+.usage-dashboard .usage-kpis .ovstat:first-child{border-color:var(--accent-line);background:var(--accent-soft)}
+.usage-dashboard .usage-kpis .num{font-size:clamp(29px,2.6vw,40px);font-weight:620;letter-spacing:-.055em}
+.usage-dashboard .usage-kpis .dlabel{margin-bottom:auto}
+.usage-dashboard .usage-providers-section{margin-top:30px}
+.usage-dashboard .usage-providers-section .uprovider-grid{gap:14px}
+.usage-dashboard .uprovider-card{min-height:220px;padding:24px;border-radius:var(--usage-card-radius);box-shadow:none;transition:transform .18s ease,border-color .18s ease}
+.usage-dashboard .uprovider-card:hover{transform:translateY(-2px);border-color:var(--accent-line)}
+.usage-dashboard .uprovider-card::before{inset:0 24px auto;height:3px;border-radius:0 0 6px 6px}
+.usage-dashboard .uprovider-stats strong{font-size:36px;font-weight:620;letter-spacing:-.055em}
+.usage-dashboard .usage-analytics-card{gap:12px;margin-top:30px}
+.usage-dashboard .usage-analytics-card .uchart,.usage-dashboard .usage-analytics-card .usum{border-radius:var(--usage-card-radius);box-shadow:none}
+.usage-dashboard .usage-analytics-card .uchart{min-height:292px;padding:24px}
+.usage-dashboard .usage-analytics-card .usum{padding:24px;background:var(--bg-card)}
+.usage-dashboard .usage-analytics-card .usum-row>b{font-size:16px}
+.usage-dashboard .usage-models-section,.usage-dashboard .usage-keys-section{margin-top:20px;padding:24px;border:1px solid var(--line);border-radius:var(--usage-card-radius);background:var(--bg-card)}
+.usage-dashboard .usage-models-section .tok-buckets{gap:10px;border:0;background:transparent;overflow:visible}
+.usage-dashboard .usage-models-section .tokb{min-height:112px;justify-content:flex-end;padding:17px;border:1px solid var(--line);border-radius:14px;background:var(--bg-soft)}
+.usage-dashboard .usage-models-section .tokb .dlabel{margin-bottom:auto}
+.usage-dashboard .usage-models-section .tokb>b{font-size:25px;letter-spacing:-.04em}
+.usage-dashboard .usage-keys-section .ubreak-sum{gap:10px;border:0;background:transparent;overflow:visible}
+.usage-dashboard .usage-keys-section .ubreak-sum>div{min-height:92px;justify-content:flex-end;padding:16px;border:1px solid var(--line);border-radius:13px;background:var(--bg-soft)}
+.usage-dashboard .usage-keys-section .ubreak-sum .dlabel{margin-bottom:auto}
+
+@media(max-width:820px){
+  .usage-dashboard .usage-kpis .ovstat{min-height:120px}
+  .usage-dashboard .uprovider-card{min-height:0}
+  .usage-dashboard .usage-models-section,.usage-dashboard .usage-keys-section{padding:20px}
+}
+@media(max-width:520px){
+  .usage-dashboard{--usage-card-radius:17px}
+  .usage-dashboard .usage-kpis{gap:9px}
+  .usage-dashboard .usage-kpis .ovstat{min-height:108px;padding:17px}
+  .usage-dashboard .usage-kpis .num{font-size:30px}
+  .usage-dashboard .uprovider-card{padding:19px}
+  .usage-dashboard .usage-analytics-card .uchart,.usage-dashboard .usage-analytics-card .usum{padding:18px}
+  .usage-dashboard .usage-models-section,.usage-dashboard .usage-keys-section{padding:17px 14px}
+  .usage-dashboard .usage-models-section .tokb{min-height:96px}
+}
+
 /* Transactions history — grouped by day, expandable (no infinite flat list) */
 .txh{display:flex;flex-direction:column;gap:14px}
 /* Long ledgers: skip rendering off-screen day groups; auto keeps the last rendered size,
