@@ -33,11 +33,11 @@ describe("user preferences", () => {
     expect(readSavedTheme(storageWith({ [LEGACY_THEME_STORAGE_KEY]: "light" }))).toBe("light");
   });
 
-  it("uses dark for invalid values and tolerates unavailable storage", () => {
-    expect(readSavedTheme(storageWith({ [THEME_STORAGE_KEY]: "system" }))).toBe("dark");
+  it("uses light for invalid values and tolerates unavailable storage", () => {
+    expect(readSavedTheme(storageWith({ [THEME_STORAGE_KEY]: "system" }))).toBe("light");
     const unavailable = { getItem: () => { throw new Error("blocked"); }, setItem: () => { throw new Error("blocked"); } };
     expect(readSavedLanguage(unavailable)).toBeNull();
-    expect(readSavedTheme(unavailable)).toBe("dark");
+    expect(readSavedTheme(unavailable)).toBe("light");
     expect(() => saveLanguage(unavailable, "ru")).not.toThrow();
     expect(() => saveTheme(unavailable, "light")).not.toThrow();
   });

@@ -46,10 +46,10 @@ describe("completed Next.js migration", () => {
 
   it("keeps persistent public and authentication shells across client navigation", () => {
     const rootLayout = readFileSync(join(appRoot, "layout.tsx"), "utf8");
+    const nextConfig = readFileSync(join(root, "..", "next.config.ts"), "utf8");
     const shell = readFileSync(join(root, "components", "persistent-route-shell.tsx"), "utf8");
     const complianceLayout = readFileSync(join(appRoot, "(compliance)", "layout.tsx"), "utf8");
     const compliance = readFileSync(join(root, "components", "compliance-pages.tsx"), "utf8");
-    const home = readFileSync(join(appRoot, "page.tsx"), "utf8");
     const marketing = readFileSync(join(root, "components", "marketing-pages.tsx"), "utf8");
     expect(rootLayout).toContain("<PersistentRouteShell>{children}</PersistentRouteShell>");
     expect(shell).toContain("<SiteHeader home={home} />");
@@ -60,8 +60,7 @@ describe("completed Next.js migration", () => {
     for (const route of ["/", "/models", "/integrations", "/plans", "/privacy", "/terms", "/support"]) expect(shell).toContain(`"${route}"`);
     for (const route of ["/login", "/register", "/forgot-password", "/reset-password", "/verify-email"]) expect(shell).toContain(`"${route}"`);
     expect(complianceLayout).toContain("<main>{children}</main>");
-    expect(home).not.toContain("<SiteHeader");
-    expect(home).not.toContain("<SiteFooter");
+    expect(nextConfig).toContain('{ source: "/", destination: "/landing/index.html" }');
     expect(marketing).not.toContain("<SiteHeader");
     expect(marketing).not.toContain("<SiteFooter");
     expect(compliance).not.toContain("<SiteHeader />");
@@ -226,7 +225,8 @@ describe("completed Next.js migration", () => {
       ...sourceFiles(join(root, "lib", "learn-core-zh")),
       join(root, "lib", "llms.ts"),
       join(root, "lib", "md-pages.ts"),
-      join(appRoot, "page.tsx"),
+      join(root, "..", "public", "landing", "index.html"),
+      join(root, "..", "public", "landing", "en.html"),
       join(appRoot, "models", "[slug]", "page.tsx"),
       join(root, "components", "cost-calculator.tsx"),
       join(root, "components", "compliance-pages.tsx"),
@@ -294,7 +294,7 @@ describe("completed Next.js migration", () => {
     expect(styles).toContain(".overview-metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}");
     expect(styles).toContain(".overview-panel{display:grid;gap:20px}");
     expect(styles).toContain(".overview-balance-card{position:relative;container-type:inline-size;display:flex;");
-    expect(styles).toContain("@media(max-width:960px){\n  .overview-primary-grid{grid-template-columns:1fr}\n  .overview-balance-card{grid-column:auto}");
+    expect(styles.replaceAll("\r\n", "\n")).toContain("@media(max-width:960px){\n  .overview-primary-grid{grid-template-columns:1fr}\n  .overview-balance-card{grid-column:auto}");
     expect(dashboard).toContain('paidBalance: "Paid balance"');
     expect(dashboard).toContain('bonusBalance: "Welcome bonus"');
     expect(dashboardCopy).toContain('platformBalance: "Available credit"');
@@ -325,15 +325,14 @@ describe("completed Next.js migration", () => {
 
   it("advertises all supported API surfaces", () => {
     const messages = readFileSync(join(root, "lib", "messages.json"), "utf8");
-    const home = readFileSync(join(appRoot, "page.tsx"), "utf8");
+    const nextConfig = readFileSync(join(root, "..", "next.config.ts"), "utf8");
     const styles = readFileSync(join(appRoot, "globals.css"), "utf8");
     expect(messages).toContain("https://router.apitoken.sale");
     expect(messages).toContain("POST /v1/chat/completions");
     expect(messages).toContain("Legacy per-provider hosts (api.apitoken.sale, openai.api.apitoken.sale/v1, gemini.api.apitoken.sale) remain supported");
     expect(messages).toContain('"f2_h": "Three native API surfaces"');
     expect(messages).toContain('"f2_h": "Три нативных формата API"');
-    expect(home).toContain('<Stat value="3" label="stat2" />');
-    expect(home).not.toContain('className="announce"');
+    expect(nextConfig).toContain('{ source: "/", destination: "/landing/index.html" }');
     expect(styles).not.toContain(".announce-");
   });
 
@@ -365,7 +364,7 @@ describe("completed Next.js migration", () => {
     for (const publicSurface of [marketing, seoModels, integrationModels, llms]) {
       expect(publicSurface).toContain("gemini-3-flash-preview");
     }
-    expect(seoModels).toContain("cachedInputPerM: 0.5,\n    outputPerM: 3,\n    imageOutputPerM: 60");
+    expect(seoModels.replaceAll("\r\n", "\n")).toContain("cachedInputPerM: 0.5,\n    outputPerM: 3,\n    imageOutputPerM: 60");
     expect(seoModels).toContain("Supports minimal, low, medium and high thinking levels");
   });
 
@@ -406,11 +405,9 @@ describe("completed Next.js migration", () => {
     expect(topup).not.toContain("editable");
     expect(styles).toContain(".prod .amt .now{font-family:var(--font-mono)");
     expect(styles).not.toContain(".hero-note{");
-    const home = readFileSync(join(appRoot, "page.tsx"), "utf8");
-    expect(home).not.toContain('k="hero_note"');
-    expect(home).toContain('k="offer_free_eyebrow"');
-    expect(home).toContain('className="offer-value-table"');
-    expect(home).toContain("−{row.discount}%");
+    const landing = readFileSync(join(root, "..", "public", "landing", "index.html"), "utf8");
+    expect(landing).toContain('<header class="hdr" id="hdr">');
+    expect(landing).toContain('<main id="main">');
     expect(animations).not.toContain(".feat:hover{");
     expect(motion).toContain("transform={`translate(${waveWidth} 0)`}");
     expect(animations).toContain("translateX(-50%)");

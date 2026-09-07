@@ -15,7 +15,10 @@ const readDir = (path: string) =>
 describe("public product truth regressions", () => {
   it("does not advertise unimplemented key-control features", () => {
     const copy = [
-      read("app/page.tsx"),
+      read("../public/landing/index.html"),
+      read("../public/landing/en.html"),
+      read("../public/landing/app.js"),
+      read("../public/landing/app-en.js"),
       read("app/changelog/page.tsx"),
       read("lib/messages.json"),
       read("lib/learn.ts"),
