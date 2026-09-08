@@ -3,6 +3,35 @@
   // Match browser chrome to the actual header, not the OS theme. In particular,
   // the notch/status area must not leave a paper or transparent strip over coral.
   if (document.documentElement.classList.contains('landing-home')) {
+    // Suppress boundary rubber-banding/pull-to-refresh on touch browsers that
+    // do not honour root overscroll-behavior. Normal scrolling, inner scrollers,
+    // horizontal gestures, form controls and pinch zoom remain native.
+    let touch = null;
+    document.addEventListener('touchstart', event => {
+      touch = event.touches.length === 1 ? {x:event.touches[0].clientX,y:event.touches[0].clientY} : null;
+    }, {passive:true});
+    document.addEventListener('touchmove', event => {
+      if (!touch || event.touches.length !== 1) { touch = null; return; }
+      const point = event.touches[0];
+      const dx = point.clientX - touch.x, dy = point.clientY - touch.y;
+      touch = {x:point.clientX,y:point.clientY};
+      if (!event.cancelable || Math.abs(dy) <= Math.abs(dx) || !dy) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('input,textarea,select,[contenteditable="true"]')) return;
+      const root = document.scrollingElement;
+      if (!root) return;
+      for (let node = target; node && node !== document.body && node !== root; node = node.parentElement) {
+        if (!/^(auto|scroll)$/.test(getComputedStyle(node).overflowY)) continue;
+        const remaining = node.scrollHeight - node.clientHeight;
+        if (remaining > 1 && (dy > 0 ? node.scrollTop > 0 : node.scrollTop < remaining - 1)) return;
+      }
+      const atTop = root.scrollTop <= 0;
+      const atBottom = root.scrollTop >= root.scrollHeight - root.clientHeight - 1;
+      if ((dy > 0 && atTop) || (dy < 0 && atBottom)) event.preventDefault();
+    }, {passive:false});
+    const clearTouch = () => { touch = null; };
+    document.addEventListener('touchend', clearTouch, {passive:true});
+    document.addEventListener('touchcancel', clearTouch, {passive:true});
     const header = document.getElementById('hdr');
     const themeColor = document.querySelector('meta[name="theme-color"]');
     const syncChrome = () => {
