@@ -61,6 +61,18 @@ a normal build instead of failing the deployment. Verify the contract with
 
 ## Visual audit
 
+The Referral workspace follows the Usage visual system: separate coral/inverted/neutral KPI cards,
+rounded provider tiles, a coral earnings chart with an inverted summary, and sentence-case headings.
+The chart palette is shared through `DASHBOARD_CHART_COLORS`; provider logos retain their brand colors.
+Referral-only presentation lives in `src/app/dashboard/sections/referral.css` and must not alter
+Usage or the partner API/commission/payout contracts. All five tabs, access states and forms remain.
+Use `scripts/test-referral-style.mjs` against a local preview-fixture build to compare surfaces with
+Usage and check all tabs at 320/390/768/1024/1440 px in EN/RU and light/dark themes. Configure
+`SITE_URL`, `PLAYWRIGHT_MODULE` and `CHROME_PATH` as described in `VISUAL_AUDIT.md`; optional `QUICK=1`
+limits the suite to desktop and phone. Results and screenshots go to `.artifacts/referral-review`
+or `AUDIT_OUTPUT`. The suite checks tab routing, search, chart keyboard tooltips, field sizing,
+and page/dialog overflow. It opens and dismisses edit dialogs without submitting changes.
+
 The complete workflow, capture matrix, fixture conventions, assertion patterns, and troubleshooting
 guide are documented in [`VISUAL_AUDIT.md`](VISUAL_AUDIT.md).
 

@@ -46,7 +46,9 @@ describe("Commerce Dashboard partner surface", () => {
     expect(source).toContain("DASHBOARD_PROVIDERS");
     expect(source).toContain('new Set(["glm", "zai", "zhipu"])');
     expect(source).toContain('className="uprovider-card"');
-    expect(source).toContain('className="usage-graph referral-earnings-graph"');
+    expect(source).toContain('className="usage-graph usage-analytics-card referral-earnings-graph"');
+    expect(source).toContain("DASHBOARD_CHART_COLORS[index % DASHBOARD_CHART_COLORS.length]");
+    expect(source).toContain('className="rp-chart-title"');
   });
 
   it("offers reviewable active and no-access states only through preview fixtures", () => {

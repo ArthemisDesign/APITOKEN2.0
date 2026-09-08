@@ -12,7 +12,7 @@ import { useI18n } from "@/components/i18n-provider";
 import type { DashboardCopy } from "@/lib/dashboard-copy";
 import { buildUtcProviderUsageSeries, usageWindowDays } from "@/lib/usage-series";
 import { modelLabel } from "@/lib/model-label";
-import { DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
+import { DASHBOARD_CHART_COLORS, DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
 import {
   NANO_PER_USD, PageHeading, Stat,
   compareBigInt, formatNanoUsd, interpolate, localDashboardCopy, roundDivide, useDashboardCopy,
@@ -120,7 +120,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
     })
     .map((id, index) => ({
       ...providerMetadata(id),
-      chartColor: USAGE_CHART_COLORS[index % USAGE_CHART_COLORS.length]!,
+      chartColor: DASHBOARD_CHART_COLORS[index % DASHBOARD_CHART_COLORS.length]!,
     }));
   const showUnattributed = series.some((point) => point.unattributed > 0n);
   const unattributedProvider = providerMetadata("unattributed");
@@ -460,13 +460,6 @@ function formatAxisNanoUsd(value: bigint, locale: string): string {
   return formatNanoUsd(value, locale, 0, 9);
 }
 
-// Brand-led chart palettes: coral is primary, ink and warm neutral steps keep dense segments distinct.
-const USAGE_CHART_COLORS = [
-  "#0c0b11",
-  "#fffaf5",
-  "#7f302c",
-  "#ffd1cc",
-] as const;
 const MODEL_COLORS = [
   "var(--accent)",
   "color-mix(in srgb,var(--accent) 72%,var(--txt))",

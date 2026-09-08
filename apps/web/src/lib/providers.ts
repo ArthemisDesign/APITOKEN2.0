@@ -76,6 +76,9 @@ export const DASHBOARD_PROVIDERS: DashboardProvider[] = [
   },
 ];
 
+/** Shared high-contrast palette for the coral Usage and Referral chart surfaces. */
+export const DASHBOARD_CHART_COLORS = ["#0c0b11", "#fffaf5", "#7f302c", "#ffd1cc"] as const;
+
 /** Авто-карточка для провайдера, которого нет в реестре (например, «other»). */
 export function fallbackProvider(id: string, name: string): DashboardProvider {
   return { id, name, api: "API provider", color: "#6f7a8a" };

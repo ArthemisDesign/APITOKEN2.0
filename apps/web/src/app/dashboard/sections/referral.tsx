@@ -12,12 +12,12 @@ import {
   type ReferralSnapshot,
   type ReferralTeamMember,
 } from "@/lib/api";
-import { DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
+import { DASHBOARD_CHART_COLORS, DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
 import { CopyButton, formatNanoUsd, interpolate, PageHeading } from "./shared";
+import "./referral.css";
 
-// The partner cabinet (partners.apitoken.sale) is the design reference for this view:
-// uppercase page/card titles, one joined stat strip, the commission formula, the referral
-// link, bullet explainers and bordered tables. Layout classes live in dashboard.css (.rp-*).
+// Partner workflows retain their own data contract; presentation follows Usage.
+// Shared structural rules live in dashboard.css, scoped visual rules in referral.css.
 const PARTNER_SITE_ORIGIN = "https://apitoken.sale";
 const TABS = ["overview", "referrals", "team", "payouts", "docs"] as const;
 type ReferralTab = typeof TABS[number];
@@ -301,7 +301,7 @@ function DisabledState({ language }: { language: Language }) {
 }
 
 // ---------------------------------------------------------------------------
-// Partner-cabinet primitives (the partners.apitoken.sale visual contract)
+// Partner-cabinet primitives
 // ---------------------------------------------------------------------------
 
 function PageTitle({ title, sub }: { title: string; sub: ReactNode }) {
@@ -320,7 +320,7 @@ function StatStrip({ items }: { items: Array<{ label: string; value: string; foo
   return <div className="rp-stats">
     {items.map((item) => <div className="rp-stat" key={item.label}>
       <div className="rp-stat-l">{item.label}</div>
-      <div className={`rp-stat-v${item.accent ? " accent" : ""}`}>{item.value}</div>
+      <b className={`rp-stat-v${item.accent ? " accent" : ""}`}>{item.value}</b>
       <div className="rp-stat-f">{item.foot}</div>
     </div>)}
   </div>;
@@ -358,25 +358,25 @@ function PartnerOverview({ snapshot, language }: { snapshot: ReferralActiveSnaps
 
     {debt > 0n && <div className="rp-note bad" style={{ marginTop: 24 }} role="alert"><strong>{text.debt}: {formatNanoUsd(snapshot.totals.debtNano, locale)}.</strong>{" "}{language === "ru" ? "Будущие начисления сначала погасят долг; внешний кошелёк автоматически не списывается." : "Future earnings repay it first; the external wallet is never debited automatically."}</div>}
 
-    <div className="rp-stack" style={{ marginTop: 24 }}>
-      <CommissionFormula commissionBps={snapshot.membership.commissionBps} language={language} />
-
-      <Card title={text.reflinkTitle} sub={text.reflinkSub}>
-        <div className="rp-reflink">
-          <input id="partner-referral-url" readOnly translate="no" value={referralUrl} aria-label={text.reflinkTitle} onFocus={(event) => event.currentTarget.select()} />
-          <CopyButton value={referralUrl} label={text.copyLink} copiedLabel={text.copiedLink} />
-        </div>
-        <p className="rp-code">{text.referralCodeLabel}: <b translate="no">{snapshot.membership.referralCode}</b></p>
-      </Card>
-
-      <Card title={text.chartTitle} sub={text.chartWindow}>
-        <EarningsChart snapshot={snapshot} language={language} />
-      </Card>
-
-      <Card title={text.providerCards} sub={text.providerCardsSub}>
+    <div className="rp-stack rp-overview-stack">
+      <section className="rp-providers-section" aria-labelledby="referral-providers-title">
+        <h2 className="rp-title" id="referral-providers-title">{text.providerCards}</h2>
+        <p className="rp-card-sub">{text.providerCardsSub}</p>
         <ProviderCards snapshot={snapshot} language={language} />
-      </Card>
+      </section>
 
+      <EarningsChart snapshot={snapshot} language={language} />
+
+      <div className="rp-overview-details">
+        <Card title={text.reflinkTitle} sub={text.reflinkSub}>
+          <div className="rp-reflink">
+            <input id="partner-referral-url" readOnly translate="no" value={referralUrl} aria-label={text.reflinkTitle} onFocus={(event) => event.currentTarget.select()} />
+            <CopyButton value={referralUrl} label={text.copyLink} copiedLabel={text.copiedLink} />
+          </div>
+          <p className="rp-code">{text.referralCodeLabel}: <b translate="no">{snapshot.membership.referralCode}</b></p>
+        </Card>
+        <CommissionFormula commissionBps={snapshot.membership.commissionBps} language={language} />
+      </div>
     </div>
   </div>;
 }
@@ -388,7 +388,7 @@ function CommissionFormula({ commissionBps, language }: { commissionBps: number;
   // Half price after a 50% client discount: the partner earns their rate on $50.
   const example = formatNanoUsd(commissionOnHundred(commissionBps) / 2n, locale);
   return <div className="rp-formula">
-    <div className="rp-formula-l">{text.formulaTitle}</div>
+    <h3 className="rp-formula-l">{text.formulaTitle}</h3>
     <div className="rp-formula-v"><span>(100% − <em>{text.formulaDiscount}</em>%)</span><span className="rp-formula-pair"><i>×</i><em>{rate}</em></span></div>
     <p className="rp-formula-b">{interpolate(text.formulaBody, { rate })}</p>
     <p className="rp-formula-x">{interpolate(text.formulaExample, { example })}</p>
@@ -441,7 +441,7 @@ function EarningsChart({ snapshot, language }: { snapshot: ReferralActiveSnapsho
   const ids = [...new Set(points.flatMap((point) => point.providers.filter((provider) => provider.earned > 0n).map((provider) => provider.id)))];
   const providerOrder = new Map(DASHBOARD_PROVIDERS.map((provider, index) => [provider.id, index]));
   ids.sort((left, right) => (providerOrder.get(left) ?? 999) - (providerOrder.get(right) ?? 999) || left.localeCompare(right));
-  const providers = ids.map(metadata);
+  const providers = ids.map((id, index) => ({ ...metadata(id), color: DASHBOARD_CHART_COLORS[index % DASHBOARD_CHART_COLORS.length]! }));
   const totals = points.map((point) => point.providers.reduce((sum, provider) => sum + provider.earned, 0n));
   const rawMax = totals.reduce((value, item) => item > value ? item : value, 0n);
   const scale = niceReferralScale(rawMax);
@@ -454,9 +454,9 @@ function EarningsChart({ snapshot, language }: { snapshot: ReferralActiveSnapsho
   const totalEvents = points.reduce((sum, point) => sum + point.providers.reduce((day, provider) => day + provider.events, 0), 0);
   const peakIndex = totals.reduce((best, value, index) => value > (totals[best] ?? 0n) ? index : best, 0);
 
-  return <div className="usage-graph referral-earnings-graph">
+  return <div className="usage-graph usage-analytics-card referral-earnings-graph">
     <div className="uchart">
-      <div className="uchart-head"><div className="uchart-head-meta"><div className="usage-chart-legend" aria-label={text.providerSummary}>{providers.map((provider) => <span key={provider.id}><i style={{ background: provider.color }} />{provider.name}</span>)}</div></div></div>
+      <div className="uchart-head"><div><h2 className="rp-chart-title">{text.chartTitle}</h2><p className="rp-chart-window">{text.chartWindow}</p></div><div className="uchart-head-meta"><div className="usage-chart-legend" aria-label={text.providerSummary}>{providers.map((provider) => <span key={provider.id}><i style={{ background: provider.color }} />{provider.name}</span>)}</div></div></div>
       {rawMax === 0n ? <div className="uchart-empty">{text.noEarnings}</div> : <div className="uchart-grid">
         <div className="uchart-yaxis">{gridTicks.map((tick, index) => <span key={index}>{formatReferralAxis(tick, locale)}</span>)}</div>
         <div className="uchart-plotwrap"><div className="uchart-lines">{gridTicks.map((_, index) => <i key={index} />)}</div>
@@ -681,7 +681,7 @@ function TeamFormula({ snapshot, language, share }: { snapshot: ReferralActiveSn
   const pool = commissionOnHundred(memberRate);
   const mine = pool * BigInt(share) / 10_000n;
   return <div className="rp-formula">
-    <div className="rp-formula-l">{text.teamFormulaTitle}</div>
+    <h3 className="rp-formula-l">{text.teamFormulaTitle}</h3>
     <div className="rp-formula-v"><em>{pct(memberRate, locale)}</em><i>×</i><em>{pct(share, locale)}</em><i>=</i><em>{pct(yours, locale)}</em></div>
     <p className="rp-formula-b">{interpolate(text.teamFormulaBody, { member: pct(memberRate, locale), share: pct(share, locale), pool: formatNanoUsd(pool, locale), mine: formatNanoUsd(mine, locale), theirs: formatNanoUsd(pool - mine, locale), max: pct(Math.min(2_000, snapshot.membership.teamOverrideMaxBps), locale) })}</p>
   </div>;
