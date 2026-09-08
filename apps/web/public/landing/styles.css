@@ -2153,12 +2153,16 @@ html.landing-home main{background:var(--bg)}
 html.landing-home:has(.hdr.small){background:var(--bg)}
 /* A real, opaque viewport-edge element gives Safari a solid sampling surface
    above the fixed grain overlay (z-index:9999), including after scrolling.
-   Keep a 6px edge even when Safari reports a zero safe-area inset. This sits
-   inside the header's empty top padding; it adds no layout space or hit target. */
+   WebKit LocalFrameView::fixedContainerEdges ignores direct background colours
+   on boxes <=10px tall (thinBorderWidth), then caches the sampled colour for
+   the same container. A 6px box therefore gets stuck on its initial coral.
+   Keep the BOX >10px tall, extending 6px above the viewport so its visible
+   portion stays max(6px, safe-area): no extra spacing or covered controls.
+   Source: https://github.com/WebKit/WebKit/blob/main/Source/WebCore/page/LocalFrameView.cpp */
 html.landing-home .landing-top-surface{
   display:none;
-  position:fixed;top:0;left:0;right:0;
-  height:max(6px,env(safe-area-inset-top));
+  position:fixed;top:-6px;left:0;right:0;
+  height:max(12px,calc(env(safe-area-inset-top) + 6px));
   background:inherit;z-index:10000;pointer-events:none;
 }
 @media(max-width:1024px){html.landing-home .landing-top-surface{display:block}}

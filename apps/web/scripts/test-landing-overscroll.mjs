@@ -80,8 +80,11 @@ try {
         assert.equal(surface.filter,'none');
         assert.equal(surface.pointer,'none');
         assert.ok(surface.z>surface.grainZ,'Opaque edge is above the translucent grain overlay');
-        assert.equal(surface.top,0);assert.equal(surface.left,0);assert.equal(surface.width,surface.viewport);
-        assert.ok(surface.height>=6,'A nonzero sampling edge remains when safe-area-inset-top is zero');
+        assert.equal(surface.top,-6);assert.equal(surface.left,0);assert.equal(surface.width,surface.viewport);
+        // WebKit's primaryBackgroundColorForRenderer rejects <=thinBorderWidth
+        // (10px) and reuses a cached sampled colour for an unchanged container.
+        assert.ok(surface.height>10,'The box must bypass WebKit\'s thin-border cached-color path');
+        assert.ok(surface.top+surface.height>=6,'The visible edge still covers Safari\'s 4px sample margin plus 2px sample thickness');
       };
       await checkEdge();
       // A header colour outside the normal palette proves this reads the actual
