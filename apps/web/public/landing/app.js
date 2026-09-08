@@ -99,8 +99,8 @@ const PROFILES = [
 ];
 
 const TUTORIALS = [
-  ['01','Начало работы','2:04'],['02','Claude Code','1:42'],['03','Cursor','2:16'],
-  ['04','Переключение моделей','1:18'],['05','Прямой API','2:35'],['06','Биллинг и расходы','1:26']
+  ['01','Начало работы','2:04','start'],['02','Claude Code','1:42','claude-code'],['03','Cursor','2:16','cursor'],
+  ['04','Переключение моделей','1:18','models'],['05','Прямой API','2:35','direct'],['06','Биллинг и расходы','1:26','billing']
 ];
 
 const FAQ = [
@@ -248,12 +248,15 @@ const observeReveals = () => $$('.reveal:not(.in)').forEach(n => io.observe(n));
 /* ---------------------------------------------------------
    VIDEO COMPONENT  (default / hover / playing / paused)
    --------------------------------------------------------- */
+const videoCleanup = new WeakMap();
 function buildVideo(host, cfg) {
+  videoCleanup.get(host)?.();
   const secs = (cfg.duration || '2:00').split(':').reduce((a, b) => a * 60 + +b, 0);
   const v = el('div', 'vid');
   v.innerHTML = `
     <div class="vid__bar"><span>${cfg.label}</span><span>${cfg.duration}</span></div>
-    <div class="vid__stage">
+    <div class="vid__stage" role="button" tabindex="0" aria-label="${cfg.label}" aria-pressed="false">
+      ${window.apiTokenVideoCover(cfg.cover || 'start', 'ru')}
       <div class="vid__poster">${(cfg.lines || []).map(l => `<span class="ln"><b>${l[0]}</b>${l[1]}</span>`).join('')}</div>
       <div class="vid__scrim"><span class="vid__play"><i></i>Смотреть · ${cfg.duration}</span></div>
     </div>
@@ -267,12 +270,14 @@ function buildVideo(host, cfg) {
 
   const stage = $('.vid__stage', v), bar = $('.vid__prog i', v), time = $('.vid__time', v), state = $('.vid__state', v);
   let t = 0, timer = null;
+  videoCleanup.set(host, () => clearInterval(timer));
 
   const fmt = s => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
   const draw = () => { bar.style.width = (t / secs * 100) + '%'; time.textContent = fmt(t) + ' / ' + cfg.duration; };
 
   function play() {
     v.classList.add('playing'); state.textContent = 'Играет';
+    stage.setAttribute('aria-pressed', 'true');
     timer = setInterval(() => {
       t += .25;
       if (t >= secs) { t = 0; pause(); state.textContent = 'Готово'; }
@@ -282,9 +287,13 @@ function buildVideo(host, cfg) {
   function pause() {
     clearInterval(timer); timer = null;
     v.classList.remove('playing');
+    stage.setAttribute('aria-pressed', 'false');
     if (t > 0) state.textContent = 'Пауза';
   }
   stage.onclick = () => timer ? pause() : play();
+  stage.onkeydown = e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); stage.click(); }
+  };
   $('.vid__prog', v).onclick = e => {
     const r = e.currentTarget.getBoundingClientRect();
     t = (e.clientX - r.left) / r.width * secs; draw();
@@ -371,7 +380,7 @@ $$('[data-count]').forEach(n => countIO.observe(n));
   });
 
   function render() {
-    buildVideo(host, { label: 'Инструкция / ' + active.name, duration: active.dur, lines: active.lines });
+    buildVideo(host, { label: 'Инструкция / ' + active.name, duration: active.dur, lines: active.lines, cover: active.id });
     steps.innerHTML = active.steps.map((s, i) => `<div><b>${String(i + 1).padStart(2, '0')}</b>${s}</div>`).join('');
   }
   render();
@@ -491,10 +500,10 @@ $$('[data-count]').forEach(n => countIO.observe(n));
 (() => {
   const lib = $('#lib');
   if (!lib) return;
-  TUTORIALS.forEach(([num, name, dur]) => {
+  TUTORIALS.forEach(([num, name, dur, cover]) => {
     const n = el('article', 'tut reveal');
     n.innerHTML = `
-      <div class="tut__thumb"><span class="tut__grid"></span></div>
+      <div class="tut__thumb">${window.apiTokenVideoCover(cover, 'ru', true)}</div>
       <div class="tut__body">
         <span class="tut__num">${num}</span><span class="tut__dur">${dur}</span>
         <span class="tut__name">${name}</span>
