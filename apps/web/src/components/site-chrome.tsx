@@ -98,6 +98,7 @@ export function SiteHeader({ home = false, compact = false }: { home?: boolean; 
 }
 
 export function ThemeToggle() {
+  const { language } = useI18n();
   const [theme, setTheme] = useState<SavedTheme>("light");
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
@@ -115,7 +116,8 @@ export function ThemeToggle() {
     else delete document.documentElement.dataset.theme;
     saveTheme(browserStorage(), theme);
   }, [mounted, theme]);
-  return <button className="theme-tgl" aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}>{theme === "dark" ? "☾" : "☀"}</button>;
+  const label = theme === "dark" ? (language === "ru" ? "Включить светлую тему" : "Switch to light theme") : (language === "ru" ? "Включить тёмную тему" : "Switch to dark theme");
+  return <button type="button" className="theme-tgl" aria-label={label} title={label} onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}><svg width="20" height="20" aria-hidden="true"><use href={`/theme-icons.svg#${theme === "dark" ? "sun" : "moon"}`} /></svg></button>;
 }
 
 export function SiteFooter({ full = false }: { full?: boolean }) {

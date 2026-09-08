@@ -470,12 +470,13 @@
 @media (max-width:1024px){
   .docs-layout{padding-left:clamp(18px,2.5vw,40px)}
   .docs-sidebar{
-    padding-top:66px;padding-bottom:max(20px,env(safe-area-inset-bottom));overflow-y:auto;
+    padding-top:calc(66px + env(safe-area-inset-top));padding-bottom:max(20px,env(safe-area-inset-bottom));overflow-y:auto;
     transform:translateX(-100%);transition:transform .25s ease;
     box-shadow:var(--shadow-l);
   }
   body.docs-nav-open .docs-sidebar{transform:none}
-  .docs-side-burger{display:inline-flex}
+  .docs-side-burger{display:inline-flex;top:calc(14px + env(safe-area-inset-top));left:max(14px,env(safe-area-inset-left))}
+  .docs-side-foot .theme-tgl{width:40px;height:40px}
   .docs-endpoints-grid{grid-template-columns:1fr}
   .docs-next-grid{grid-template-columns:1fr}
   .docs-cta{margin-top:26px}

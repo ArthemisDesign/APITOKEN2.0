@@ -93,7 +93,7 @@ function CodesTable({ entries, ui }: { entries: ResolvedApiError[]; ui: (typeof 
           {entries.map((entry) => (
             <tr key={entry.code}>
               <td>
-                <a href={`#e-${entry.code}`}>{entry.status === 0 ? "—" : entry.status}</a>
+                <a className="error-status-link" href={`#e-${entry.code}`} aria-label={entry.localeTitle}>{entry.status === 0 ? "—" : entry.status}</a>
               </td>
               <td>
                 <code>{entry.type}</code>

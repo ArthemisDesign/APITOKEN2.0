@@ -61,6 +61,16 @@ a normal build instead of failing the deployment. Verify the contract with
 
 ## Visual audit
 
+Landing, static docs and B2B navigation use equal-width language segments and the SVG symbols
+in `public/theme-icons.svg`, also used by the React site header. Do not substitute Unicode/emoji
+theme glyphs. Mobile landing headers keep a stable 68px content row plus the device safe-area inset,
+with an opaque background; the hero does not wait for the desktop entrance animation on touch devices.
+Run `scripts/test-mobile-chrome.mjs` to verify header position/scroll stability, language-thumb geometry,
+theme persistence, mobile menus and locale navigation across the six static pages in both themes.
+It is read-only and accepts `SITE_URL`, `PLAYWRIGHT_MODULE`, `CHROME_PATH`, `AUDIT_OUTPUT`, optional
+`QUICK=1` (320/390px only), and `BROWSER=webkit` when that Playwright browser is installed.
+Browser-engine emulation does not replace checking Safari's physical-device safe-area behavior.
+
 The Referral workspace follows the Usage visual system: separate coral/inverted/neutral KPI cards,
 rounded provider tiles, a coral earnings chart with an inverted summary, and sentence-case headings.
 The chart palette is shared through `DASHBOARD_CHART_COLORS`; provider logos retain their brand colors.

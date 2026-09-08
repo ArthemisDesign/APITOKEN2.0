@@ -315,26 +315,26 @@ html{background:var(--bg)}
 .hdr__acts{display:flex;align-items:center;justify-content:flex-end;gap:14px}
 /* language-independent geometry: header actions keep fixed widths so switching
    RU/EN never shifts the layout */
-.hdr__acts .lang{width:92px;flex:none}
+.hdr__acts .lang{width:94px;flex:none}
 .hdr__acts .theme-tgl{width:34px;flex:none}
 .hdr__acts .lnk{width:52px;justify-content:center;text-align:center;flex:none}
 .hdr__acts .btn{width:130px;flex:none;padding-left:0;padding-right:0}
 .lang{
-  position:relative;display:flex;align-items:center;gap:3px;
-  padding:4px;border:1px solid var(--line);border-radius:999px;
+  position:relative;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch;gap:2px;width:94px;flex:none;
+  padding:3px;border:1px solid var(--line);border-radius:999px;
   background:#fff;
 }
 /* sliding thumb — sits behind the active language and glides between RU/EN */
 .lang::before{
-  content:"";position:absolute;top:4px;bottom:4px;left:4px;width:38px;
+  content:"";position:absolute;top:3px;bottom:3px;left:3px;width:calc((100% - 8px)/2);
   border-radius:999px;background:var(--ink);
   transition:transform .32s cubic-bezier(.45,.05,.25,1);
 }
-.lang[data-active="en"]::before{transform:translateX(41px)}
+.lang[data-active="en"]::before{transform:translateX(calc(100% + 2px))}
 .lang__link{
   position:relative;z-index:1;
   display:inline-flex;align-items:center;justify-content:center;
-  min-width:38px;padding:6px 10px;border-radius:999px;
+  min-width:0;min-height:32px;padding:0;border-radius:999px;
   font-family:var(--sans);font-size:12px;font-weight:500;letter-spacing:-.01em;
   color:var(--muted);transition:color .32s cubic-bezier(.45,.05,.25,1);
 }
@@ -360,6 +360,10 @@ html{background:var(--bg)}
   border:1px solid var(--line);border-radius:8px;color:var(--fg);cursor:pointer;font-size:15px;line-height:1;
   background:transparent;transition:border-color .2s,background .2s}
 .theme-tgl:hover{border-color:var(--fg)}
+.theme-icon{display:block;width:20px;height:20px;flex:none;pointer-events:none}
+.theme-icon-dark{display:none}
+[data-theme="dark"] .theme-icon-light{display:none}
+[data-theme="dark"] .theme-icon-dark{display:block}
 /* dark theme: on the coral hero plate the toggle is dark ink; once the header
    sits on the dark page (scrolled / .small, or anywhere off the plate) it turns red */
 [data-theme="dark"] .theme-tgl,[data-theme="dark"] .theme-tgl:hover{color:var(--accent);border-color:var(--accent-line,rgba(255,106,90,.4))}
@@ -1717,9 +1721,9 @@ body{line-height:1.5}
   .hdr__acts .btn{display:none}
   .hdr__acts{gap:8px}
   .hdr__acts .theme-tgl{width:40px;height:40px;flex-basis:40px}
-  .lang{transform:none;display:flex;align-items:center;min-height:40px;padding:2px}
+  .lang{transform:none;min-height:48px}
   /* the links, not only the pill around them, must clear the 40px touch target */
-  .lang__link{min-width:34px;padding:11px 8px;font-size:11px}
+  .lang__link{min-height:40px;padding:0;font-size:11px}
   /* the wordmark is the "home" link: give it the same 40px hit box */
   .brand{padding:7px 0}
   /* flex column + justify-content: the 1px bars sit inside a 40px hit box */
@@ -2088,9 +2092,8 @@ html body,html body *,html body *::before,html body *::after,svg text{font-famil
   .hdr__acts{gap:6px}
   .brand{font-size:15px}
   .brand__mark{width:12px;height:12px}
-  /* The pill keeps its own width instead of the fixed 92px: at 320px the
-     spare 26px left the EN label off-centre inside an oversized pill. */
-  .hdr__acts .lang{width:auto}
+  /* Two equal 40px segments still fit beside the wordmark at 320px. */
+  .hdr__acts .lang{width:90px}
 }
 
 /* Mobile overlays leave the underlying document stationary and remain usable
@@ -2098,8 +2101,43 @@ html body,html body *,html body *::before,html body *::after,svg text{font-famil
 .mobile-nav-scrim{position:fixed;inset:0;z-index:55;background:rgba(12,11,17,.5);display:none}
 .mobile-nav-scrim.show{display:block}
 @media(max-width:1024px){
-  .nav.open{max-height:calc(100dvh - 84px - env(safe-area-inset-top));overflow-y:auto;overscroll-behavior:contain}
+  :root{--hdr-h:68px}
+  /* One stable header height in both scroll states. Paint the notch inset
+     with the same opaque surface; never blur a fixed mobile safe-area layer. */
+  .hdr,.hdr:not(.small),[data-theme="dark"] .hdr:not(.small){--hdr-h:68px;background:var(--bg)}
+  .hdr::before{display:none}
+  .hdr .hdr__in,.hdr.small .hdr__in{height:var(--hdr-h);padding-top:9px;padding-bottom:9px;padding-left:max(var(--margin),env(safe-area-inset-left));padding-right:max(var(--margin),env(safe-area-inset-right));border-bottom-color:var(--line)}
+  .hdr:not(.small) .brand,.hdr:not(.small) .lnk,
+  [data-theme="dark"] .hdr:not(.small) .brand,[data-theme="dark"] .hdr:not(.small) .lnk{color:var(--fg)}
+  [data-theme="dark"] .hdr:not(.small) .brand__mark{background:var(--accent)}
+  .hdr .theme-tgl,[data-theme="dark"] .hdr:not(.small) .theme-tgl{width:40px;height:40px;color:var(--fg);border-color:var(--line)}
+  .hdr .lang__link{min-height:40px}
+  .hdr .burger{width:40px;height:40px;padding:0;align-items:center;justify-content:center;flex:none}
+  .hdr .burger span{width:20px;transition:transform .2s}
+  .hdr .burger[aria-expanded="true"] span:first-child{transform:translateY(2.5px) rotate(45deg)}
+  .hdr .burger[aria-expanded="true"] span:last-child{transform:translateY(-2.5px) rotate(-45deg)}
+  .hdr:not(.small) .burger span,[data-theme="dark"] .hdr:not(.small) .burger span{background:var(--fg)}
+  /* Keep an exposed backdrop edge even in landscape, so a tap outside closes it. */
+  .nav.open{max-height:calc(100dvh - var(--hdr-h) - env(safe-area-inset-top) - 16px);overflow-y:auto;overscroll-behavior:contain;padding-bottom:max(16px,env(safe-area-inset-bottom))}
+  .hdr .nav a:not(.nav__dash){color:var(--fg);min-height:44px;display:flex;align-items:center}
+  .hdr .nav a .sw i:last-child{display:none}
+  .hdr .nav a .sw i{transform:none!important}
 }
 @media(max-width:900px){
-  .b2b-side{padding-top:66px;padding-bottom:max(20px,env(safe-area-inset-bottom));overflow-y:auto}
+  .b2b-side{padding-top:calc(66px + env(safe-area-inset-top));padding-bottom:max(20px,env(safe-area-inset-bottom));overflow-y:auto}
+  .b2b-side-burger{top:calc(14px + env(safe-area-inset-top));left:max(14px,env(safe-area-inset-left))}
+  .b2b-side__foot .theme-tgl{width:40px;height:40px}
+}
+@media(max-width:640px){
+  .hero .plate__labels{padding-bottom:12px;gap:14px}
+  .hero .plate__h{margin:24px 0}
+  .hero .plate__foot{padding-top:12px;gap:24px;align-items:stretch}
+  .hero .hero__cta{margin-top:0;width:100%}
+  .hero .plate__claim .claim__lab{color:inherit;opacity:.85;line-height:1.5;letter-spacing:.04em}
+  .hero .plate__mark{width:min(40%,160px);margin:8px auto 16px}
+}
+@media(max-width:359px){
+  .hdr .brand{font-size:14px;gap:6px;white-space:nowrap}
+  .hdr .brand sup{display:none}
+  .hdr .hdr__in{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
 }

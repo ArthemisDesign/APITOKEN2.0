@@ -110,7 +110,9 @@ function revealHeading(el, trigger) {
    3 · HERO INTRO — one timeline, runs on load
    --------------------------------------------------------- */
 const hero = $('.hero');
-if (hero) {
+// On touch screens the hero is immediately readable, including the discount
+// caption and CTAs. The desktop entrance delays those for several seconds.
+if (hero && !TOUCH) {
   const tl = gsap.timeline({ defaults: { ease: EASE } });
 
   tl.from('.plate__labels .meta', { yPercent: 120, opacity: 0, duration: .9, stagger: .08 })

@@ -13,7 +13,12 @@
     const btn = document.getElementById('themeTgl');
     const apply = (t) => {
       if (t === 'dark') root.dataset.theme = 'dark'; else delete root.dataset.theme;
-      if (btn) btn.textContent = t === 'dark' ? '☾' : '☀';
+      if (btn) {
+        const ru = document.documentElement.lang === 'ru';
+        const label = t === 'dark' ? (ru ? 'Включить светлую тему' : 'Switch to light theme') : (ru ? 'Включить тёмную тему' : 'Switch to dark theme');
+        btn.setAttribute('aria-label', label);
+        btn.title = label;
+      }
     };
     let saved = 'light';
     try { saved = localStorage.getItem(KEY) === 'dark' ? 'dark' : 'light'; } catch {}
