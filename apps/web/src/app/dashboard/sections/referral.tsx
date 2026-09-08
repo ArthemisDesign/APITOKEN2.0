@@ -516,7 +516,15 @@ function ReferralAccounts({ snapshot, language }: { snapshot: ReferralActiveSnap
       <span className="referral-ceiling-chip">{text.ceiling}: <b>{pct(snapshot.membership.b2bMaxDiscountBps, locale)}</b></span>
     </div>
     <p className="table-scroll-hint">{language === "ru" ? "Таблица прокручивается по горизонтали" : "Scroll the table horizontally"}</p>
-    <div className="table-scroll" role="region" tabIndex={0} aria-label={text.referralList}><table className="mtable referral-table referral-directory-table"><thead><tr><th>{text.email}</th><th>{text.type}</th><th className="tnum">{text.discount}</th><th className="tnum">{text.topups}</th><th className="tnum">{text.spend}</th><th className="tnum">{text.earned}</th><th>{text.businessTerms}</th></tr></thead><tbody>{snapshot.referrals.length === 0 ? <tr><td colSpan={7} className="empty-cell">{text.noReferrals}</td></tr> : rows.length === 0 ? <tr><td colSpan={7} className="empty-cell">{text.noSearchResults}</td></tr> : rows.map((item, index) => <tr key={`${item.email ?? "unknown"}-${index}`}><td><span className="referral-email" translate="no">{item.email ?? text.unknownEmail}</span><small>{text.attributed}: {date(item.attributedAt, locale)}</small></td><td><Status value={item.customerType?.toUpperCase() ?? "—"} kind={item.customerType === "b2b" ? "ok" : undefined} /></td><td className="tnum">{item.discountBps === null ? "—" : pct(item.discountBps, locale)}</td><td className="tnum">{formatNanoUsd(item.topupNano, locale)}</td><td className="tnum">{formatNanoUsd(item.spendNano, locale)}</td><td className="tnum referral-positive">{formatNanoUsd(item.netNano, locale)}{BigInt(item.adjustmentNano) !== 0n && <small>{formatNanoUsd(item.adjustmentNano, locale)} {text.adjustments.toLocaleLowerCase()}</small>}</td><td>{item.email ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => setPricing(item)}>{direct ? item.customerType === "b2b" ? text.editRates : text.makeB2b : item.customerType === "b2b" ? text.requestRates : text.requestB2b}</button> : "—"}</td></tr>)}</tbody></table></div>
+    <div className="table-scroll" role="region" tabIndex={0} aria-label={text.referralList}><table className="mtable referral-table referral-directory-table"><thead><tr><th>{text.email}</th><th>{text.type}</th><th className="tnum">{text.discount}</th><th className="tnum">{text.topups}</th><th className="tnum">{text.spend}</th><th className="tnum">{text.earned}</th><th>{text.businessTerms}</th></tr></thead><tbody>{snapshot.referrals.length === 0 ? <tr><td colSpan={7} className="empty-cell">{text.noReferrals}</td></tr> : rows.length === 0 ? <tr><td colSpan={7} className="empty-cell">{text.noSearchResults}</td></tr> : rows.map((item, index) => <tr key={`${item.email ?? "unknown"}-${index}`}>
+      <td data-label={text.email}><span className="referral-email" translate="no">{item.email ?? text.unknownEmail}</span><small>{text.attributed}: {date(item.attributedAt, locale)}</small></td>
+      <td data-label={text.type}><Status value={item.customerType?.toUpperCase() ?? "—"} kind={item.customerType === "b2b" ? "ok" : undefined} /></td>
+      <td data-label={text.discount} className="tnum">{item.discountBps === null ? "—" : pct(item.discountBps, locale)}</td>
+      <td data-label={text.topups} className="tnum">{formatNanoUsd(item.topupNano, locale)}</td>
+      <td data-label={text.spend} className="tnum">{formatNanoUsd(item.spendNano, locale)}</td>
+      <td data-label={text.earned} className="tnum referral-positive">{formatNanoUsd(item.netNano, locale)}{BigInt(item.adjustmentNano) !== 0n && <small>{formatNanoUsd(item.adjustmentNano, locale)} {text.adjustments.toLocaleLowerCase()}</small>}</td>
+      <td data-label={text.businessTerms} className="rp-mobile-action">{item.email ? <button type="button" className="btn btn-ghost btn-sm" onClick={() => setPricing(item)}>{direct ? item.customerType === "b2b" ? text.editRates : text.makeB2b : item.customerType === "b2b" ? text.requestRates : text.requestB2b}</button> : "—"}</td>
+    </tr>)}</tbody></table></div>
     {pricing && <BusinessPricingDialog row={pricing} snapshot={snapshot} language={language} onClose={() => setPricing(null)} />}
   </div>;
 }
@@ -652,13 +660,13 @@ function Team({ snapshot, language, refresh }: { snapshot: ReferralActiveSnapsho
       <Card title={text.activeMembers} sub={text.membersSub}>
         <Table label={text.activeMembers} className="team-table" head={<><th>{text.email}</th><th className="rp-num">{text.retainedShare}</th><th className="rp-num">{text.referralsCount}</th><th className="rp-num">{text.memberNet}</th><th className="rp-num">{text.myShare}</th><th>{text.b2bAccess}</th><th /></>}>
           {snapshot.team.length === 0 ? <EmptyRow span={7} title={text.noTeam} /> : snapshot.team.map((member, index) => <tr key={`${member.email ?? "unknown"}-${index}`}>
-            <td><span className="referral-email" translate="no">{member.email ?? text.unknownEmail}</span><small>{pct(member.commissionBps, locale)} {text.fixedRate.toLocaleLowerCase()}</small></td>
-            <td className="rp-num">{pct(member.overrideBps, locale)}</td>
-            <td className="rp-num">{member.referredUsers.toLocaleString(locale)}</td>
-            <td className="rp-num">{formatNanoUsd(member.theirNetNano, locale)}</td>
-            <td className="rp-num rp-earned">{formatNanoUsd(member.myOverrideNetNano, locale)}</td>
-            <td>{member.b2bEnabled && member.b2bMaxDiscountBps > 0 ? <Status value={`${language === "ru" ? "до" : "up to"} ${pct(member.b2bMaxDiscountBps, locale)}`} kind="ok" /> : <Status value={language === "ru" ? "нет" : "off"} />}</td>
-            <td><button type="button" className="btn btn-ghost btn-sm" disabled={!member.email || busy} onClick={() => setEditing(member)}>{text.edit}</button></td>
+            <td data-label={text.email}><span className="referral-email" translate="no">{member.email ?? text.unknownEmail}</span><small>{pct(member.commissionBps, locale)} {text.fixedRate.toLocaleLowerCase()}</small></td>
+            <td data-label={text.retainedShare} className="rp-num">{pct(member.overrideBps, locale)}</td>
+            <td data-label={text.referralsCount} className="rp-num">{member.referredUsers.toLocaleString(locale)}</td>
+            <td data-label={text.memberNet} className="rp-num">{formatNanoUsd(member.theirNetNano, locale)}</td>
+            <td data-label={text.myShare} className="rp-num rp-earned">{formatNanoUsd(member.myOverrideNetNano, locale)}</td>
+            <td data-label={text.b2bAccess}>{member.b2bEnabled && member.b2bMaxDiscountBps > 0 ? <Status value={`${language === "ru" ? "до" : "up to"} ${pct(member.b2bMaxDiscountBps, locale)}`} kind="ok" /> : <Status value={language === "ru" ? "нет" : "off"} />}</td>
+            <td className="rp-mobile-action"><button type="button" className="btn btn-ghost btn-sm" disabled={!member.email || busy} onClick={() => setEditing(member)}>{text.edit}</button></td>
           </tr>)}
         </Table>
       </Card>
@@ -821,10 +829,10 @@ function Payouts({ snapshot, language, refresh }: { snapshot: ReferralActiveSnap
       <Card title={text.payments} sub={text.paymentsSub}>
         <Table label={text.payments} head={<><th>{text.created}</th><th className="rp-num">{text.amount}</th><th>{text.status}</th><th>{text.tx}</th></>}>
           {snapshot.payouts.length === 0 ? <EmptyRow span={4} title={text.noPayouts} /> : snapshot.payouts.map((payout) => <tr key={payout.id}>
-            <td>{date(payout.paidAt ?? payout.requestedAt, locale)}</td>
-            <td className="rp-num rp-earned">{formatNanoUsd(payout.amountNano, locale)}</td>
-            <td><Status value={payoutStatusLabel(payout.status, language)} kind={payout.status === "paid" ? "ok" : payout.status === "rejected" ? "bad" : "warn"} /></td>
-            <td><span className="referral-email referral-tx" title={payout.txHash ?? undefined} translate="no">{payout.txHash ? `${payout.txHash.slice(0, 12)}…` : "—"}</span></td>
+            <td data-label={text.created}>{date(payout.paidAt ?? payout.requestedAt, locale)}</td>
+            <td data-label={text.amount} className="rp-num rp-earned">{formatNanoUsd(payout.amountNano, locale)}</td>
+            <td data-label={text.status}><Status value={payoutStatusLabel(payout.status, language)} kind={payout.status === "paid" ? "ok" : payout.status === "rejected" ? "bad" : "warn"} /></td>
+            <td data-label={text.tx} className="rp-mobile-wide"><span className="referral-email referral-tx" title={payout.txHash ?? undefined} translate="no">{payout.txHash ? `${payout.txHash.slice(0, 12)}…` : "—"}</span></td>
           </tr>)}
         </Table>
       </Card>
@@ -840,12 +848,12 @@ function Payouts({ snapshot, language, refresh }: { snapshot: ReferralActiveSnap
       <Card title={text.periodHistory} sub={text.periodHistorySub}>
         <Table label={text.periodHistory} head={<><th>{text.currentPeriod}</th><th>{text.phase}</th><th>{text.payoutDate}</th><th className="rp-num">{text.earned}</th><th className="rp-num">{text.adjustments}</th><th className="rp-num">{text.net}</th></>}>
           {snapshot.periodHistory.length === 0 ? <EmptyRow span={6} title={text.noEarnings} /> : snapshot.periodHistory.map((period) => <tr key={`${period.key}-${period.index}`}>
-            <td>{period.key} · {period.index}/2</td>
-            <td><Status value={periodPhaseLabel(period.phase, language)} /></td>
-            <td>{date(period.payoutDate, locale)}</td>
-            <td className="rp-num">{formatNanoUsd(period.earnedNano, locale)}</td>
-            <td className="rp-num">{formatNanoUsd(period.adjustmentNano, locale)}</td>
-            <td className="rp-num rp-earned">{formatNanoUsd(period.netNano, locale)}</td>
+            <td data-label={text.currentPeriod}>{period.key} · {period.index}/2</td>
+            <td data-label={text.phase}><Status value={periodPhaseLabel(period.phase, language)} /></td>
+            <td data-label={text.payoutDate}>{date(period.payoutDate, locale)}</td>
+            <td data-label={text.earned} className="rp-num">{formatNanoUsd(period.earnedNano, locale)}</td>
+            <td data-label={text.adjustments} className="rp-num">{formatNanoUsd(period.adjustmentNano, locale)}</td>
+            <td data-label={text.net} className="rp-num rp-earned">{formatNanoUsd(period.netNano, locale)}</td>
           </tr>)}
         </Table>
       </Card>
@@ -920,7 +928,7 @@ function PartnerDocs({ snapshot, language }: { snapshot: ReferralActiveSnapshot;
 
   return <div className="referral-tab-panel">
     <PageTitle title={text.docsTitle} sub={text.docsSub} />
-    <div className="rp-stack">
+    <div className="rp-stack rp-docs-stack">
       {sections.map((section) => <Card key={section.title} title={section.title}>
         {section.intro && <div style={{ marginBottom: 16 }}>{section.intro}</div>}
         <ul className="rp-how">{section.body.map((item, position) => <li key={position}>{item}</li>)}</ul>

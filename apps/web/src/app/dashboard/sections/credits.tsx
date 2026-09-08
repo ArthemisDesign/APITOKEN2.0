@@ -180,9 +180,9 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
           <thead><tr><th scope="col">{copy.date}</th><th scope="col" className="tnum">{policyCopy.creditAmount}</th><th scope="col">{copy.reference}</th></tr></thead>
           <tbody>{topups.length === 0 ? <tr><td colSpan={3} className="empty-cell">{copy.noTopups}</td></tr> : topups.map((entry) => {
             return <tr key={entry.id}>
-              <td data-label={copy.date}>{formatLedgerTime(entry.timestamp, language)}</td>
-              <td className="tnum" data-label={policyCopy.creditAmount}>{formatNanoUsd(entry.amountNano, locale)}</td>
-              <td data-label={copy.reference}>{entry.reference ?? "—"}</td>
+              <td data-label={copy.date}><span className="topup-history-value">{formatLedgerTime(entry.timestamp, language)}</span></td>
+              <td className="tnum" data-label={policyCopy.creditAmount}><span className="topup-history-value">{formatNanoUsd(entry.amountNano, locale)}</span></td>
+              <td data-label={copy.reference}><span className="topup-history-value">{entry.reference ?? "—"}</span></td>
             </tr>;
           })}</tbody>
         </table></div>

@@ -101,7 +101,8 @@
   .app .rp .referral-subnav{grid-template-columns:repeat(3,minmax(0,1fr));gap:4px}
   .app .rp .referral-subnav button{padding:10px 6px;font-size:12px}
   .app .rp .rp-stats,.app .rp .uprovider-grid{grid-template-columns:1fr}
-  .app .rp .rp-stat{min-height:156px;padding:16px}
+  .app .rp .rp-stat{grid-template-rows:auto auto auto;min-height:0;gap:8px;padding:16px}
+  .app .rp .rp-stat-l{min-height:0}
   .app .rp .rp-stat-v{font-size:26px}
   .app .rp .rp-card,.app .rp .rp-formula{padding:20px 16px}
   .app .rp .uprovider-card{min-height:0;padding:19px}
@@ -109,6 +110,30 @@
   .app .rp .referral-earnings-graph .uchart{min-height:290px}
   .app .rp .rp-overview-stack{gap:24px}
   .app .rp .rp-overview-details .rp-reflink input{flex:none;min-height:44px}
+  .app .rp .rp-reflink .btn{width:100%;min-height:44px;justify-content:center}
+  .app .rp .rp-wallet{align-items:stretch;padding:14px;gap:14px}
+  .app .rp .rp-wallet-id,.app .rp .rp-wallet-actions{width:100%}
+  .app .rp .rp-wallet-addr{white-space:normal;overflow-wrap:anywhere}
+  .app .rp .rp-wallet-actions{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
+  .app .rp .rp-wallet-actions .btn{width:100%;min-height:44px;justify-content:center}
+  .app .rp .rp-wallet-edit .btn{min-height:44px;padding-block:10px;justify-content:center}
+  .app .rp .rp-docs-stack .rp-formula{padding:16px 0;border-radius:0;box-shadow:none;background:transparent}
+  .app .rp .rp-formula-l{font-size:20px;line-height:1.35}
+  .app .rp .rp-note{padding:14px 16px}
+  /* Partner lists become labelled records on phones, not cropped desktop tables. */
+  .app .rp .table-scroll-hint{display:none}
+  .app .rp .rp-table-wrap,.app .rp .referral-tab-panel>.table-scroll{border:0;background:transparent;box-shadow:none;-webkit-mask-image:none;mask-image:none}
+  .app .rp :is(.rp-table,.referral-directory-table){display:block;width:100%;min-width:0}
+  .app .rp :is(.rp-table,.referral-directory-table) thead{display:none}
+  .app .rp :is(.rp-table,.referral-directory-table) tbody{display:grid;gap:12px}
+  .app .rp :is(.rp-table,.referral-directory-table) tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 16px;padding:16px;border:1px solid var(--line);border-radius:16px;background:var(--bg-card)}
+  .app .rp :is(.rp-table,.referral-directory-table) td{display:flex;min-width:0;flex-direction:column;align-items:flex-start;gap:5px;padding:0;border:0;text-align:left;white-space:normal;overflow-wrap:anywhere}
+  .app .rp :is(.rp-table,.referral-directory-table) td[data-label]::before{content:attr(data-label);color:var(--txt-3);font-size:11px;line-height:1.4;font-weight:400}
+  .app .rp :is(.rp-table,.referral-directory-table) :is(td:first-child,td[colspan],.rp-mobile-action,.rp-mobile-wide){grid-column:1/-1}
+  .app .rp :is(.rp-table,.referral-directory-table) .referral-email{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+  .app .rp :is(.rp-table,.referral-directory-table) td small{max-width:100%;margin:0;white-space:normal;overflow-wrap:anywhere;font-size:11px}
+  .app .rp .rp-mobile-action .btn{width:100%;min-height:44px;justify-content:center}
+  .app .rp :is(.rp-table,.referral-directory-table) .referral-status{max-width:100%;white-space:normal}
 }
 @media(max-width:520px){
   .app .rp .rp-stats{gap:9px}
