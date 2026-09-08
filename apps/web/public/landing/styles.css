@@ -2151,6 +2151,17 @@ html.landing-home{background:var(--accent);overscroll-behavior-y:none}
 html.landing-home body{background:inherit;overscroll-behavior-y:none}
 html.landing-home main{background:var(--bg)}
 html.landing-home:has(.hdr.small){background:var(--bg)}
+/* A real, opaque viewport-edge element gives Safari a solid sampling surface
+   above the fixed grain overlay (z-index:9999), including after scrolling.
+   Keep a 6px edge even when Safari reports a zero safe-area inset. This sits
+   inside the header's empty top padding; it adds no layout space or hit target. */
+html.landing-home .landing-top-surface{
+  display:none;
+  position:fixed;top:0;left:0;right:0;
+  height:max(6px,env(safe-area-inset-top));
+  background:inherit;z-index:10000;pointer-events:none;
+}
+@media(max-width:1024px){html.landing-home .landing-top-surface{display:block}}
 html.landing-home .hdr{background:var(--bg)}
 html.landing-home .hdr::before{display:none}
 /* Safari can expose space above a fixed bar while its browser controls move.

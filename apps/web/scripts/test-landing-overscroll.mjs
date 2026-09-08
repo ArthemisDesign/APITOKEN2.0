@@ -52,7 +52,7 @@ try {
     if(cssSupported){assert.equal(rootPolicy,'none');assert.equal(bodyPolicy,'none')}
     assert.deepEqual(gestures,{topOut:true,topIn:false,horizontal:false,pinch:false,
       middleDown:false,middleUp:false,bottomOut:true,bottomIn:false,innerDown:false,innerUp:false,innerAtTop:true,form:false});
-    for(const scrolled of [false,true]) {
+    for(const scrolled of [false,true,false]) {
       await page.evaluate(scrolled=>scrollTo({top:scrolled?300:0,behavior:'instant'}),scrolled);
       await page.waitForTimeout(100);
       const paint=await page.locator('.hdr').evaluate(el=>{
@@ -62,6 +62,31 @@ try {
       assert.equal(paint.extension,paint.bar);
       assert.ok(paint.height>=paint.viewport-1,'Extension covers one viewport, allowing subpixel rounding');
       assert.equal(paint.pointer,'none');
+      const edge=page.locator('.landing-top-surface');
+      const checkEdge=async()=>{
+        const surface=await edge.evaluate(el=>{
+          const style=getComputedStyle(el),box=el.getBoundingClientRect();
+          return {color:style.backgroundColor,header:getComputedStyle(document.querySelector('.hdr')).backgroundColor,
+            position:style.position,opacity:style.opacity,filter:style.backdropFilter||style.webkitBackdropFilter,
+            pointer:style.pointerEvents,z:Number(style.zIndex),grainZ:Number(getComputedStyle(document.body,'::before').zIndex),
+            top:box.top,left:box.left,width:box.width,height:box.height,viewport:innerWidth};
+        });
+        assert.equal(surface.color,surface.header,'Top edge follows the current header, not the content scrolling underneath');
+        assert.equal(surface.position,'fixed');
+        assert.equal(surface.opacity,'1');
+        assert.equal(surface.filter,'none');
+        assert.equal(surface.pointer,'none');
+        assert.ok(surface.z>surface.grainZ,'Opaque edge is above the translucent grain overlay');
+        assert.equal(surface.top,0);assert.equal(surface.left,0);assert.equal(surface.width,surface.viewport);
+        assert.ok(surface.height>=6,'A nonzero sampling edge remains when safe-area-inset-top is zero');
+      };
+      await checkEdge();
+      // Theme switches while scrolled must recolour the edge immediately too.
+      await page.evaluate(()=>document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark');
+      await checkEdge();
+      await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+      await checkEdge();
+      assert.equal(await edge.getAttribute('aria-hidden'),'true');
       // Expose 44px above the header to inspect its extension inside the screenshot.
       await page.locator('.hdr').evaluate(el=>el.style.transform='translateY(44px)');
       if(width===390&&lang==='en')await page.screenshot({path:`${output}/${theme}-${scrolled?'scrolled':'top'}-exposed.png`});
