@@ -4,6 +4,7 @@ export type SavedTheme = "light" | "dark";
 export const LANGUAGE_STORAGE_KEY = "lang:v1";
 export const THEME_STORAGE_KEY = "theme:v1";
 export const LEGACY_THEME_STORAGE_KEY = "theme";
+export const LANDING_THEME_STORAGE_KEY = "apitoken-theme";
 
 type ReadableStorage = Pick<Storage, "getItem">;
 type WritableStorage = Pick<Storage, "setItem">;
@@ -35,7 +36,7 @@ export function saveLanguage(storage: WritableStorage | null, language: SavedLan
 
 export function readSavedTheme(storage: ReadableStorage | null): SavedTheme {
   try {
-    const saved = storage?.getItem(THEME_STORAGE_KEY) ?? storage?.getItem(LEGACY_THEME_STORAGE_KEY);
+    const saved = storage?.getItem(THEME_STORAGE_KEY) ?? storage?.getItem(LANDING_THEME_STORAGE_KEY) ?? storage?.getItem(LEGACY_THEME_STORAGE_KEY);
     return saved === "dark" ? "dark" : "light";
   } catch {
     return "light";
@@ -45,9 +46,10 @@ export function readSavedTheme(storage: ReadableStorage | null): SavedTheme {
 export function saveTheme(storage: WritableStorage | null, theme: SavedTheme): void {
   try {
     storage?.setItem(THEME_STORAGE_KEY, theme);
+    storage?.setItem(LANDING_THEME_STORAGE_KEY, theme);
   } catch {
     // Browser storage may be unavailable; the selected theme still applies for this page.
   }
 }
 
-export const themeBootstrapScript = `(()=>{try{const s=localStorage.getItem('${THEME_STORAGE_KEY}')??localStorage.getItem('${LEGACY_THEME_STORAGE_KEY}');const t=s==='dark'?'dark':'light';if(t==='dark')document.documentElement.dataset.theme='dark';else delete document.documentElement.dataset.theme}catch{delete document.documentElement.dataset.theme}})()`;
+export const themeBootstrapScript = `(()=>{try{const s=localStorage.getItem('${THEME_STORAGE_KEY}')??localStorage.getItem('${LANDING_THEME_STORAGE_KEY}')??localStorage.getItem('${LEGACY_THEME_STORAGE_KEY}');const t=s==='dark'?'dark':'light';if(t==='dark')document.documentElement.dataset.theme='dark';else delete document.documentElement.dataset.theme}catch{delete document.documentElement.dataset.theme}})()`;

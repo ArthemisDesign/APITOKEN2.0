@@ -8,7 +8,7 @@ const engine = process.env.BROWSER || 'chromium';
 const origin = process.env.SITE_URL || 'http://localhost:3036';
 const output = process.env.AUDIT_OUTPUT || '.artifacts/mobile-chrome';
 const widths = process.env.QUICK ? [320,390] : [320,390,768,844,1440];
-const routes = ['index.html','en.html','docs.html','docs-en.html','b2b.html','b2b-en.html'];
+const routes = process.env.THEME_ONLY ? [] : ['index.html','en.html','docs.html','docs-en.html','b2b.html','b2b-en.html'];
 fs.mkdirSync(output, {recursive:true});
 const browser = await playwright[engine].launch({headless:true, ...(engine === 'chromium' && process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {})});
 const results = [];
@@ -40,11 +40,13 @@ try {
       }
       const toggle = page.locator('#themeTgl');
       await toggle.scrollIntoViewIfNeeded();
-      assert.equal((await toggle.textContent()).trim(),'','Theme control must not use text/emoji icons');
-      assert.equal(await toggle.locator('svg:visible').count(),1,'Exactly one vector theme icon is visible');
+      const symbol = () => toggle.locator('.theme-icon:visible');
+      assert.equal(await symbol().count(),1,'Exactly one desktop theme symbol is visible');
+      assert.equal(await symbol().textContent(),theme==='dark'?'\u263E\uFE0E':'\u2600\uFE0E','Icon indicates the current theme with forced text presentation');
       await toggle.click();
       await page.waitForTimeout(350);
       assert.equal(await page.evaluate(() => document.documentElement.dataset.theme || 'light'),theme==='dark'?'light':'dark');
+      assert.equal(await symbol().textContent(),theme==='dark'?'\u2600\uFE0E':'\u263E\uFE0E','Icon follows the new current theme after a click');
       await toggle.click();
       await page.waitForTimeout(350);
       const geometry = await page.locator('.lang').evaluate(el => {
@@ -82,6 +84,52 @@ try {
       await page.screenshot({path:`${output}/FAIL-${file}-${width}-${theme}.png`});
       results.push({file,width,theme,error:error.message});
       console.error(`FAIL ${file} ${width}px ${theme}: ${error.message}`);
+    } finally { await page.close(); }
+  }
+  // Shared app/landing preference and symbol mapping must survive navigation,
+  // reloads, a stale legacy landing value, and desktop/mobile breakpoints.
+  for (const width of [320,390,1440]) for (const initial of ['light','dark']) {
+    const page = await browser.newPage({viewport:{width,height:900},isMobile:width<1025,hasTouch:width<1025});
+    await page.addInitScript(initial => {
+      if(window.top!==window || sessionStorage.getItem('theme-parity-init'))return;
+      sessionStorage.setItem('theme-parity-init','1');
+      localStorage.setItem('lang:v1','en');
+      localStorage.setItem('theme:v1',initial);
+      localStorage.setItem('apitoken-theme',initial==='dark'?'light':'dark');
+    }, initial);
+    const check = async theme => {
+      await page.waitForFunction(theme=>(document.documentElement.dataset.theme||'light')===theme,theme);
+      const icon=page.locator('.theme-symbol,.theme-icon:visible');
+      await page.waitForFunction(({theme}) => {
+        const icon=document.querySelector('.theme-symbol') || [...document.querySelectorAll('.theme-icon')].find(el=>getComputedStyle(el).display!=='none');
+        return icon?.textContent===(theme==='dark'?'\u263E\uFE0E':'\u2600\uFE0E');
+      }, {theme});
+      assert.equal(await icon.textContent(),theme==='dark'?'\u263E\uFE0E':'\u2600\uFE0E');
+    };
+    try {
+      await page.goto(`${origin}/landing/en.html`);
+      await check(initial);
+      await page.goto(`${origin}/models`);
+      await check(initial);
+      await page.locator('.theme-tgl').click();
+      const next=initial==='dark'?'light':'dark';
+      await check(next);
+      await page.goto(`${origin}/landing/en.html`);
+      await check(next);
+      await page.reload();
+      await check(next);
+      await page.goto(`${origin}/dashboard`);
+      if(width<1025)await page.locator('.app-burger').click();
+      await check(next);
+      await page.locator('.theme-tgl').click();
+      await check(initial);
+      await page.goto(`${origin}/landing/en.html`);
+      await check(initial);
+      results.push({file:'cross-page-theme',width,theme:initial,ok:true});
+      console.log(`PASS ${engine} cross-page theme ${width}px ${initial}`);
+    } catch(error) {
+      results.push({file:'cross-page-theme',width,theme:initial,error:error.message});
+      console.error(error.message);
     } finally { await page.close(); }
   }
 } finally {

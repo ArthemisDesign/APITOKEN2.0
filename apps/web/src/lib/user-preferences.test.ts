@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   LANGUAGE_STORAGE_KEY,
+  LANDING_THEME_STORAGE_KEY,
   LEGACY_THEME_STORAGE_KEY,
   THEME_STORAGE_KEY,
   readSavedLanguage,
@@ -40,5 +41,14 @@ describe("user preferences", () => {
     expect(readSavedTheme(unavailable)).toBe("light");
     expect(() => saveLanguage(unavailable, "ru")).not.toThrow();
     expect(() => saveTheme(unavailable, "light")).not.toThrow();
+  });
+
+  it("keeps the landing and app theme in sync with the versioned key as authority", () => {
+    expect(readSavedTheme(storageWith({ [LANDING_THEME_STORAGE_KEY]: "dark" }))).toBe("dark");
+    const storage = storageWith({ [THEME_STORAGE_KEY]: "light", [LANDING_THEME_STORAGE_KEY]: "dark" });
+    expect(readSavedTheme(storage)).toBe("light");
+    saveTheme(storage, "dark");
+    expect(storage.setItem).toHaveBeenCalledWith(THEME_STORAGE_KEY, "dark");
+    expect(storage.setItem).toHaveBeenCalledWith(LANDING_THEME_STORAGE_KEY, "dark");
   });
 });

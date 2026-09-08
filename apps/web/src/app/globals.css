@@ -585,6 +585,7 @@ footer{padding:64px 0 40px;border-bottom:0}
   cursor:pointer;transition:.15s;font-size:15px;line-height:1}
 .theme-tgl:hover{border-color:var(--accent);color:var(--accent-ink)}
 .theme-tgl:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.theme-symbol{font-variant-emoji:text;pointer-events:none}
 .error-status-link{display:inline-flex;min-width:40px;min-height:40px;align-items:center;justify-content:center}
 
 /* light-theme card polish */

@@ -61,14 +61,19 @@ a normal build instead of failing the deployment. Verify the contract with
 
 ## Visual audit
 
-Landing, static docs and B2B navigation use equal-width language segments and the SVG symbols
-in `public/theme-icons.svg`, also used by the React site header. Do not substitute Unicode/emoji
-theme glyphs. Mobile landing headers keep a stable 68px content row plus the device safe-area inset,
+Landing, static docs and B2B navigation use equal-width language segments. Theme controls retain the
+original desktop symbols on every viewport: sun means the current light theme, moon means the current
+dark theme. U+FE0E and `font-variant-emoji:text` enforce monochrome text presentation on phones;
+do not replace these with a separate mobile icon set or invert their state mapping. Accessible labels
+describe the action. `theme:v1` is authoritative across app and landing, with `apitoken-theme` mirrored
+for existing pages. Mobile landing headers keep a stable 68px content row plus the device safe-area inset,
 with an opaque background; the hero does not wait for the desktop entrance animation on touch devices.
 Run `scripts/test-mobile-chrome.mjs` to verify header position/scroll stability, language-thumb geometry,
 theme persistence, mobile menus and locale navigation across the six static pages in both themes.
 It is read-only and accepts `SITE_URL`, `PLAYWRIGHT_MODULE`, `CHROME_PATH`, `AUDIT_OUTPUT`, optional
 `QUICK=1` (320/390px only), and `BROWSER=webkit` when that Playwright browser is installed.
+The cross-page theme checks always cover 320/390/1440px, stale landing storage, toggling in the app,
+return navigation and reloads; `THEME_ONLY=1` selects just those checks. Dashboard checks need preview fixtures.
 Browser-engine emulation does not replace checking Safari's physical-device safe-area behavior.
 
 The Referral workspace follows the Usage visual system: separate coral/inverted/neutral KPI cards,

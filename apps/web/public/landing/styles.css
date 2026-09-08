@@ -360,7 +360,7 @@ html{background:var(--bg)}
   border:1px solid var(--line);border-radius:8px;color:var(--fg);cursor:pointer;font-size:15px;line-height:1;
   background:transparent;transition:border-color .2s,background .2s}
 .theme-tgl:hover{border-color:var(--fg)}
-.theme-icon{display:block;width:20px;height:20px;flex:none;pointer-events:none}
+.theme-icon{display:block;flex:none;pointer-events:none;font-variant-emoji:text}
 .theme-icon-dark{display:none}
 [data-theme="dark"] .theme-icon-light{display:none}
 [data-theme="dark"] .theme-icon-dark{display:block}

@@ -102,7 +102,7 @@ export function ThemeToggle() {
   const [theme, setTheme] = useState<SavedTheme>("light");
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
-    // Тема по умолчанию — тёмная; светлая только если пользователь её явно сохранил.
+    // Read the same saved preference as the static landing bootstrap.
     const saved = readSavedTheme(browserStorage());
     const timer = window.setTimeout(() => {
       setTheme(saved);
@@ -117,7 +117,7 @@ export function ThemeToggle() {
     saveTheme(browserStorage(), theme);
   }, [mounted, theme]);
   const label = theme === "dark" ? (language === "ru" ? "Включить светлую тему" : "Switch to light theme") : (language === "ru" ? "Включить тёмную тему" : "Switch to dark theme");
-  return <button type="button" className="theme-tgl" aria-label={label} title={label} onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}><svg width="20" height="20" aria-hidden="true"><use href={`/theme-icons.svg#${theme === "dark" ? "sun" : "moon"}`} /></svg></button>;
+  return <button type="button" className="theme-tgl" aria-label={label} title={label} onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}><span className="theme-symbol" aria-hidden="true">{theme === "dark" ? "\u263E\uFE0E" : "\u2600\uFE0E"}</span></button>;
 }
 
 export function SiteFooter({ full = false }: { full?: boolean }) {

@@ -21,7 +21,7 @@
       }
     };
     let saved = 'light';
-    try { saved = localStorage.getItem(KEY) === 'dark' ? 'dark' : 'light'; } catch {}
+    try { saved = (localStorage.getItem(DASH_KEY) || localStorage.getItem(KEY)) === 'dark' ? 'dark' : 'light'; } catch {}
     apply(saved);
     if (btn) btn.addEventListener('click', () => {
       saved = root.dataset.theme === 'dark' ? 'light' : 'dark';
