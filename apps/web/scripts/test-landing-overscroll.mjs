@@ -67,11 +67,14 @@ try {
         const surface=await edge.evaluate(el=>{
           const style=getComputedStyle(el),box=el.getBoundingClientRect();
           return {color:style.backgroundColor,header:getComputedStyle(document.querySelector('.hdr')).backgroundColor,
+            root:getComputedStyle(document.documentElement).backgroundColor,body:getComputedStyle(document.body).backgroundColor,
+            meta:document.querySelector('meta[name="theme-color"]').content,
             position:style.position,opacity:style.opacity,filter:style.backdropFilter||style.webkitBackdropFilter,
             pointer:style.pointerEvents,z:Number(style.zIndex),grainZ:Number(getComputedStyle(document.body,'::before').zIndex),
             top:box.top,left:box.left,width:box.width,height:box.height,viewport:innerWidth};
         });
         assert.equal(surface.color,surface.header,'Top edge follows the current header, not the content scrolling underneath');
+        assert.equal(surface.root,surface.header);assert.equal(surface.body,surface.header);assert.equal(surface.meta,surface.header);
         assert.equal(surface.position,'fixed');
         assert.equal(surface.opacity,'1');
         assert.equal(surface.filter,'none');
@@ -80,6 +83,12 @@ try {
         assert.equal(surface.top,0);assert.equal(surface.left,0);assert.equal(surface.width,surface.viewport);
         assert.ok(surface.height>=6,'A nonzero sampling edge remains when safe-area-inset-top is zero');
       };
+      await checkEdge();
+      // A header colour outside the normal palette proves this reads the actual
+      // header instead of independently guessing from scroll position/theme.
+      await page.locator('.hdr').evaluate(el=>el.style.backgroundColor='rgb(38, 72, 106)');
+      await checkEdge();
+      await page.locator('.hdr').evaluate(el=>el.style.removeProperty('background-color'));
       await checkEdge();
       // Theme switches while scrolled must recolour the edge immediately too.
       await page.evaluate(()=>document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark');

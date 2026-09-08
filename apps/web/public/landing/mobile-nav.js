@@ -34,13 +34,23 @@
     document.addEventListener('touchcancel', clearTouch, {passive:true});
     const header = document.getElementById('hdr');
     const themeColor = document.querySelector('meta[name="theme-color"]');
+    const chromeSurfaces = [document.documentElement, document.body, document.querySelector('.landing-top-surface')].filter(Boolean);
     const syncChrome = () => {
-      if (header && themeColor) themeColor.content = getComputedStyle(header).backgroundColor;
+      if (!header) return;
+      // The rendered header is the single colour source for every top surface.
+      // CSS inheritance remains the initial/no-JS fallback, not a separate
+      // scroll/theme decision that can drift from the actual header.
+      const color = getComputedStyle(header).backgroundColor;
+      for (const surface of chromeSurfaces) {
+        if (surface.style.backgroundColor !== color) surface.style.backgroundColor = color;
+      }
+      if (themeColor) themeColor.content = color;
     };
     if (header) {
-      new MutationObserver(syncChrome).observe(header, {attributes:true,attributeFilter:['class']});
+      new MutationObserver(syncChrome).observe(header, {attributes:true,attributeFilter:['class','style']});
       new MutationObserver(syncChrome).observe(document.documentElement, {attributes:true,attributeFilter:['data-theme']});
       addEventListener('pageshow', syncChrome);
+      addEventListener('resize', syncChrome, {passive:true});
       syncChrome();
     }
   }
