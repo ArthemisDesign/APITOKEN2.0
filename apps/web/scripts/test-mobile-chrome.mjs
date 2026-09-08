@@ -32,12 +32,17 @@ try {
             const header=document.querySelector('.hdr'), hero=document.querySelector('.plate');
             return {header:getComputedStyle(header).backgroundColor,hero:getComputedStyle(hero).backgroundColor,
               canvas:getComputedStyle(document.documentElement).backgroundColor,
+              body:getComputedStyle(document.body).backgroundColor,
+              content:getComputedStyle(document.querySelector('main')).backgroundColor,
+              expectedContent:document.documentElement.dataset.theme==='dark'?'rgb(12, 11, 17)':'rgb(244, 243, 239)',
               meta:document.querySelector('meta[name="theme-color"]').content,
               top:hero.getBoundingClientRect().top,blur:getComputedStyle(header,'::before').display};
           });
           assert.equal(surface.top,0,'Hero starts at the viewport top, behind the header');
           assert.equal(surface.header,surface.hero,'Header must be the same solid coral as the hero');
           assert.equal(surface.canvas,surface.hero,'Safe-area canvas must match the hero');
+          assert.equal(surface.body,surface.header,'Body background used by browser chrome must match the header');
+          assert.equal(surface.content,surface.expectedContent,'Content keeps its own paper/ink surface');
           assert.equal(surface.meta,surface.hero,'Browser chrome must match the selected site theme');
           assert.equal(surface.blur,'none','No transparent blur layer above the hero');
         };
@@ -45,14 +50,20 @@ try {
         await header.evaluate(el=>el.style.paddingTop='44px');
         await checkTopSurface();
         await header.evaluate(el=>el.style.removeProperty('padding-top'));
-        if(width<1025) {
-          assert.equal(Math.round(box.height),68,'Mobile header has one stable height');
-          await page.evaluate(() => scrollTo({top:500,behavior:'instant'}));
-          await page.waitForTimeout(350);
-          assert.equal(Math.round((await header.boundingBox()).height),68,'Scrolling must not resize the mobile header');
-          assert.equal(await header.evaluate(el=>getComputedStyle(el).backgroundColor),await page.evaluate(()=>getComputedStyle(document.body).backgroundColor),'Scrolled header uses an opaque page surface');
-          await page.evaluate(() => scrollTo({top:0,behavior:'instant'}));
-        }
+        if(width<1025)assert.equal(Math.round(box.height),68,'Mobile header has one stable height');
+        await page.evaluate(() => scrollTo({top:500,behavior:'instant'}));
+        await page.waitForTimeout(350);
+        if(width<1025)assert.equal(Math.round((await header.boundingBox()).height),68,'Scrolling must not resize the mobile header');
+        assert.equal(await header.evaluate(el=>getComputedStyle(el).backgroundColor),await page.evaluate(()=>getComputedStyle(document.body).backgroundColor),'Scrolled header uses an opaque page surface');
+        assert.equal(await header.evaluate(el=>getComputedStyle(el).backgroundColor),await page.evaluate(()=>getComputedStyle(document.documentElement).backgroundColor),'Scrolled root canvas follows the header');
+        await page.evaluate(() => scrollTo({top:0,behavior:'instant'}));
+        await page.waitForTimeout(350);
+        await checkTopSurface();
+        await page.locator('#themeTgl').click();
+        await page.waitForTimeout(350);
+        await checkTopSurface();
+        await page.locator('#themeTgl').click();
+        await page.waitForTimeout(350);
       } else {
         const button = page.locator(file.startsWith('docs') ? '#docsSideTgl' : '#b2bBurger');
         if(await button.isVisible()) await button.click();

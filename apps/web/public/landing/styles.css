@@ -2145,7 +2145,11 @@ html body,html body *,html body *::before,html body *::after,svg text{font-famil
 /* The landing starts with one solid coral surface, including the fixed header
    and the browser's top safe area. Docs and B2B retain their own page chrome. */
 html.landing-home{background:var(--accent);overscroll-behavior-y:none}
-html.landing-home body{overscroll-behavior-y:none}
+/* Keep BOTH document backgrounds aligned with the header. A coral html alone
+   leaves the light body surface available to Safari's browser chrome. Content
+   gets its own surface so this does not recolour transparent sections. */
+html.landing-home body{background:inherit;overscroll-behavior-y:none}
+html.landing-home main{background:var(--bg)}
 html.landing-home:has(.hdr.small){background:var(--bg)}
 html.landing-home .hdr{background:var(--bg)}
 html.landing-home .hdr::before{display:none}
