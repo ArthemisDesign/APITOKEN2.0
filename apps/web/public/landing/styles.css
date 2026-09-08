@@ -2141,3 +2141,21 @@ html body,html body *,html body *::before,html body *::after,svg text{font-famil
   .hdr .brand sup{display:none}
   .hdr .hdr__in{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
 }
+
+/* The landing starts with one solid coral surface, including the fixed header
+   and the browser's top safe area. Docs and B2B retain their own page chrome. */
+html.landing-home{background:var(--accent)}
+html.landing-home:has(.hdr.small){background:var(--bg)}
+html.landing-home .hdr{background:var(--bg)}
+html.landing-home .hdr::before{display:none}
+html.landing-home .hdr:not(.small){background:var(--accent)}
+html.landing-home .hdr:not(.small) .hdr__in{border-bottom-color:transparent}
+html.landing-home .hdr:not(.small) .brand,
+html.landing-home .hdr:not(.small) .lnk,
+html.landing-home .hdr:not(.small) .theme-tgl{color:var(--ink)}
+html.landing-home .hdr:not(.small) .theme-tgl{border-color:rgba(12,11,17,.32)}
+html.landing-home .hdr:not(.small) .brand__mark,
+html.landing-home .hdr:not(.small) .burger span{background:var(--ink)}
+@media(min-width:1025px){
+  html.landing-home .hdr:not(.small) .nav a{color:var(--ink)}
+}

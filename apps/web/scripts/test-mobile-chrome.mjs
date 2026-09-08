@@ -27,11 +27,30 @@ try {
       if(isLanding) {
         const box = await header.boundingBox();
         assert.equal(box.y,0,'Header must start at the viewport top');
+        const checkTopSurface = async () => {
+          const surface = await page.evaluate(() => {
+            const header=document.querySelector('.hdr'), hero=document.querySelector('.plate');
+            return {header:getComputedStyle(header).backgroundColor,hero:getComputedStyle(hero).backgroundColor,
+              canvas:getComputedStyle(document.documentElement).backgroundColor,
+              meta:document.querySelector('meta[name="theme-color"]').content,
+              top:hero.getBoundingClientRect().top,blur:getComputedStyle(header,'::before').display};
+          });
+          assert.equal(surface.top,0,'Hero starts at the viewport top, behind the header');
+          assert.equal(surface.header,surface.hero,'Header must be the same solid coral as the hero');
+          assert.equal(surface.canvas,surface.hero,'Safe-area canvas must match the hero');
+          assert.equal(surface.meta,surface.hero,'Browser chrome must match the selected site theme');
+          assert.equal(surface.blur,'none','No transparent blur layer above the hero');
+        };
+        await checkTopSurface();
+        await header.evaluate(el=>el.style.paddingTop='44px');
+        await checkTopSurface();
+        await header.evaluate(el=>el.style.removeProperty('padding-top'));
         if(width<1025) {
           assert.equal(Math.round(box.height),68,'Mobile header has one stable height');
           await page.evaluate(() => scrollTo({top:500,behavior:'instant'}));
           await page.waitForTimeout(350);
           assert.equal(Math.round((await header.boundingBox()).height),68,'Scrolling must not resize the mobile header');
+          assert.equal(await header.evaluate(el=>getComputedStyle(el).backgroundColor),await page.evaluate(()=>getComputedStyle(document.body).backgroundColor),'Scrolled header uses an opaque page surface');
           await page.evaluate(() => scrollTo({top:0,behavior:'instant'}));
         }
       } else {
@@ -59,7 +78,7 @@ try {
       assert.ok(Math.abs(geometry.width-geometry.activeWidth)<1,'Language thumb must match its segment');
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth<=innerWidth+1),true,'No page overflow');
       if(isLanding && width<1025) {
-        assert.equal(await header.locator('.brand').evaluate(el=>getComputedStyle(el).color===getComputedStyle(document.body).color),true,'Wordmark follows the header foreground');
+        assert.equal(await header.locator('.brand').evaluate(el=>getComputedStyle(el).color),'rgb(12, 11, 17)','Wordmark stays readable on coral in both themes');
         await page.locator('#burger').click();
         await page.waitForTimeout(250);
         const menu=page.locator('#mobNav');

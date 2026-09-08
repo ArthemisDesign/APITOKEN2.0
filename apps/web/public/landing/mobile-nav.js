@@ -1,5 +1,20 @@
 /* Shared mobile navigation for the landing, docs and openKeys pages. */
 (() => {
+  // Match browser chrome to the actual header, not the OS theme. In particular,
+  // the notch/status area must not leave a paper or transparent strip over coral.
+  if (document.documentElement.classList.contains('landing-home')) {
+    const header = document.getElementById('hdr');
+    const themeColor = document.querySelector('meta[name="theme-color"]');
+    const syncChrome = () => {
+      if (header && themeColor) themeColor.content = getComputedStyle(header).backgroundColor;
+    };
+    if (header) {
+      new MutationObserver(syncChrome).observe(header, {attributes:true,attributeFilter:['class']});
+      new MutationObserver(syncChrome).observe(document.documentElement, {attributes:true,attributeFilter:['data-theme']});
+      addEventListener('pageshow', syncChrome);
+      syncChrome();
+    }
+  }
   const configs = [
     ['burger', '#mobNav', 1024, 'landing-nav-open'],
     ['docsSideTgl', '.docs-sidebar', 1024, 'docs-nav-open'],

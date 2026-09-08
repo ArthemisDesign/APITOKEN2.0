@@ -67,7 +67,10 @@ dark theme. U+FE0E and `font-variant-emoji:text` enforce monochrome text present
 do not replace these with a separate mobile icon set or invert their state mapping. Accessible labels
 describe the action. `theme:v1` is authoritative across app and landing, with `apitoken-theme` mirrored
 for existing pages. Mobile landing headers keep a stable 68px content row plus the device safe-area inset,
-with an opaque background; the hero does not wait for the desktop entrance animation on touch devices.
+with an opaque background. On the two home landings, the unscrolled header, hero and top canvas are
+the same coral surface; the scrolled header is opaque paper/ink. Browser `theme-color` follows the
+header and the selected site theme. Do not introduce a separate paper strip above the hero.
+The hero does not wait for the desktop entrance animation on touch devices.
 Run `scripts/test-mobile-chrome.mjs` to verify header position/scroll stability, language-thumb geometry,
 theme persistence, mobile menus and locale navigation across the six static pages in both themes.
 It is read-only and accepts `SITE_URL`, `PLAYWRIGHT_MODULE`, `CHROME_PATH`, `AUDIT_OUTPUT`, optional
