@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ChartTooltip } from "./chart-tooltip";
+import { UsageTrend, usageChartLabels } from "./usage-trend";
 import { useState, type CSSProperties } from "react";
 import type {
   AccountView,
@@ -11,12 +11,11 @@ import type {
 } from "@/lib/api";
 import { useI18n } from "@/components/i18n-provider";
 import type { DashboardCopy } from "@/lib/dashboard-copy";
-import { buildUtcProviderUsageSeries, usageWindowDays } from "@/lib/usage-series";
 import { modelLabel } from "@/lib/model-label";
-import { DASHBOARD_CHART_COLORS, DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
+import { DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
 import {
-  NANO_PER_USD, PageHeading, Stat,
-  compareBigInt, formatNanoUsd, interpolate, localDashboardCopy, roundDivide, useDashboardCopy,
+  PageHeading, Stat,
+  compareBigInt, formatNanoUsd, interpolate, localDashboardCopy, useDashboardCopy,
 } from "./shared";
 
 const policyCopy = {
@@ -53,7 +52,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
   const models = usage.models;
   const modelOfficialTotal = models.reduce((sum, model) => sum + BigInt(model.officialNano), 0n);
 
-  // Stable model colours are shared by the distribution bar and model table.
+  // Stable model colours are shared by the ranked model bars and model table.
   const modelColor = new Map<string, string>();
   const assignColor = (id: string) => { if (!modelColor.has(id)) modelColor.set(id, MODEL_COLORS[modelColor.size % MODEL_COLORS.length]!); };
   for (const model of models) assignColor(model.model);
@@ -93,85 +92,10 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
     window.setTimeout(() => setCopiedProvider((current) => (current === id ? null : current)), 1_200);
   }
 
-  const series = buildUtcProviderUsageSeries(
-    usage.sinceTs,
-    usage.untilTs,
-    usage.daily,
-    usage.dailyProviders ?? [],
-  ).map((point) => ({
-    day: point.dayTs * 1_000,
-    requests: point.requests,
-    value: BigInt(point.officialNano),
-    charged: BigInt(point.chargedNano),
-    providers: point.providers.map((provider) => ({
-      ...provider,
-      officialNano: BigInt(provider.officialNano),
-      chargedNano: BigInt(provider.chargedNano),
-    })),
-    unattributed: BigInt(point.unattributedOfficialNano),
-  }));
-  const providerOrder = new Map(DASHBOARD_PROVIDERS.map((provider, index) => [provider.id, index]));
-  const chartProviders = [...new Set(series.flatMap((point) => point.providers
-    .filter((provider) => provider.officialNano > 0n)
-    .map((provider) => provider.provider)))]
-    .sort((left, right) => {
-      const leftRank = providerOrder.get(left) ?? Number.MAX_SAFE_INTEGER;
-      const rightRank = providerOrder.get(right) ?? Number.MAX_SAFE_INTEGER;
-      return leftRank - rightRank || left.localeCompare(right);
-    })
-    .map((id, index) => ({
-      ...providerMetadata(id),
-      chartColor: DASHBOARD_CHART_COLORS[index % DASHBOARD_CHART_COLORS.length]!,
-    }));
-  const showUnattributed = series.some((point) => point.unattributed > 0n);
-  const unattributedProvider = providerMetadata("unattributed");
-  const chartDayAriaLabel = (point: (typeof series)[number]) => {
-    const providerLabels = chartProviders.flatMap((provider) => {
-      const segment = point.providers.find((candidate) => candidate.provider === provider.id);
-      return segment && segment.officialNano > 0n
-        ? [`${provider.name}: ${formatNanoUsdSmart(segment.officialNano, locale)}`]
-        : [];
-    });
-    if (point.unattributed > 0n) {
-      providerLabels.push(`${unattributedProvider.name}: ${formatNanoUsdSmart(point.unattributed, locale)}`);
-    }
-    return [
-      interpolate(copy.chartDayLabel, {
-        date: fmtUtcDay(point.day, locale),
-        value: formatNanoUsdSmart(point.value, locale),
-      }),
-      ...providerLabels,
-    ].join(". ");
-  };
-  const maxValue = series.reduce((max, point) => bigintMax(max, point.value), 0n);
-  const scale = niceNanoScale(maxValue);
-  const gridTicks = Array.from({ length: scale.divisions + 1 }, (_, index) => scale.max - BigInt(index) * scale.step);
   const summaryOfficialNano = BigInt(usage.totalOfficialNano);
   const summaryChargedNano = BigInt(usage.totalChargedNano);
   const summaryRequests = usage.requests;
-  const peak = series.reduce((best, point) => (point.value > best.value ? point : best), {
-    day: usage.sinceTs * 1_000,
-    requests: 0,
-    value: 0n,
-    charged: 0n,
-  });
-  const averageDays = BigInt(usageWindowDays(usage.sinceTs, usage.untilTs));
-  const LABEL_COUNT = 7;
-  const axisMarkCount = Math.min(LABEL_COUNT, series.length);
-  const axisMarks = series.length === 0 ? [] : [...new Set(Array.from(
-    { length: axisMarkCount },
-    (_, index) => Math.round(index * (series.length - 1) / Math.max(1, axisMarkCount - 1)),
-  ))];
-
-  // Разбивка модель-бара (mdist) с центрами сегментов — для наведения/подсказки.
-  const modelShares = models.map((model) => modelOfficialTotal > 0n ? boundedRatio(BigInt(model.officialNano), modelOfficialTotal) : 1 / models.length);
-  const mdistPlaced = models.map((model, index) => {
-    const share = modelShares[index]!;
-    const center = modelShares.slice(0, index).reduce((sum, value) => sum + value, 0) + share / 2;
-    return { model, share, center };
-  });
-  const [hoverDay, setHoverDay] = useState<number | null>(null);
-  const [mdistHover, setMdistHover] = useState<number | null>(null);
+  const rankedModels = [...models].sort((a, b) => compareBigInt(BigInt(b.officialNano), BigInt(a.officialNano)));
 
   const keyRows = [...usage.keys].sort((left, right) => compareBigInt(BigInt(right.officialNano), BigInt(left.officialNano)));
   const keyLabels = new Map(keys.flatMap((key) => key.label ? [[key.keyMasked, key.label] as const] : []));
@@ -242,70 +166,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
       </div>
     </section>
 
-    <div className="usage-graph usage-analytics-card">
-      <div className="uchart">
-        <div className="uchart-head">
-          <b>{copy.usageOverTime}</b>
-          <div className="uchart-head-meta">
-            <span className="uchart-window">{copy.chartWindowLabel}</span>
-            <div className="usage-chart-legend" aria-label={copy.usageProviders}>
-              {chartProviders.map((provider) => <span key={provider.id}>
-                <i style={{ background: provider.chartColor }} />{provider.name}
-              </span>)}
-              {showUnattributed && <span>
-                <i style={{ background: unattributedProvider.color }} />{unattributedProvider.name}
-              </span>}
-            </div>
-          </div>
-        </div>
-        {maxValue === 0n ? <div className="uchart-empty">{copy.noChargesPeriod}</div> : <>
-          <div className="uchart-grid">
-            <div className="uchart-yaxis">{gridTicks.map((tick, i) => <span key={i}>{formatAxisNanoUsd(tick, locale)}</span>)}</div>
-            <div className="uchart-plotwrap">
-              <div className="uchart-lines">{gridTicks.map((_, i) => <i key={i} />)}</div>
-              <div className="uchart-plot" onMouseLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) setHoverDay(null); }}>
-                {series.map((point, index) => <button type="button" key={point.day} className={`uchart-col${hoverDay === index ? " is-hover" : ""}`} aria-label={chartDayAriaLabel(point)} onMouseEnter={() => setHoverDay(index)} onFocus={() => setHoverDay(index)} onBlur={() => setHoverDay((current) => current === index ? null : current)} onClick={() => setHoverDay((current) => current === index ? null : index)} onKeyDown={(event) => { if (event.key === "Escape") { setHoverDay(null); event.currentTarget.blur(); } }}>
-                  <div className="uchart-col-fill">
-                    {chartProviders.map((provider) => {
-                      const segment = point.providers.find((candidate) => candidate.provider === provider.id);
-                      return segment && segment.officialNano > 0n
-                        ? <div key={provider.id} className="uchart-seg" style={{ height: `${boundedPercent(segment.officialNano, scale.max)}%`, background: provider.chartColor }} />
-                        : null;
-                    })}
-                    {point.unattributed > 0n && <div className="uchart-seg" style={{ height: `${boundedPercent(point.unattributed, scale.max)}%`, background: unattributedProvider.color }} />}
-                  </div>
-                </button>)}
-                {hoverDay !== null && series[hoverDay] && series[hoverDay]!.value > 0n && (() => {
-                  const point = series[hoverDay]!;
-                  return <ChartTooltip leftPercent={(hoverDay + 0.5) / series.length * 100} bottomPercent={boundedPercent(point.value, scale.max)}>
-                    <div className="chart-tip-h">{fmtUtcDay(point.day, locale)}</div>
-                    {chartProviders.map((provider) => {
-                      const segment = point.providers.find((candidate) => candidate.provider === provider.id);
-                      return segment && segment.officialNano > 0n
-                        ? <div className="chart-tip-row" key={provider.id}><span className="chart-tip-dot" style={{ background: provider.chartColor }} /><span className="chart-tip-nm">{provider.name}</span><b>{formatNanoUsdSmart(segment.officialNano, locale)}</b></div>
-                        : null;
-                    })}
-                    {point.unattributed > 0n && <div className="chart-tip-row"><span className="chart-tip-dot" style={{ background: unattributedProvider.color }} /><span className="chart-tip-nm">{unattributedProvider.name}</span><b>{formatNanoUsdSmart(point.unattributed, locale)}</b></div>}
-                    <div className="chart-tip-total"><span>{copy.officialValueCol}</span><b>{formatNanoUsdSmart(point.value, locale)}</b></div>
-                    <div className="chart-tip-total"><span>{copy.chargedCol}</span><b>{formatNanoUsdSmart(point.charged, locale)}</b></div>
-                    <div className="chart-tip-total"><span>{copy.billedEvents}</span><b>{point.requests.toLocaleString(locale)}</b></div>
-                  </ChartTooltip>;
-                })()}
-              </div>
-              <div className="uchart-axis">{axisMarks.map((mark) => <span key={mark} style={{ left: `${(mark + 0.5) / series.length * 100}%` }}>{fmtUtcDay(series[mark]!.day, locale)}</span>)}</div>
-            </div>
-          </div>
-        </>}
-      </div>
-      <div className="usum">
-        <span className="usum-t">{copy.periodSummary}</span>
-        <div className="usum-row"><span>{copy.officialSpend}</span><b className="accent">{formatNanoUsd(summaryOfficialNano, locale)}</b></div>
-        <div className="usum-row"><span>{copy.chargedCol}</span><b>{formatNanoUsd(summaryChargedNano, locale)}</b></div>
-        <div className="usum-row"><span>{copy.billedEvents}</span><b>{summaryRequests.toLocaleString(locale)}</b></div>
-        <div className="usum-row"><span>{copy.peakDay}</span><b>{peak.value > 0n ? `${fmtUtcDay(peak.day, locale)} · ${formatNanoUsd(peak.value, locale)}` : "—"}</b></div>
-        <div className="usum-row"><span>{copy.dailyAverage}</span><b>{summaryOfficialNano > 0n ? formatNanoUsd(roundDivide(summaryOfficialNano, averageDays), locale) : "—"}</b></div>
-      </div>
-    </div>
+    <UsageTrend usage={usage} />
 
     <section className="dsec usage-models-section">
       <div className="dsec-head analytics-heading"><div><h2>{copy.tokensAndModels}</h2><p>{copy.tokensAndModelsSub}</p></div></div>
@@ -319,20 +180,17 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
       </div>
       {legacyOfficialNano > 0n && <p className="bucket-note">{copy.bucketAttributionNote}</p>}
       {models.length === 0 ? <div className="empty-box">{copy.tokensPending}</div> : <>
-        <div className="mdist-wrap">
-          <div className="mdist" role="group" aria-label={copy.tokensAndModels} onMouseLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) setMdistHover(null); }}>
-            {mdistPlaced.map((seg, index) => <button type="button" aria-label={`${modelLabel(seg.model.model)} · ${fmtNanoUsd(seg.model.officialNano, locale)} · ${(seg.share * 100).toFixed(seg.share < 0.1 ? 1 : 0)}%`} key={seg.model.model} className={`mdist-seg${mdistHover === index ? " is-hover" : ""}`} style={{ width: `${seg.share * 100}%`, background: modelColor.get(seg.model.model) }} onMouseEnter={() => setMdistHover(index)} onFocus={() => setMdistHover(index)} onBlur={() => setMdistHover((current) => current === index ? null : current)} onClick={() => setMdistHover((current) => current === index ? null : index)} />)}
-          </div>
-          {mdistHover !== null && mdistPlaced[mdistHover] && (() => {
-            const seg = mdistPlaced[mdistHover]!;
-            const leftPct = Math.min(92, Math.max(8, seg.center * 100));
-            return <div className="chart-tip mdist-tip" role="tooltip" style={{ left: `${leftPct}%` }}>
-              <div className="chart-tip-row"><span className="chart-tip-dot" style={{ background: modelColor.get(seg.model.model) }} /><span className="chart-tip-nm">{modelLabel(seg.model.model)}</span><b>{fmtNanoUsd(seg.model.officialNano, locale)}</b></div>
-              <div className="chart-tip-total"><span>{copy.shareOfUse}</span><b>{(seg.share * 100).toFixed(seg.share < 0.1 ? 1 : 0)}%</b></div>
-            </div>;
-          })()}
-        </div>
-        <div className="mdist-legend">{mdistPlaced.map((seg) => <span key={seg.model.model}><i style={{ background: modelColor.get(seg.model.model) }} />{modelLabel(seg.model.model)}<b>{(seg.share * 100).toFixed(seg.share < 0.1 ? 1 : 0)}%</b></span>)}</div>
+        <section className="usage-model-ranking" aria-label={copy.shareOfUse}>
+          <h3>{usageChartLabels[language].models}</h3>
+          <ol className="usage-model-bars">{rankedModels.map((model, index) => {
+            const percent = boundedRatio(BigInt(model.officialNano), modelOfficialTotal) * 100;
+            const shareLabel = `${percent.toLocaleString(locale, { maximumFractionDigits: 1 })}%`;
+            return <li key={model.model}>
+              <div className="usage-model-bar-head"><span>{String(index + 1).padStart(2, "0")}</span><strong>{modelLabel(model.model)}</strong><b>{formatNanoUsdSmart(BigInt(model.officialNano), locale)}</b></div>
+              <div className="usage-model-bar-bottom"><div className="usage-model-bar-track" aria-hidden="true"><i style={{ width: `${percent}%`, background: modelColor.get(model.model) }} /></div><span>{shareLabel}</span></div>
+            </li>;
+          })}</ol>
+        </section>
         <p className="table-scroll-hint" id="models-table-scroll-hint">{copy.tableScrollHint}</p>
         <div className="table-scroll" role="region" tabIndex={0} aria-label={`${copy.tokensAndModels}. ${copy.tableScrollHint}`}><table className="mtable"><thead><tr><th>{copy.model}</th><th className="tnum">{copy.billedEvents}</th><th className="tnum">{copy.inputShort}</th><th className="tnum">{copy.outputShort}</th><th className="tnum">{copy.cacheRdShort}</th><th className="tnum">{copy.cacheWrShort}</th><th className="tnum">{copy.officialValueCol}</th><th className="tnum">{copy.chargedCol}</th></tr></thead>
           <tbody>{models.map((model) => <tr key={model.model}>
@@ -436,38 +294,12 @@ function formatNanoUsdSmart(value: bigint, locale: string): string {
 
 function startOfDay(ms: number): number { const date = new Date(ms); date.setHours(0, 0, 0, 0); return date.getTime(); }
 function ledgerMs(timestamp: string): number { const numeric = Number(timestamp); return numeric < 10_000_000_000 ? numeric * 1_000 : numeric; }
-function fmtUtcDay(ms: number, locale: string): string { return new Date(ms).toLocaleDateString(locale, { month: "numeric", day: "numeric", timeZone: "UTC" }); }
 function formatBilledEventCount(count: number, locale: string, copy: DashboardCopy): string {
   const plural = new Intl.PluralRules(locale).select(count);
   const template = plural === "one" ? copy.billedEventOne : plural === "few" ? copy.billedEventsFew : copy.apiRequestsN;
   return interpolate(template, { n: count });
 }
-// «Красивая» шкала оси Y на целых нано-USD. В number переводятся только ограниченные отношения для CSS.
-function niceNanoScale(max: bigint): { max: bigint; step: bigint; divisions: number } {
-  const divisions = 4;
-  if (max <= 0n) return { max: NANO_PER_USD, step: NANO_PER_USD / 4n, divisions };
-  const rough = (max + BigInt(divisions) - 1n) / BigInt(divisions);
-  const magnitude = 10n ** BigInt(Math.max(0, rough.toString().length - 1));
-  const candidates = [magnitude, 2n * magnitude, 5n * magnitude, 10n * magnitude];
-  const step = candidates.find((candidate) => candidate >= rough) ?? 10n * magnitude;
-  return { max: step * BigInt(divisions), step, divisions };
-}
-function formatAxisNanoUsd(value: bigint, locale: string): string {
-  if (value <= 0n) return "$0";
-  if (value >= NANO_PER_USD) return formatNanoUsd(value, locale, 0, 1);
-  if (value >= 10_000_000n) return formatNanoUsd(value, locale, 0, 2);
-  if (value >= 100_000n) return formatNanoUsd(value, locale, 0, 4);
-  return formatNanoUsd(value, locale, 0, 9);
-}
-
-const MODEL_COLORS = [
-  "var(--accent)",
-  "color-mix(in srgb,var(--accent) 72%,var(--txt))",
-  "color-mix(in srgb,var(--accent) 50%,var(--txt-2))",
-  "color-mix(in srgb,var(--accent) 34%,var(--txt-3))",
-  "color-mix(in srgb,var(--accent) 20%,var(--txt-4))",
-  "var(--txt-3)",
-] as const;
+const MODEL_COLORS = ["#168578", "#638aca", "#9b79ba", "#b79450", "#6698a2", "#929aab"] as const;
 function fmtTokens(n: number, locale: string): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toLocaleString(locale, { maximumFractionDigits: 2 })}M`;
   if (n >= 1_000) return `${(n / 1_000).toLocaleString(locale, { maximumFractionDigits: 1 })}K`;
@@ -508,9 +340,6 @@ function boundedRatio(numerator: bigint, denominator: bigint): number {
   const scale = 1_000_000n;
   const bounded = bigintMax(0n, numerator > denominator ? denominator : numerator);
   return Number(bounded * scale / denominator) / Number(scale);
-}
-function boundedPercent(numerator: bigint, denominator: bigint): number {
-  return boundedRatio(numerator, denominator) * 100;
 }
 function bigintMax(left: bigint, right: bigint): bigint { return left > right ? left : right; }
 function absoluteBigInt(value: bigint): bigint { return value < 0n ? -value : value; }

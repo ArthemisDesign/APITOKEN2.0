@@ -91,16 +91,19 @@ The cross-page theme checks always cover 320/390/1440px, stale landing storage, 
 return navigation and reloads; `THEME_ONLY=1` selects just those checks. Dashboard checks need preview fixtures.
 Browser-engine emulation does not replace checking Safari's physical-device safe-area behavior.
 
-The Referral workspace follows the Usage visual system: separate neutral/inverted KPI cards,
-rounded provider tiles, a neutral earnings chart with an inverted summary, and sentence-case headings.
-The chart palette is shared through `DASHBOARD_CHART_COLORS`; provider logos retain their brand colors.
-Usage and Referral share `ChartTooltip`, which measures its content and keeps it inside the chart
-card when selecting edge or peak days and when the chart resizes.
-Run `scripts/test-chart-cards.mjs` on a local preview-fixture build to verify tooltip containment,
-keyboard dismissal, resizing and neutral surfaces at 320/390/768/1440 px in both languages and themes.
+Usage shows charged and official daily spending as two lines with a charged-area fill. Both use
+one integer nanoUSD scale and the full UTC window, including zero days. A separate day-detail panel
+responds to pointer/touch selection and arrow/Home/End keys; it never overlays the plot. Model spend
+uses ranked horizontal bars with visible amounts and shares. Zero total model spend produces zero shares.
+The Referral workspace retains its provider-stacked earnings chart, inverted summary and contained
+`ChartTooltip`; its KPI cards and provider tiles still follow the shared dashboard visual system.
+Referral uses `DASHBOARD_CHART_COLORS`; provider logos retain their brand colors.
+Run `scripts/test-chart-cards.mjs` on a local preview-fixture build to verify Usage pointer/touch and
+keyboard day selection, Referral tooltip containment, resizing and neutral surfaces at
+320/390/768/1440 px in both languages and themes. `CHART_WIDTHS` optionally selects a comma-separated subset.
 Referral-only presentation lives in `src/app/dashboard/sections/referral.css` and must not alter
 Usage or the partner API/commission/payout contracts. All five tabs, access states and forms remain.
-Use `scripts/test-referral-style.mjs` against a local preview-fixture build to compare surfaces with
+Use `scripts/test-referral-style.mjs` against a local preview-fixture build to compare KPI surfaces with
 Usage and check all tabs at 320/390/768/1024/1440 px in EN/RU and light/dark themes. Configure
 `SITE_URL`, `PLAYWRIGHT_MODULE` and `CHROME_PATH` as described in `VISUAL_AUDIT.md`; optional `QUICK=1`
 limits the suite to desktop and phone. Results and screenshots go to `.artifacts/referral-review`

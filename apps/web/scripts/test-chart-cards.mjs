@@ -12,8 +12,8 @@ const output = process.env.AUDIT_OUTPUT || '.artifacts/chart-cards';
 fs.mkdirSync(output, { recursive: true });
 const browser = await browserType.launch({ headless: true, ...(engine === 'chromium' && process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
 try {
-  for (const width of [320, 390, 768, 1440]) for (const theme of ['light', 'dark']) for (const lang of ['en', 'ru']) {
-    const page = await browser.newPage({ viewport: { width, height: 1000 }, reducedMotion: 'reduce' });
+  for (const width of (process.env.CHART_WIDTHS || '320,390,768,1440').split(',').map(Number)) for (const theme of ['light', 'dark']) for (const lang of ['en', 'ru']) {
+    const page = await browser.newPage({ viewport: { width, height: 1000 }, isMobile: width < 768, hasTouch: width < 768, reducedMotion: 'reduce' });
     await page.route(/mc\.yandex|google-analytics|vitals\.vercel|va\.vercel/, route => route.abort());
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
@@ -25,6 +25,49 @@ try {
     for (const view of ['usage', 'referral']) {
       const label = `${view} ${width}px ${theme} ${lang}`;
       await page.goto(`${origin}${lang === 'ru' ? '/ru' : ''}/dashboard?view=${view}`);
+      if (view === 'usage') {
+        const card = page.locator('.usage-trend');
+        await card.waitFor();
+        await page.evaluate(() => document.fonts.ready);
+        const plot = card.getByRole('slider');
+        await plot.focus();
+        await plot.press('Home');
+        assert.equal(await plot.getAttribute('aria-valuenow'), '0', `${label}: first day`);
+        await plot.press('ArrowRight');
+        assert.equal(await plot.getAttribute('aria-valuenow'), '1', `${label}: keyboard navigation`);
+        assert.equal(await card.locator('.usage-trend-detail').getAttribute('data-day-index'), '1');
+        await plot.press('End');
+        assert.equal(await plot.getAttribute('aria-valuenow'), await plot.getAttribute('aria-valuemax'));
+        const bounds = await plot.boundingBox();
+        await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+        assert.ok(Number(await plot.getAttribute('aria-valuenow')) > 1);
+        if (width < 768) {
+          await page.touchscreen.tap(bounds.x + bounds.width / 4, bounds.y + bounds.height / 2);
+          assert.ok(Number(await plot.getAttribute('aria-valuenow')) < Number(await plot.getAttribute('aria-valuemax')) / 2, `${label}: touch selection`);
+        }
+        await page.setViewportSize({ width: width + 30, height: 1000 });
+        await page.setViewportSize({ width, height: 1000 });
+        assert.equal(await card.locator('.usage-trend-detail').evaluate(el => {
+          const detail = el.getBoundingClientRect(), card = el.closest('.usage-trend').getBoundingClientRect();
+          return detail.left >= card.left && detail.right <= card.right && detail.bottom <= card.bottom;
+        }), true, `${label}: details inside card`);
+        await plot.press('End');
+        await plot.press('Escape');
+        assert.equal(await plot.evaluate(el => el === document.activeElement), false, `${label}: keyboard dismissal`);
+        assert.equal(await card.locator('.trend-line').count(), 2);
+        assert.ok(await page.locator('.usage-model-bars li').count() > 0);
+        assert.equal(await page.locator('.mdist, .usage-analytics-card').count(), 0);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, label);
+        assert.deepEqual(errors, [], label);
+        if ((width === 1440 || width === 390) && lang === 'en') {
+          // Keep the sticky app header outside the component capture.
+          await card.evaluate(el => window.scrollTo(0, el.getBoundingClientRect().top + scrollY - 100));
+          await card.screenshot({ path: `${output}/${view}-${width}-${theme}.png` });
+          await page.locator('.usage-model-ranking').screenshot({ path: `${output}/models-${width}-${theme}.png` });
+        }
+        console.log(`PASS ${label}`);
+        continue;
+      }
       const card = page.locator(view === 'usage' ? '.usage-analytics-card .uchart' : '.referral-earnings-graph .uchart');
       await card.waitFor();
       await page.evaluate(() => document.fonts.ready);
