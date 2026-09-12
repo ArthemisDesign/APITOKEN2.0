@@ -1047,13 +1047,6 @@ a.step:hover .step-cta::after{margin-left:4px}
 .pricing-status-warn strong{color:var(--warn)}
 .pricing-status-ok small{color:var(--ok)}
 .tc-head h2{margin:0 0 6px}
-.tc-currency{display:flex;align-items:center;justify-content:space-between;gap:16px;padding-bottom:18px;border-bottom:1px solid var(--line)}
-.tc-currency>.tc-pay-label{margin:0}
-.tc-currency>div{display:flex;gap:4px;padding:4px;border:1px solid var(--line-strong);border-radius:8px;background:var(--bg-soft)}
-.tc-currency button{min-width:72px;padding:8px 14px;border:1px solid transparent;border-radius:5px;background:transparent;font:650 12px/1 var(--font-mono);color:var(--txt-3);cursor:pointer;transition:.14s}
-.tc-currency button:hover{border-color:var(--line);color:var(--txt)}
-.tc-currency button.on{border-color:var(--accent);background:var(--accent);color:#fff}
-.tc-currency-note{margin:-12px 0 0;font:400 11px/1.5 var(--font-mono);color:var(--txt-4)}
 .topup-simple-body{display:grid;grid-template-columns:minmax(240px,.72fr) minmax(0,1.28fr);gap:24px;align-items:end}
 .tc-input{display:flex;flex-direction:column;gap:14px}
 .tc-field{position:relative;display:flex;align-items:center}
@@ -1065,7 +1058,7 @@ a.step:hover .step-cta::after{margin-left:4px}
 .tc-preset.on{border-color:var(--accent);background:var(--accent-soft)}
 .tc-pay{min-width:0}
 .tc-pay-label{display:block;font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--txt-4);margin-bottom:10px}
-.tc-methods{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.tc-methods{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .pm-card{display:flex;align-items:center;gap:12px;padding:14px 16px;border:1px solid var(--line-strong);border-radius:12px;background:var(--bg-card);cursor:pointer;text-align:left;transition:.15s}
 .pm-card:hover{border-color:var(--accent-line)}
 .pm-card.on{border-color:var(--accent);background:var(--accent-soft)}
@@ -1107,9 +1100,6 @@ a.step:hover .step-cta::after{margin-left:4px}
   .credits-balance-facts>div{min-width:0;flex:1;padding:0 16px}
   .credits-balance-facts>div:first-child{padding-left:0;border-left:0}
   .topup-simple{padding:22px}
-  .tc-currency{align-items:flex-start;flex-direction:column}
-  .tc-currency>div{width:100%}
-  .tc-currency button{flex:1;min-width:0}
   .topup-simple-body{grid-template-columns:1fr;gap:22px}
   .topup-simple-footer{align-items:stretch;flex-direction:column}
   .topup-simple-footer .btn{width:100%;justify-content:center}

@@ -4,6 +4,10 @@ Next.js App Router frontend for the independently deployed commercial customer U
 NestJS API at `backend.apitoken.sale`; it never calls the engine Control API and never receives the
 engine control key.
 
+The dashboard Balance form accepts positive whole USD amounts only. Its input, presets and credited
+amount use USD without a currency selector or a client-side exchange rate. All existing payment
+methods remain available; the payment adapter determines the final checkout currency and amount.
+
 ## Local development
 
 ```bash
