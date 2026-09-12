@@ -54,7 +54,14 @@ try {
         await plot.press('End');
         await plot.press('Escape');
         assert.equal(await plot.evaluate(el => el === document.activeElement), false, `${label}: keyboard dismissal`);
-        assert.equal(await card.locator('.trend-line').count(), 2);
+        const providers = await card.locator('.usage-trend-legend span').allTextContents();
+        assert.ok(providers.includes('Claude') && providers.includes('GPT'), `${label}: original provider series`);
+        assert.equal(await card.locator('g[data-provider]').count(), providers.length);
+        assert.equal(await card.locator('.trend-provider-area').count(), providers.length);
+        assert.equal(await card.locator('.trend-line').count(), providers.length);
+        assert.equal(await card.locator('.trend-charged, .trend-official').count(), 0, `${label}: no comparison series`);
+        assert.equal(await card.locator('.usage-trend-overview strong').textContent(), await page.locator('.usage-kpis .ovstat:first-child .num').textContent(), `${label}: original official total`);
+        assert.match(await plot.getAttribute('aria-valuetext'), /Claude|GPT/, `${label}: accessible provider details`);
         assert.ok(await page.locator('.usage-model-bars li').count() > 0);
         assert.equal(await page.locator('.mdist, .usage-analytics-card').count(), 0);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, label);

@@ -91,8 +91,11 @@ The cross-page theme checks always cover 320/390/1440px, stale landing storage, 
 return navigation and reloads; `THEME_ONLY=1` selects just those checks. Dashboard checks need preview fixtures.
 Browser-engine emulation does not replace checking Safari's physical-device safe-area behavior.
 
-Usage shows charged and official daily spending as two lines with a charged-area fill. Both use
-one integer nanoUSD scale and the full UTC window, including zero days. A separate day-detail panel
+Usage preserves the original chart meaning: daily official list-price value stacked by provider,
+including explicit unattributed usage, on the same integer nanoUSD scale and complete UTC window.
+The visual uses stacked areas instead of columns; charges never enter the plotted series or scale.
+Official totals, charges, billed events, peak day and daily average retain their original meanings.
+A separate day-detail panel
 responds to pointer/touch selection and arrow/Home/End keys; it never overlays the plot. Model spend
 uses ranked horizontal bars with visible amounts and shares. Zero total model spend produces zero shares.
 The Referral workspace retains its provider-stacked earnings chart, inverted summary and contained

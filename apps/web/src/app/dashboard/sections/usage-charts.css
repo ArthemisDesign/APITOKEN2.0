@@ -1,5 +1,5 @@
-.usage-trend{--trend-color:#168578;--trend-official:#8794ac;margin-top:30px;padding:28px;border:1px solid var(--line);border-radius:22px;background:var(--bg-card);color:var(--txt);min-width:0}
-[data-theme="dark"] .usage-trend{--trend-color:#56c8b4;--trend-official:#a0abc0}
+.usage-trend{--trend-color:#168578;margin-top:30px;padding:28px;border:1px solid var(--line);border-radius:22px;background:var(--bg-card);color:var(--txt);min-width:0}
+[data-theme="dark"] .usage-trend{--trend-color:#56c8b4}
 .usage-trend-head{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}
 .usage-trend-head h2{margin:0;font:600 21px/1.3 var(--font-ui);letter-spacing:-.025em}
 .usage-trend-head p{margin:7px 0 0;color:var(--txt-3);font-size:13px;line-height:1.6}
@@ -11,7 +11,6 @@
 .usage-trend-legend{display:flex;flex-wrap:wrap;gap:12px 20px;padding-bottom:5px}
 .usage-trend-legend span{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--txt-3)}
 .usage-trend-legend i{display:block;width:20px;height:0;border-top:3px solid var(--trend-color);border-radius:2px}
-.usage-trend-legend i.official{border-color:var(--trend-official);border-top-style:dashed}
 .usage-trend-body{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:24px;align-items:start}
 .usage-trend-canvas{min-width:0;display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:14px;grid-template-rows:260px 24px auto}
 .usage-trend-y{position:relative;min-width:36px;font-size:11px;color:var(--txt-3);font-variant-numeric:tabular-nums}
@@ -22,11 +21,8 @@
 .usage-trend-plot svg{display:block;width:100%;height:100%;overflow:visible}
 .usage-trend-plot .trend-grid{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
 .usage-trend-plot .trend-line{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}
-.usage-trend-plot .trend-charged{stroke:var(--trend-color)}
-.usage-trend-plot .trend-official{stroke:var(--trend-official);stroke-width:1.8;stroke-dasharray:5 5}
 .usage-trend-plot .trend-crosshair{stroke:var(--txt-4);stroke-width:1;stroke-dasharray:3 5;vector-effect:non-scaling-stroke;opacity:.6}
 .usage-trend-plot .trend-dot{position:absolute;width:9px;height:9px;border:2px solid var(--bg-card);border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;background:var(--trend-color);box-shadow:0 0 0 1px var(--trend-color)}
-.usage-trend-plot .trend-dot.official{width:7px;height:7px;background:var(--trend-official);box-shadow:0 0 0 1px var(--trend-official)}
 .usage-trend-x{position:relative;grid-column:2;font-size:11px;color:var(--txt-3);font-variant-numeric:tabular-nums}
 .usage-trend-x span{position:absolute;top:3px;white-space:nowrap}
 .usage-trend-hint{grid-column:2;margin:10px 0 0;font-size:11px;line-height:1.6;color:var(--txt-4)}
@@ -38,9 +34,8 @@
 .usage-trend-detail dt{min-width:0;font-size:11px;line-height:1.5;color:var(--txt-3)}
 .usage-trend-detail dd{flex-shrink:0;margin:0;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
 .usage-trend-detail .trend-detail-primary{flex-direction:column;gap:3px;margin-bottom:5px}
-.usage-trend-detail .trend-detail-primary dt{display:flex;align-items:center;gap:6px;color:var(--trend-color)}
-.usage-trend-detail .trend-detail-primary i{width:6px;height:6px;background:currentColor;border-radius:50%}
-.usage-trend-detail .trend-detail-primary dd{font:600 26px/1.3 var(--font-ui);letter-spacing:-.03em;color:var(--trend-color);text-align:left}
+.usage-trend-detail .trend-detail-primary dt{display:flex;align-items:center;gap:6px;color:var(--txt-3)}
+.usage-trend-detail .trend-detail-primary dd{font:600 26px/1.3 var(--font-ui);letter-spacing:-.03em;color:var(--txt);text-align:left}
 .trend-detail-providers{display:grid;gap:9px;border-top:1px solid var(--line);padding-top:14px;margin-top:16px;font-size:11px}
 .trend-detail-providers>span{color:var(--txt-4);font-size:10px}
 .trend-detail-providers>div{display:flex;justify-content:space-between;gap:10px;min-width:0}
@@ -80,3 +75,8 @@
   .usage-trend-hint{grid-column:1/-1;font-size:10px}.usage-trend-summary{gap:18px 14px}.usage-trend-summary b{font-size:13px}
   .usage-model-bars{grid-template-columns:1fr;gap:20px}.usage-trend-detail{gap:0 12px;padding:15px}
 }
+
+.usage-trend-plot .trend-provider-area{opacity:.2}
+[data-theme="dark"] .usage-trend-plot .trend-provider-area{opacity:.3}
+.trend-detail-providers div>span{display:flex;align-items:center;gap:6px}
+.trend-detail-providers i{width:6px;height:6px;flex:none;border-radius:50%}
