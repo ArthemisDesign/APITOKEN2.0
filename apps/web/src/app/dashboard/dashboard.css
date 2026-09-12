@@ -792,9 +792,9 @@ body.app-body .bg-decor{display:none!important}
 .overview-metric-card>p b{color:var(--accent-ink)}
 .overview-card-link{align-self:flex-start;margin-top:auto;font-family:var(--font-ui);font-size:12.5px;font-weight:600;color:var(--accent-ink)}
 .overview-card-link:hover{text-decoration:underline;text-underline-offset:3px}
-.overview-pricing-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin-top:auto;overflow:hidden;
+.overview-pricing-facts{display:grid;grid-template-columns:1fr;gap:0;margin-top:auto;overflow:hidden;
   border:1px solid var(--line);border-radius:10px;background:var(--line)}
-.overview-pricing-facts>span{display:flex;min-width:0;flex-direction:column;gap:3px;padding:11px 13px;background:var(--bg-card)}
+.overview-pricing-facts>span{display:flex;min-width:0;flex-direction:column;gap:3px;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:color-mix(in srgb,var(--accent-soft) 36%,var(--bg-card))}
 .overview-pricing-facts small{font:650 8.5px/1.35 var(--font-mono);letter-spacing:.09em;text-transform:uppercase;color:var(--txt-4)}
 .overview-pricing-facts b{font:700 14px/1.35 var(--font-ui);color:var(--txt)}
 .overview-pricing-facts>span:first-child b{color:var(--accent-ink)}
