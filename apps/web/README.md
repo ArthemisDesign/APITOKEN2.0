@@ -87,9 +87,13 @@ The cross-page theme checks always cover 320/390/1440px, stale landing storage, 
 return navigation and reloads; `THEME_ONLY=1` selects just those checks. Dashboard checks need preview fixtures.
 Browser-engine emulation does not replace checking Safari's physical-device safe-area behavior.
 
-The Referral workspace follows the Usage visual system: separate coral/inverted/neutral KPI cards,
-rounded provider tiles, a coral earnings chart with an inverted summary, and sentence-case headings.
+The Referral workspace follows the Usage visual system: separate neutral/inverted KPI cards,
+rounded provider tiles, a neutral earnings chart with an inverted summary, and sentence-case headings.
 The chart palette is shared through `DASHBOARD_CHART_COLORS`; provider logos retain their brand colors.
+Usage and Referral share `ChartTooltip`, which measures its content and keeps it inside the chart
+card when selecting edge or peak days and when the chart resizes.
+Run `scripts/test-chart-cards.mjs` on a local preview-fixture build to verify tooltip containment,
+keyboard dismissal, resizing and neutral surfaces at 320/390/768/1440 px in both languages and themes.
 Referral-only presentation lives in `src/app/dashboard/sections/referral.css` and must not alter
 Usage or the partner API/commission/payout contracts. All five tabs, access states and forms remain.
 Use `scripts/test-referral-style.mjs` against a local preview-fixture build to compare surfaces with

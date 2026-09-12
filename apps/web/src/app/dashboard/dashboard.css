@@ -129,6 +129,9 @@
 .chart-tip{position:absolute;transform:translate(-50%,-8px);z-index:6;pointer-events:none;
   background:#1c1e26;color:#fff;border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:9px 11px;min-width:132px;
   box-shadow:0 14px 34px -12px rgba(0,0,0,.55);font-family:var(--font-mono)}
+.chart-tip-contained{transform:none;visibility:hidden;width:max-content;min-width:0;max-width:calc(100% - 16px)}
+.chart-tip-contained .chart-tip-nm{white-space:normal;overflow-wrap:anywhere}
+.chart-tip-contained .chart-tip-total>b,.chart-tip-contained .chart-tip-row>b{white-space:nowrap}
 .chart-tip-h{font-size:11px;font-weight:700;margin-bottom:7px;opacity:.85}
 .chart-tip-row{display:flex;align-items:center;gap:8px;font-size:11px;padding:2px 0}
 .chart-tip-dot{width:8px;height:8px;border-radius:2px;flex:none}
@@ -252,30 +255,14 @@
   .usage-dashboard .usage-models-section .tok-buckets,.usage-dashboard .usage-keys-section .ubreak-sum{gap:8px}
 }
 
-/* High-contrast bento composition inspired by the supplied reference. */
+/* Neutral cards with an inverted summary for contrast. */
 .usage-dashboard .usage-kpis .ovstat{border:0;background:var(--bg-card)}
-.usage-dashboard .usage-kpis .ovstat:first-child{background:var(--accent);color:#0c0b11}
-.usage-dashboard .usage-kpis .ovstat:first-child .dlabel,
-.usage-dashboard .usage-kpis .ovstat:first-child .dtrend,
-.usage-dashboard .usage-kpis .ovstat:first-child .num{color:#0c0b11}
 .usage-dashboard .usage-kpis .ovstat:nth-child(2){background:var(--txt);color:var(--bg)}
 .usage-dashboard .usage-kpis .ovstat:nth-child(2) .dlabel,
 .usage-dashboard .usage-kpis .ovstat:nth-child(2) .dtrend,
 .usage-dashboard .usage-kpis .ovstat:nth-child(2) .num{color:var(--bg)}
 .usage-dashboard .usage-analytics-card{grid-template-columns:minmax(0,2.15fr) minmax(250px,.85fr)}
-.usage-dashboard .usage-analytics-card .uchart{position:relative;min-height:340px;border:0;background:var(--accent);color:#0c0b11}
-.usage-dashboard .usage-analytics-card .uchart::after{content:"";position:absolute;width:210px;height:210px;right:-74px;top:-92px;border:34px solid rgba(12,11,17,.12);border-radius:50%;pointer-events:none}
-.usage-dashboard .usage-analytics-card .uchart-head,
-.usage-dashboard .usage-analytics-card .uchart-grid{position:relative;z-index:1}
-.usage-dashboard .usage-analytics-card .uchart-head>b,
-.usage-dashboard .usage-analytics-card .uchart-head span,
-.usage-dashboard .usage-analytics-card .uchart-yaxis,
-.usage-dashboard .usage-analytics-card .uchart-axis{color:#0c0b11}
-.usage-dashboard .usage-analytics-card .uchart-window{border-color:rgba(12,11,17,.22);background:rgba(255,250,245,.28);color:#0c0b11}
-.usage-dashboard .usage-analytics-card .usage-chart-legend i{box-shadow:0 0 0 3px rgba(255,250,245,.24)}
-.usage-dashboard .usage-analytics-card .uchart-lines i{border-color:rgba(12,11,17,.17)}
-.usage-dashboard .usage-analytics-card .uchart-col:hover,
-.usage-dashboard .usage-analytics-card .uchart-col.is-hover{background:rgba(255,250,245,.2)}
+.usage-dashboard .usage-analytics-card .uchart{position:relative;min-height:340px;border:0;background:var(--bg-card);color:var(--txt)}
 .usage-dashboard .usage-analytics-card .usum{border:0;background:var(--txt);color:var(--bg)}
 .usage-dashboard .usage-analytics-card .usum-t,
 .usage-dashboard .usage-analytics-card .usum-row>span,
@@ -283,10 +270,6 @@
 .usage-dashboard .usage-analytics-card .usum-row>b.accent{color:var(--bg)}
 .usage-dashboard .usage-analytics-card .usum-row{border-color:color-mix(in srgb,var(--bg) 20%,transparent)}
 .usage-dashboard .usage-models-section,.usage-dashboard .usage-keys-section{padding:28px;border:0;border-radius:24px;box-shadow:var(--shadow)}
-.usage-dashboard .usage-models-section .tokb:first-child{background:var(--accent);border-color:var(--accent)}
-.usage-dashboard .usage-models-section .tokb:first-child .dlabel,
-.usage-dashboard .usage-models-section .tokb:first-child b,
-.usage-dashboard .usage-models-section .tokb:first-child .tokb-usd{color:#0c0b11}
 .usage-dashboard .usage-keys-section .ubreak-sum>div:last-child{background:var(--txt);border-color:var(--txt)}
 .usage-dashboard .usage-keys-section .ubreak-sum>div:last-child .dlabel,
 .usage-dashboard .usage-keys-section .ubreak-sum>div:last-child>b{color:var(--bg)}

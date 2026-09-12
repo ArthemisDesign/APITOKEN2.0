@@ -12,14 +12,12 @@
 .app .rp .rp-overview-details .rp-reflink{flex-wrap:wrap}
 .app .rp .rp-overview-details .rp-reflink input{flex:1 1 220px;width:100%;max-width:100%}
 
-/* Separate, equal-height KPI cards: coral balance, inverted earnings, neutral activity. */
+/* Separate, equal-height KPI cards: neutral balance and activity, inverted earnings. */
 .app .rp .rp-stats{gap:12px;border:0;border-radius:0;background:transparent;overflow:visible;grid-template-columns:repeat(4,minmax(0,1fr))}
 .app .rp .rp-stat{display:grid;grid-template-rows:1fr auto minmax(3em,auto);gap:10px;min-height:168px;padding:22px;border:0;border-radius:20px;background:var(--bg-card)}
 .app .rp .rp-stat-l{min-height:2.8em;margin:0;color:var(--txt-3);font-size:12px;line-height:1.4;letter-spacing:0;text-transform:none}
 .app .rp .rp-stat-v{font:600 clamp(28px,2.5vw,36px)/1.2 var(--font-ui);letter-spacing:-.025em;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .app .rp .rp-stat-f{margin:0;font-size:12px;line-height:1.5;color:var(--txt-3)}
-.app .rp .rp-stat:first-child{background:var(--accent)}
-.app .rp .rp-stat:first-child :is(.rp-stat-l,.rp-stat-v,.rp-stat-f){color:#0c0b11}
 .app .rp .rp-stat:nth-child(2){background:var(--txt)}
 .app .rp .rp-stat:nth-child(2) :is(.rp-stat-l,.rp-stat-v,.rp-stat-f){color:var(--bg)}
 
@@ -37,10 +35,9 @@
 .app .rp .uprovider-stats strong{font-size:32px;line-height:1.2;letter-spacing:-.025em}
 .app .rp .uprovider-stats>span{font-size:12px;line-height:1.5}
 
-/* Coral chart and inverted summary reproduce the Usage analytics composition. */
+/* Neutral chart and inverted summary match the Usage analytics composition. */
 .app .rp .referral-earnings-graph{grid-template-columns:minmax(0,2.15fr) minmax(250px,.85fr);gap:12px;margin:0}
-.app .rp .referral-earnings-graph .uchart{position:relative;isolation:isolate;overflow:hidden;min-height:340px;padding:24px;border:0;border-radius:20px;background:var(--accent);color:#0c0b11}
-.app .rp .referral-earnings-graph .uchart::after{content:"";position:absolute;z-index:-1;width:210px;height:210px;right:-74px;top:-92px;border:34px solid rgba(12,11,17,.12);border-radius:50%;pointer-events:none}
+.app .rp .referral-earnings-graph .uchart{position:relative;isolation:isolate;overflow:hidden;min-height:340px;padding:24px;border:0;border-radius:20px;background:var(--bg-card);color:var(--txt)}
 .app .rp .rp-chart-title{margin:0;font:600 21px/1.3 var(--font-ui);letter-spacing:-.02em;color:inherit}
 .app .rp .rp-chart-window{margin:8px 0 0;font-size:12px;line-height:1.5;color:inherit}
 .app .rp .referral-earnings-graph .uchart-head{flex-direction:column;margin-bottom:24px}
@@ -48,8 +45,8 @@
 .app .rp .referral-earnings-graph .usage-chart-legend span{font-size:11px;line-height:1.5;color:inherit}
 .app .rp .referral-earnings-graph .usage-chart-legend i{box-shadow:0 0 0 3px rgba(255,250,245,.24)}
 .app .rp .referral-earnings-graph :is(.uchart-yaxis,.uchart-axis){font-size:11px;line-height:1.4;color:inherit}
-.app .rp .referral-earnings-graph .uchart-lines i{border-color:rgba(12,11,17,.17)}
-.app .rp .referral-earnings-graph .uchart-col:hover,.app .rp .referral-earnings-graph .uchart-col.is-hover{background:rgba(255,250,245,.2)}
+.app .rp .referral-earnings-graph .uchart-lines i{border-color:var(--line)}
+.app .rp .referral-earnings-graph .uchart-col:hover,.app .rp .referral-earnings-graph .uchart-col.is-hover{background:var(--accent-soft)}
 .app .rp .referral-earnings-graph .uchart-empty{font-size:13px;line-height:1.5;color:inherit}
 .app .rp .referral-earnings-graph .usum{padding:24px;border:0;border-radius:20px;background:var(--txt);color:var(--bg)}
 .app .rp .referral-earnings-graph .usum-t{font-size:16px;line-height:1.4;letter-spacing:0;text-transform:none;color:inherit}

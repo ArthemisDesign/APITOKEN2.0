@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ChartTooltip } from "./chart-tooltip";
 import { useState, type CSSProperties } from "react";
 import type {
   AccountView,
@@ -276,8 +277,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
                 </button>)}
                 {hoverDay !== null && series[hoverDay] && series[hoverDay]!.value > 0n && (() => {
                   const point = series[hoverDay]!;
-                  const leftPct = Math.min(92, Math.max(8, (hoverDay + 0.5) / series.length * 100));
-                  return <div className="chart-tip" role="tooltip" style={{ left: `${leftPct}%`, bottom: `${boundedPercent(point.value, scale.max)}%` }}>
+                  return <ChartTooltip leftPercent={(hoverDay + 0.5) / series.length * 100} bottomPercent={boundedPercent(point.value, scale.max)}>
                     <div className="chart-tip-h">{fmtUtcDay(point.day, locale)}</div>
                     {chartProviders.map((provider) => {
                       const segment = point.providers.find((candidate) => candidate.provider === provider.id);
@@ -289,7 +289,7 @@ export function Usage({ account, keys, ledger, usage, ledgerAvailable }: { accou
                     <div className="chart-tip-total"><span>{copy.officialValueCol}</span><b>{formatNanoUsdSmart(point.value, locale)}</b></div>
                     <div className="chart-tip-total"><span>{copy.chargedCol}</span><b>{formatNanoUsdSmart(point.charged, locale)}</b></div>
                     <div className="chart-tip-total"><span>{copy.billedEvents}</span><b>{point.requests.toLocaleString(locale)}</b></div>
-                  </div>;
+                  </ChartTooltip>;
                 })()}
               </div>
               <div className="uchart-axis">{axisMarks.map((mark) => <span key={mark} style={{ left: `${(mark + 0.5) / series.length * 100}%` }}>{fmtUtcDay(series[mark]!.day, locale)}</span>)}</div>
