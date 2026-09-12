@@ -736,12 +736,15 @@ body.app-body .bg-decor{display:none!important}
 .overview-card-label{font:650 10px/1.4 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--txt-4)}
 .overview-rate-chip{flex:none;padding:6px 10px;border:1px solid var(--accent-line);border-radius:99px;background:var(--accent-soft);
   font:650 10px/1.2 var(--font-mono);color:var(--accent-ink);white-space:nowrap}
-.overview-balance-card{position:relative;container-type:inline-size;display:flex;min-height:292px;flex-direction:column;padding:34px 36px;overflow:hidden;background:linear-gradient(135deg,#11121a 0%,#1e2237 58%,#2a1d2d 100%);color:#fff;border-color:transparent;box-shadow:0 18px 42px -24px rgba(17,18,26,.55)}
-.overview-balance-card .overview-card-label{color:rgba(255,255,255,.58)}
+.overview-balance-card{position:relative;container-type:inline-size;display:flex;min-height:292px;flex-direction:column;padding:34px 36px;overflow:hidden}
+/* Match the shared card selector so surface and text stay paired in both themes. */
+.app .panel .card.overview-balance-card{background:linear-gradient(115deg,#151a2b,#232e49);color:#fff;border-color:#303c56;box-shadow:var(--overview-shadow)}
+.overview-balance-card .overview-card-label{color:#c3ccde}
 .overview-balance-card .overview-balance-number{color:#fff}
-.overview-balance-card .btn-ghost{border-color:rgba(255,255,255,.25);color:#fff;background:rgba(255,255,255,.08)}
-.overview-balance-card::after{content:"";position:absolute;right:-84px;bottom:-126px;width:300px;height:300px;border-radius:50%;
-  background:radial-gradient(circle,color-mix(in srgb,var(--accent) 9%,transparent),transparent 68%);pointer-events:none}
+.app .panel .overview-balance-card .btn-primary{background:#fff;color:#182139;border-color:#fff}
+.app .panel .overview-balance-card .btn-ghost{border-color:#6d7991;color:#fff;background:transparent}
+.app .panel .overview-balance-card .btn:hover{background:#dfe6f3;color:#182139;border-color:#dfe6f3}
+.overview-balance-card::after{content:none}
 .overview-balance-card>*{position:relative;z-index:1}
 .overview-balance-main{display:flex;flex:1;min-width:0;flex-direction:column}
 .overview-balance-number{display:block;margin-top:24px;font-size:clamp(48px,5vw,64px);font-weight:710;line-height:.92;letter-spacing:-.065em;color:var(--txt);
@@ -783,24 +786,17 @@ body.app-body .bg-decor{display:none!important}
 .overview-onboarding li strong{font-size:11.5px;line-height:1.35;color:var(--txt)}
 .overview-onboarding li small{font-size:10.5px;line-height:1.4;color:var(--txt-4)}
 
-.overview-metric-card{display:flex;min-height:190px;flex-direction:column;padding:23px 24px;transition:transform .18s ease,box-shadow .18s ease}
-.overview-metric-card:hover{transform:translateY(-2px);box-shadow:var(--overview-shadow),0 8px 20px color-mix(in srgb,var(--txt) 7%,transparent)}
+.overview-metric-card{display:flex;min-height:190px;flex-direction:column;padding:23px 24px}
 .overview-metric-mark{display:grid;place-items:center;width:32px;height:32px;border:1px solid color-mix(in srgb,var(--line) 84%,transparent);
   border-radius:9px;background:var(--bg-soft);font:600 12px var(--font-mono);color:var(--txt-4)}
 /* Headlines wrap at word boundaries only — overflow-wrap:anywhere split the RU headline
    "Единая ставка" mid-word ("Едина/я") on narrow cards. */
 .overview-metric-card>strong{display:block;margin-top:22px;font-size:25px;font-weight:680;line-height:1.12;letter-spacing:-.035em;color:var(--txt);overflow-wrap:break-word;hyphens:none}
-.overview-pricing-card>strong{margin-bottom:18px}
+.overview-pricing-card>strong{margin-bottom:0}
 .overview-metric-card>p{margin:9px 0 13px;font-size:12.5px;line-height:1.5;color:var(--txt-3)}
 .overview-metric-card>p b{color:var(--accent-ink)}
 .overview-card-link{align-self:flex-start;margin-top:auto;font-family:var(--font-ui);font-size:12.5px;font-weight:600;color:var(--accent-ink)}
 .overview-card-link:hover{text-decoration:underline;text-underline-offset:3px}
-.overview-pricing-facts{display:grid;grid-template-columns:1fr;gap:0;margin-top:auto;overflow:hidden;
-  border:1px solid var(--line);border-radius:10px;background:var(--line)}
-.overview-pricing-facts>span{display:flex;min-width:0;flex-direction:column;gap:3px;padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:color-mix(in srgb,var(--accent-soft) 36%,var(--bg-card))}
-.overview-pricing-facts small{font:650 8.5px/1.35 var(--font-mono);letter-spacing:.09em;text-transform:uppercase;color:var(--txt-4)}
-.overview-pricing-facts b{font:700 14px/1.35 var(--font-ui);color:var(--txt)}
-.overview-pricing-facts>span:first-child b{color:var(--accent-ink)}
 .overview-progress{height:6px;margin:1px 0 11px;overflow:hidden;border-radius:99px;background:color-mix(in srgb,var(--accent) 12%,var(--bg-soft))}
 .overview-progress span{display:block;height:100%;border-radius:inherit;background:var(--accent)}
 .overview-milestone-card>small{display:block;margin-bottom:12px;font-size:10.5px;line-height:1.45;color:var(--txt-4)}
@@ -816,7 +812,7 @@ body.app-body .bg-decor{display:none!important}
 .overview-activity-row:last-child{border-bottom:0}
 .overview-activity-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--bg-soft);font:700 13px var(--font-mono);color:var(--txt-3)}
 .overview-activity-icon.topup{background:color-mix(in srgb,var(--ok) 9%,var(--bg-card));color:var(--ok)}
-.overview-activity-icon.charge{background:var(--accent-soft);color:var(--accent-ink)}
+.overview-activity-icon.charge{background:var(--bg-soft);color:var(--txt-3)}
 .overview-activity-name{display:flex;min-width:0;flex-direction:column;gap:2px}
 .overview-activity-name strong{font-size:13px;color:var(--txt)}
 .overview-activity-name span{overflow:hidden;font-size:12px;color:var(--txt-4);text-overflow:ellipsis;white-space:nowrap}
@@ -827,10 +823,6 @@ body.app-body .bg-decor{display:none!important}
 .overview-activity-empty{padding:34px 26px;font-size:13px;color:var(--txt-4)}
 
 @container (min-width:640px){
-  .overview-balance-main{display:grid;grid-template-columns:minmax(260px,.88fr) minmax(300px,1.12fr);align-items:end;gap:36px;margin-top:26px}
-  .overview-balance-number{align-self:center;margin-top:0}
-  .overview-balance-detail{justify-self:end;width:min(100%,470px);padding-bottom:2px}
-  .overview-balance-value{margin-top:0}
   .overview-access-body{display:grid;grid-template-columns:auto minmax(220px,1fr) auto;align-items:center;gap:28px;margin-top:24px}
   .overview-access-value{margin-top:0}
   .overview-access-body>p{margin:0}

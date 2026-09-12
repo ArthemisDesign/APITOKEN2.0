@@ -629,9 +629,8 @@ export const Overview = memo(function Overview({ account, user, usableKeys, tota
       <article className="card overview-metric-card overview-pricing-card">
         <div className="overview-card-head"><span className="overview-card-label">{copy.currentPricing}</span><span className="overview-metric-mark" aria-hidden="true">%</span></div>
         <strong>{pricingTitle}</strong>
-        <div className="overview-pricing-facts">
-          <span><small>{localCopy.discountLabel}</small><b>{pricingTitle}</b></span>
-        </div>
+        <p>{account.pricing ? localCopy.discountLabel : localCopy.policyUnavailable}</p>
+        <Link className="link overview-card-link" href={`${DOCS_URL}#pricing`}>{copy.howPricingWorks} →</Link>
       </article>
 
       <article className="card overview-metric-card overview-milestone-card">
