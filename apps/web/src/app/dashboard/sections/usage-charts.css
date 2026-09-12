@@ -16,13 +16,13 @@
 .usage-trend-y{position:relative;min-width:36px;font-size:11px;color:var(--txt-3);font-variant-numeric:tabular-nums}
 .usage-trend-y span{position:absolute;right:0;transform:translateY(-50%);white-space:nowrap}
 .usage-trend-y::before{content:"$0.0000";visibility:hidden}
-.usage-trend-plot{position:relative;min-width:0;cursor:crosshair;touch-action:pan-y;border-radius:3px;outline-offset:5px}
+.usage-trend-plot{position:relative;min-width:0;cursor:crosshair;touch-action:pan-y;border-radius:12px;outline-offset:5px;background:linear-gradient(180deg,color-mix(in srgb,var(--trend-color) 5%,transparent),transparent 72%)}
 .usage-trend-plot:focus-visible{outline:2px solid color-mix(in srgb,var(--trend-color) 55%,transparent)}
 .usage-trend-plot svg{display:block;width:100%;height:100%;overflow:visible}
 .usage-trend-plot .trend-grid{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke}
-.usage-trend-plot .trend-line{fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+.usage-trend-plot .trend-line{fill:none;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke;filter:drop-shadow(0 2px 4px color-mix(in srgb,var(--trend-color) 25%,transparent))}
 .usage-trend-plot .trend-crosshair{stroke:var(--txt-4);stroke-width:1;stroke-dasharray:3 5;vector-effect:non-scaling-stroke;opacity:.6}
-.usage-trend-plot .trend-dot{position:absolute;width:9px;height:9px;border:2px solid var(--bg-card);border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;background:var(--trend-color);box-shadow:0 0 0 1px var(--trend-color)}
+.usage-trend-plot .trend-dot{position:absolute;width:11px;height:11px;border:3px solid var(--bg-card);border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;background:var(--trend-color);box-shadow:0 0 0 1px var(--trend-color),0 0 16px color-mix(in srgb,var(--trend-color) 65%,transparent)}
 .usage-trend-x{position:relative;grid-column:2;font-size:11px;color:var(--txt-3);font-variant-numeric:tabular-nums}
 .usage-trend-x span{position:absolute;top:3px;white-space:nowrap}
 .usage-trend-hint{grid-column:2;margin:10px 0 0;font-size:11px;line-height:1.6;color:var(--txt-4)}
@@ -76,7 +76,7 @@
   .usage-model-bars{grid-template-columns:1fr;gap:20px}.usage-trend-detail{gap:0 12px;padding:15px}
 }
 
-.usage-trend-plot .trend-provider-area{opacity:.2}
+.usage-trend-plot .trend-provider-area{opacity:.16}
 [data-theme="dark"] .usage-trend-plot .trend-provider-area{opacity:.3}
 .trend-detail-providers div>span{display:flex;align-items:center;gap:6px}
 .trend-detail-providers i{width:6px;height:6px;flex:none;border-radius:50%}

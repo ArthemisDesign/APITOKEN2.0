@@ -172,23 +172,28 @@ function usage(window: string): UsageView {
       { model: "claude-haiku-4-5-20251001", provider: "anthropic", requests: 5, inputTokens: 104, outputTokens: 4_996, cacheReadTokens: 354_058, cacheWrite5mTokens: 177_029, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "281776050", chargedNano: "112710420" },
       { model: "gpt-5.6-luna", provider: "openai", requests: 4, inputTokens: 100_000, outputTokens: 20_000, cacheReadTokens: 0, cacheWrite5mTokens: 0, cacheWrite1hTokens: 0, webSearchRequests: 0, officialNano: "220000000", chargedNano: "88000000" },
     ],
-    daily: [
-      { dayTs: todayUtc - 3 * DAY_S, requests: 20, officialNano: "8000000000", chargedNano: "3200000000" },
-      { dayTs: todayUtc - 2 * DAY_S, requests: 16, officialNano: "6000000000", chargedNano: "2400000000" },
-      { dayTs: todayUtc - DAY_S, requests: 13, officialNano: "5000000000", chargedNano: "2000000000" },
-      { dayTs: todayUtc, requests: 22, officialNano: "7679893050", chargedNano: "3071957220" },
-    ],
-    dailyProviders: [
-      { dayTs: todayUtc - 3 * DAY_S, provider: "anthropic", requests: 16, officialNano: "7000000000", chargedNano: "2800000000" },
-      { dayTs: todayUtc - 3 * DAY_S, provider: "openai", requests: 4, officialNano: "1000000000", chargedNano: "400000000" },
-      { dayTs: todayUtc - 2 * DAY_S, provider: "anthropic", requests: 13, officialNano: "5000000000", chargedNano: "2000000000" },
-      { dayTs: todayUtc - 2 * DAY_S, provider: "openai", requests: 3, officialNano: "1000000000", chargedNano: "400000000" },
-      { dayTs: todayUtc - DAY_S, provider: "anthropic", requests: 10, officialNano: "4000000000", chargedNano: "1600000000" },
-      { dayTs: todayUtc - DAY_S, provider: "openai", requests: 3, officialNano: "1000000000", chargedNano: "400000000" },
-      { dayTs: todayUtc, provider: "anthropic", requests: 20, officialNano: "6984893050", chargedNano: "2793957220" },
-      { dayTs: todayUtc, provider: "openai", requests: 2, officialNano: "695000000", chargedNano: "278000000" },
-    ],
-    keys: [
+    daily: Array.from({ length: 30 }, (_, index) => {
+      const dayTs = todayUtc - (29 - index) * DAY_S;
+      const weights = [3, 5, 2, 7, 4, 9, 6, 4, 8, 5, 3, 7, 10, 6, 4, 8, 5, 3, 9, 6, 4, 7, 5, 8, 3, 6, 9, 4, 7, 11];
+      const weight = BigInt(weights[index]!);
+      const totalWeight = BigInt(weights.reduce((sum, value) => sum + value, 0));
+      const officialNano = (26_679_893_050n * weight / totalWeight).toString();
+      const chargedNano = (10_671_957_220n * weight / totalWeight).toString();
+      return { dayTs, requests: Math.max(1, Math.round(71 * weights[index]! / weights.reduce((sum, value) => sum + value, 0))), officialNano, chargedNano };
+    }),
+    dailyProviders: Array.from({ length: 30 }, (_, index) => {
+      const dayTs = todayUtc - (29 - index) * DAY_S;
+      const weights = [3, 5, 2, 7, 4, 9, 6, 4, 8, 5, 3, 7, 10, 6, 4, 8, 5, 3, 9, 6, 4, 7, 5, 8, 3, 6, 9, 4, 7, 11];
+      const totalWeight = BigInt(weights.reduce((sum, value) => sum + value, 0));
+      const weight = BigInt(weights[index]!);
+      const anthropic = 23_194_493_050n * weight / totalWeight;
+      const openai = 3_485_400_000n * weight / totalWeight;
+      return [
+        { dayTs, provider: "anthropic", requests: Math.max(1, Math.round(59 * weights[index]! / weights.reduce((sum, value) => sum + value, 0))), officialNano: anthropic.toString(), chargedNano: (anthropic * 2n / 5n).toString() },
+        { dayTs, provider: "openai", requests: Math.max(1, Math.round(12 * weights[index]! / weights.reduce((sum, value) => sum + value, 0))), officialNano: openai.toString(), chargedNano: (openai * 2n / 5n).toString() },
+      ];
+    }).flat(),
+        keys: [
       { keyMasked: "sk-pool-a5b5••••••••eeb", requests: 45, officialNano: "18000000000", chargedNano: "7200000000" },
       { keyMasked: "sk-pool-f367••••••••94ea", requests: 26, officialNano: "8679893050", chargedNano: "3471957220" },
     ],

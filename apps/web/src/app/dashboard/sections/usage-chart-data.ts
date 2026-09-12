@@ -21,7 +21,19 @@ export function usageChartGeometry(points: ChartPoint[], providerIds: (string | 
   const ceiling = step * 4n;
   const x = (index: number) => points.length <= 1 ? 500 : index / (points.length - 1) * 1000;
   const y = (amount: bigint) => 240 - chartRatio(amount, ceiling) * 220;
-  const position = (index: number, value: bigint) => `${x(index).toFixed(2)},${y(value).toFixed(2)}`;
+  // Shared horizontal handles keep every band ordered and within its daily endpoints.
+  // Unlike unconstrained splines, these curves cannot invent peaks or negative usage.
+  const path = (values: bigint[], reverse = false) => {
+    const indices = values.map((_, index) => index);
+    if (reverse) indices.reverse();
+    return indices.map((index, offset) => {
+      const end = `${x(index).toFixed(2)},${y(values[index]!).toFixed(2)}`;
+      if (!offset) return `M${end}`;
+      const previous = indices[offset - 1]!;
+      const handle = (x(index) - x(previous)) / 3;
+      return `C${(x(previous) + handle).toFixed(2)},${y(values[previous]!).toFixed(2)} ${(x(index) - handle).toFixed(2)},${y(values[index]!).toFixed(2)} ${end}`;
+    }).join(" ");
+  };
   const totals = points.map(() => 0n);
   const layers = providerIds.map(id => {
     const lower = [...totals];
@@ -30,8 +42,8 @@ export function usageChartGeometry(points: ChartPoint[], providerIds: (string | 
       return amount > 0n ? amount : 0n;
     });
     const upper = values.map((value, index) => totals[index] = totals[index]! + value);
-    const line = upper.map((value, index) => `${index ? "L" : "M"}${position(index, value)}`).join(" ");
-    const baseline = lower.map((value, index) => `L${position(index, value)}`).reverse().join(" ");
+    const line = path(upper);
+    const baseline = path(lower, true).replace(/^M/, "L");
     return { id, values, upper, lower, line, area: points.length ? `${line} ${baseline} Z` : "" };
   });
   return {
