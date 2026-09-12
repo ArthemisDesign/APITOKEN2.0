@@ -700,7 +700,7 @@ body.app-body .bg-decor{display:none!important}
 /* The former overview-only surface (blur top bar, sans title, soft cards) is now the shared
    dashboard baseline — see .app-main / .app-top / .app-body-in above. */
 
-.overview-panel{display:grid;gap:24px}
+.overview-panel{display:grid;gap:28px}
 .app .panel .card{border-color:color-mix(in srgb,var(--line) 88%,transparent);border-radius:var(--overview-radius);
   background:linear-gradient(180deg,color-mix(in srgb,var(--bg-card) 97%,var(--txt) 3%),var(--bg-card) 52%);
   box-shadow:var(--overview-shadow)}
@@ -730,13 +730,16 @@ body.app-body .bg-decor{display:none!important}
 .overview-alert strong{font-size:13.5px;color:var(--txt)}
 .overview-alert>div>span{font-size:12.5px;line-height:1.5;color:var(--txt-3)}
 
-.overview-primary-grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,.9fr);gap:24px}
-.overview-metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.overview-primary-grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(280px,.78fr);gap:18px}
+.overview-metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
 .overview-card-head{display:flex;align-items:center;justify-content:space-between;gap:14px;min-width:0}
 .overview-card-label{font:650 10px/1.4 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--txt-4)}
 .overview-rate-chip{flex:none;padding:6px 10px;border:1px solid var(--accent-line);border-radius:99px;background:var(--accent-soft);
   font:650 10px/1.2 var(--font-mono);color:var(--accent-ink);white-space:nowrap}
-.overview-balance-card{position:relative;container-type:inline-size;display:flex;min-height:276px;flex-direction:column;padding:32px 34px;overflow:hidden;background:linear-gradient(140deg,var(--bg-card),color-mix(in srgb,var(--accent-soft) 34%,var(--bg-card)))}
+.overview-balance-card{position:relative;container-type:inline-size;display:flex;min-height:292px;flex-direction:column;padding:34px 36px;overflow:hidden;background:linear-gradient(135deg,#11121a 0%,#1e2237 58%,#2a1d2d 100%);color:#fff;border-color:transparent;box-shadow:0 18px 42px -24px rgba(17,18,26,.55)}
+.overview-balance-card .overview-card-label{color:rgba(255,255,255,.58)}
+.overview-balance-card .overview-balance-number{color:#fff}
+.overview-balance-card .btn-ghost{border-color:rgba(255,255,255,.25);color:#fff;background:rgba(255,255,255,.08)}
 .overview-balance-card::after{content:"";position:absolute;right:-84px;bottom:-126px;width:300px;height:300px;border-radius:50%;
   background:radial-gradient(circle,color-mix(in srgb,var(--accent) 9%,transparent),transparent 68%);pointer-events:none}
 .overview-balance-card>*{position:relative;z-index:1}
@@ -749,7 +752,7 @@ body.app-body .bg-decor{display:none!important}
 .overview-balance-rate{max-width:52ch;margin:0;font-size:12.5px;line-height:1.55;color:var(--txt-4)}
 .overview-card-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:auto;padding-top:20px}
 
-.overview-access-card{container-type:inline-size;display:flex;min-height:276px;flex-direction:column;padding:32px}
+.overview-access-card{container-type:inline-size;display:flex;min-height:292px;flex-direction:column;padding:30px}
 .overview-access-card.success{border-color:color-mix(in srgb,var(--ok) 25%,var(--line))}
 .overview-access-card.warning{border-color:color-mix(in srgb,var(--warn) 34%,var(--line))}
 .overview-status{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border:1px solid var(--line);border-radius:99px;
@@ -780,7 +783,7 @@ body.app-body .bg-decor{display:none!important}
 .overview-onboarding li strong{font-size:11.5px;line-height:1.35;color:var(--txt)}
 .overview-onboarding li small{font-size:10.5px;line-height:1.4;color:var(--txt-4)}
 
-.overview-metric-card{display:flex;min-height:210px;flex-direction:column;padding:24px 25px;transition:transform .18s ease,box-shadow .18s ease}
+.overview-metric-card{display:flex;min-height:190px;flex-direction:column;padding:23px 24px;transition:transform .18s ease,box-shadow .18s ease}
 .overview-metric-card:hover{transform:translateY(-2px);box-shadow:var(--overview-shadow),0 8px 20px color-mix(in srgb,var(--txt) 7%,transparent)}
 .overview-metric-mark{display:grid;place-items:center;width:32px;height:32px;border:1px solid color-mix(in srgb,var(--line) 84%,transparent);
   border-radius:9px;background:var(--bg-soft);font:600 12px var(--font-mono);color:var(--txt-4)}
