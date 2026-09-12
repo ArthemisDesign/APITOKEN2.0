@@ -4,7 +4,7 @@ import { useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { UsageView } from "@/lib/api";
 import { useI18n } from "@/components/i18n-provider";
 import { buildUtcProviderUsageSeries, usageWindowDays } from "@/lib/usage-series";
-import { DASHBOARD_CHART_COLORS, DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
+import { DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
 import { formatNanoUsd, roundDivide, useDashboardCopy } from "./shared";
 import { usageChartGeometry } from "./usage-chart-data";
 import "./usage-charts.css";
@@ -13,6 +13,7 @@ const labels = {
   en: { title: "Daily spending", subtitle: "List-price value by provider", detail: "Day details", hint: "Hover or tap to explore · ← → to change day", models: "Spending by model", unattributed: "Unattributed" },
   ru: { title: "Расходы по дням", subtitle: "Стоимость по официальному тарифу в разрезе провайдеров", detail: "Детали за день", hint: "Наведите или нажмите · ← → для выбора дня", models: "Расходы по моделям", unattributed: "Без провайдера" },
 };
+const USAGE_PROVIDER_COLORS = ["#ef4444", "#172554", "#dc2626", "#1e3a8a"] as const;
 
 export function UsageTrend({ usage }: { usage: UsageView }) {
   const copy = useDashboardCopy();
@@ -26,7 +27,7 @@ export function UsageTrend({ usage }: { usage: UsageView }) {
   const providerOrder = new Map(DASHBOARD_PROVIDERS.map((provider, index) => [provider.id, index]));
   const providers: { id: string | null; name: string; color: string }[] = [...new Set(points.flatMap(point => point.providers.filter(provider => BigInt(provider.officialNano) > 0n).map(provider => provider.provider)))]
     .sort((a, b) => (providerOrder.get(a) ?? Number.MAX_SAFE_INTEGER) - (providerOrder.get(b) ?? Number.MAX_SAFE_INTEGER) || a.localeCompare(b))
-    .map((id, index) => ({ id, name: DASHBOARD_PROVIDERS.find(provider => provider.id === id)?.name ?? id, color: DASHBOARD_CHART_COLORS[index % DASHBOARD_CHART_COLORS.length]! }));
+    .map((id, index) => ({ id, name: DASHBOARD_PROVIDERS.find(provider => provider.id === id)?.name ?? id, color: USAGE_PROVIDER_COLORS[index % USAGE_PROVIDER_COLORS.length]! }));
   if (points.some(point => BigInt(point.unattributedOfficialNano) > 0n)) providers.push({ id: null, name: text.unattributed, color: fallbackProvider("unattributed", text.unattributed).color });
   const geometry = usageChartGeometry(points, providers.map(provider => provider.id));
   const index = Math.min(selected ?? points.length - 1, points.length - 1);
