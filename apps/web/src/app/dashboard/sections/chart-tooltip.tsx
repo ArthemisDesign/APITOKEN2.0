@@ -31,8 +31,11 @@ export function ChartTooltip({ leftPercent, bottomPercent, children }: {
     };
 
     position();
+    // Reposition only when the plot or card box changes (window resize, layout
+    // shifts). Observing the tooltip itself created a feedback loop: a content
+    // change resized the tooltip, the observer repositioned it, the style write
+    // triggered the observer again — the tooltip visibly jittered on hover.
     const observer = new ResizeObserver(position);
-    observer.observe(tooltip);
     observer.observe(plot);
     observer.observe(card);
     return () => observer.disconnect();
