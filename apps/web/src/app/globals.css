@@ -22,11 +22,8 @@
   --bg:#F4F3EF;
   --bg-soft:#ECEBE6;
   --bg-card:#FBFAF7;
-  /* Dashboard: white canvas, no grey field. Cards keep the paper surface and
-     add the liquid-glass treatment in apps/web (see .app-main below). */
+  /* Dashboard canvas is pure white — no grey field anywhere. */
   --dash-bg:#FFFFFF;
-  --dash-glass:rgba(255,255,255,.72);
-  --dash-glass-soft:rgba(255,255,255,.55);
   --line:rgba(12,11,17,0.12);
   --line-strong:rgba(12,11,17,0.22);
   --txt:#0C0B11;              /* 100% — key text */
@@ -73,8 +70,6 @@
   --bg-soft:#141218;
   --bg-card:#18161D;
   --dash-bg:#0C0B11;
-  --dash-glass:rgba(24,22,29,.62);
-  --dash-glass-soft:rgba(24,22,29,.45);
   --line:rgba(240,239,235,0.12);
   --line-strong:rgba(240,239,235,0.22);
   --txt:#F4F3EF;
@@ -1039,16 +1034,11 @@ a.step:hover .step-cta::after{margin-left:4px}
 /* The shell follows the theme surface — light card in light theme, dark card
    in dark theme. Only the coral receipt keeps a fixed accent surface. */
 .credits-shell{border-radius:22px;padding:30px 32px 34px;color:var(--txt);
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.5),rgba(255,255,255,0) 42%),
-    var(--dash-glass);
-  backdrop-filter:blur(18px) saturate(1.35);-webkit-backdrop-filter:blur(18px) saturate(1.35);
+  background:#FFFFFF;
   border:1px solid color-mix(in srgb,var(--line) 88%,transparent);
   box-shadow:var(--overview-shadow)}
 [data-theme="dark"] .credits-shell{
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.06),rgba(255,255,255,0) 42%),
-    var(--dash-glass)}
+  background:#18161D}
 .credits-shell-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:26px}
 .credits-shell-label{font:650 10px/1.4 var(--font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--txt-4)}
 .credits-shell-chip{flex:none;padding:5px 11px;border-radius:99px;background:var(--accent);color:#fff;
