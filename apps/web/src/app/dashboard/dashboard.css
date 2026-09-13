@@ -737,17 +737,19 @@ body.app-body .bg-decor{display:none!important}
 .overview-rate-chip{flex:none;padding:6px 10px;border:1px solid var(--accent-line);border-radius:99px;background:var(--accent-soft);
   font:650 10px/1.2 var(--font-mono);color:var(--accent-ink);white-space:nowrap}
 .overview-balance-card{position:relative;container-type:inline-size;display:flex;min-height:292px;flex-direction:column;padding:34px 36px;overflow:hidden}
-/* Balance hero card follows the theme surface — a fixed ink/paper card read as
-   if the theme toggle did nothing. The coral glow keeps it the hero. */
+/* Balance hero card is the one fixed accent block of the dashboard: coral in
+   both themes, matching the top-up receipt on the credits page. */
 .app .panel .card.overview-balance-card{
-  background:
-    radial-gradient(520px 240px at 88% -60px,color-mix(in srgb,var(--accent) 12%,transparent),transparent 72%),
-    linear-gradient(180deg,color-mix(in srgb,var(--bg-card) 97%,var(--txt) 3%),var(--bg-card) 52%);
-  color:var(--txt);border-color:color-mix(in srgb,var(--line) 88%,transparent);box-shadow:var(--overview-shadow)}
-.overview-balance-card .overview-card-label{color:var(--txt-4)}
-.overview-balance-card .overview-balance-number{color:var(--txt)}
-.overview-balance-card .overview-balance-value{color:var(--txt-3)}
-.overview-balance-card .overview-balance-value b{color:var(--accent-ink)}
+  background:linear-gradient(135deg,var(--accent) 0%,var(--accent-2) 100%);
+  color:#fff;border-color:transparent;box-shadow:0 18px 46px -30px color-mix(in srgb,var(--accent) 65%,transparent)}
+.overview-balance-card .overview-card-label{color:rgba(255,255,255,.8)}
+.overview-balance-card .overview-balance-number{color:#fff}
+.overview-balance-card .overview-balance-value{color:rgba(255,255,255,.85)}
+.overview-balance-card .overview-balance-value b{color:#fff}
+.app .panel .overview-balance-card .btn-primary{background:var(--ink);color:var(--paper);border-color:var(--ink);border-radius:99px}
+.app .panel .overview-balance-card .btn-primary:hover{background:var(--ink-2);border-color:var(--ink-2)}
+.app .panel .overview-balance-card .btn-ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.55);border-radius:99px}
+.app .panel .overview-balance-card .btn-ghost:hover{background:rgba(255,255,255,.14);border-color:#fff;color:#fff}
 .overview-balance-card::after{content:none}
 .overview-balance-card>*{position:relative;z-index:1}
 .overview-balance-main{display:flex;flex:1;min-width:0;flex-direction:column}
