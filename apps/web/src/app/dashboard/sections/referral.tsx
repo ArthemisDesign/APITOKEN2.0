@@ -1,7 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
-import { ChartTooltip } from "./chart-tooltip";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useI18n } from "@/components/i18n-provider";
 import {
   api,
@@ -13,8 +12,10 @@ import {
   type ReferralSnapshot,
   type ReferralTeamMember,
 } from "@/lib/api";
-import { DASHBOARD_CHART_COLORS, DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
+import { DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
 import { CopyButton, formatNanoUsd, interpolate, PageHeading } from "./shared";
+import { usageChartGeometry } from "./usage-chart-data";
+import "./usage-charts.css";
 import "./referral.css";
 
 // Partner workflows retain their own data contract; presentation follows Usage.
@@ -23,6 +24,8 @@ const PARTNER_SITE_ORIGIN = "https://apitoken.sale";
 const TABS = ["overview", "referrals", "team", "payouts", "docs"] as const;
 type ReferralTab = typeof TABS[number];
 type Language = "en" | "ru";
+// Earnings chart shares the Usage trend palette.
+const USAGE_PROVIDER_COLORS = ["#ef4444", "#172554", "#dc2626", "#1e3a8a"] as const;
 
 const copy = {
   en: {
@@ -34,7 +37,7 @@ const copy = {
     disabledTitle: "Partner access is paused", disabledBody: "Your account is still intact, but partner actions are disabled. Contact support to clarify or restore access.", contact: "Contact @bozinodev",
     overview: "Overview", referrals: "Referrals", team: "Team", requests: "Requests", payouts: "Payouts", docs: "Docs",
     available: "Available", earned30: "Net earned · 30 days", direct: "Direct earnings", teamIncome: "Retained Team share", payable: "Payable", fixedRate: "Your platform commission", fixedRateHint: "Set only by apiToken.sale",
-    chartTitle: "Earnings over time", chartWindow: "Last 30 days", noEarnings: "No partner earnings in this period yet.", providerSummary: "Period summary", providerCards: "Earnings by provider", providerCardsSub: "The same provider view as Usage, calculated only from eligible paid referral usage.", ready: "Active", events: "events", earned: "Earned", spend: "Paid usage", adjustments: "Adjustments", net: "Net", dailyAverage: "Daily average", peakDay: "Peak day",
+    chartTitle: "Earnings over time", chartSubtitle: "Daily earnings by provider", chartWindow: "Last 30 days", chartHint: "Hover or tap to explore · ← → to change day", dayDetail: "Day details", noEarnings: "No partner earnings in this period yet.", providerSummary: "Period summary", providerCards: "Earnings by provider", providerCardsSub: "The same provider view as Usage, calculated only from eligible paid referral usage.", ready: "Active", events: "events", earned: "Earned", spend: "Paid usage", adjustments: "Adjustments", net: "Net", dailyAverage: "Daily average", peakDay: "Peak day",
     programTerms: "How the Team share works", termsBody: "Your Team share is retained from a member’s fixed platform commission; it is not added on top. With $100 of eligible spend and a 10% commission, the pool is $10. A 20% retained share gives $8 to the member and $2 to the parent — the total remains $10.",
     referralList: "Referred accounts", referralListSub: "Accounts are identified by their current apiToken.sale login email. Paid usage excludes free platform credit.", searchReferrals: "Search by email", searchPlaceholder: "name@company.com", shown: "shown", email: "Account email", type: "Type", discount: "Discount", attributed: "Joined", topups: "Top-ups", businessTerms: "B2B terms", makeB2b: "Make B2B", requestB2b: "Request B2B", editRates: "Edit rates", requestRates: "Request rates", noReferrals: "No referred accounts yet.", noSearchResults: "No accounts match this search.", unknownEmail: "Email unavailable",
     teamTitle: "Your Team", teamSub: "Invite an existing apiToken.sale account by email and set the share you keep from its commission.", invite: "Invite a partner", inviting: "Sending…", retainedShare: "Your retained share", retainedHelp: "The part of this member’s platform commission that goes to you. Your maximum is {max}%.", memberRate: "Member commission", platformControlled: "10% by default · set by apiToken.sale", delegatedTeamLimit: "Their Team limit", delegatedTeamHelp: "Maximum share they may retain from their own members.", allowInvites: "Can build a Team", allowInvitesHelp: "May invite existing apiToken.sale accounts by email.", allowB2b: "Can set B2B terms", allowB2bHelp: "May convert their referrals and set a discount within the limit.", maxB2b: "Their B2B limit", allowB2bDelegate: "Can pass on B2B access", allowB2bDelegateHelp: "May give a smaller B2B limit to their own Team.", sendInvitation: "Send invitation", inviteSent: "Invitation sent.", existingOnly: "The email must belong to an active apiToken.sale account.", teamLimit: "Your Team limit", hardLimit: "Platform hard maximum 20%", directMembers: "Direct members", valid30: "Valid for 30 days",
@@ -75,7 +78,7 @@ const copy = {
     disabledTitle: "Партнёрский доступ приостановлен", disabledBody: "Ваш аккаунт и история сохранены, но партнёрские действия отключены. Напишите в поддержку, чтобы уточнить причину или восстановить доступ.", contact: "Написать @bozinodev",
     overview: "Обзор", referrals: "Рефералы", team: "Команда", requests: "Заявки", payouts: "Выплаты", docs: "Документация",
     available: "Доступно", earned30: "Чистый доход · 30 дней", direct: "Прямой доход", teamIncome: "Удержано с команды", payable: "К выплате", fixedRate: "Ваша комиссия от платформы", fixedRateHint: "Устанавливает только apiToken.sale",
-    chartTitle: "Заработок по дням", chartWindow: "Последние 30 дней", noEarnings: "В этом периоде партнёрского заработка пока нет.", providerSummary: "Итоги периода", providerCards: "Заработок по провайдерам", providerCardsSub: "То же представление, что в Usage, но только по оплаченному использованию рефералов.", ready: "Активен", events: "событий", earned: "Заработано", spend: "Оплачено клиентами", adjustments: "Корректировки", net: "Чистыми", dailyAverage: "В среднем за день", peakDay: "Лучший день",
+    chartTitle: "Заработок по дням", chartSubtitle: "Ежедневный заработок по провайдерам", chartWindow: "Последние 30 дней", chartHint: "Наведите или нажмите · ← → для выбора дня", dayDetail: "Детали за день", noEarnings: "В этом периоде партнёрского заработка пока нет.", providerSummary: "Итоги периода", providerCards: "Заработок по провайдерам", providerCardsSub: "То же представление, что в Usage, но только по оплаченному использованию рефералов.", ready: "Активен", events: "событий", earned: "Заработано", spend: "Оплачено клиентами", adjustments: "Корректировки", net: "Чистыми", dailyAverage: "В среднем за день", peakDay: "Лучший день",
     programTerms: "Как работает удержание с команды", termsBody: "Вы удерживаете Team-долю из фиксированной комиссии участника, а не получаете надбавку сверху. При $100 оплаченного расхода и комиссии 10% общий пул равен $10. Удержание 20% оставит участнику $8 и даст родителю $2 — общая выплата останется $10.",
     referralList: "Привлечённые аккаунты", referralListSub: "Аккаунты определяются по актуальной почте входа в apiToken.sale. Бесплатные средства платформы не входят в оплаченные траты.", searchReferrals: "Поиск по почте", searchPlaceholder: "name@company.com", shown: "показано", email: "Почта аккаунта", type: "Тип", discount: "Скидка", attributed: "С нами с", topups: "Пополнения", businessTerms: "B2B-условия", makeB2b: "Сделать B2B", requestB2b: "Запросить B2B", editRates: "Изменить ставки", requestRates: "Запросить ставки", noReferrals: "Привлечённых аккаунтов пока нет.", noSearchResults: "По этому запросу ничего не найдено.", unknownEmail: "Почта недоступна",
     teamTitle: "Ваша команда", teamSub: "Пригласите существующий аккаунт apiToken.sale по почте и задайте долю, которую вы удерживаете из его комиссии.", invite: "Пригласить партнёра", inviting: "Отправляем…", retainedShare: "Ваша доля", retainedHelp: "Часть комиссии участника, которая остаётся вам. Ваш максимум — {max}%.", memberRate: "Комиссия участника", platformControlled: "По умолчанию 10% · задаёт apiToken.sale", delegatedTeamLimit: "Его лимит команды", delegatedTeamHelp: "Максимальная доля, которую он сможет удерживать со своей команды.", allowInvites: "Может собирать команду", allowInvitesHelp: "Сможет приглашать существующие аккаунты apiToken.sale по почте.", allowB2b: "Может назначать B2B", allowB2bHelp: "Сможет переводить своих рефералов в B2B и назначать скидку в пределах лимита.", maxB2b: "Его B2B-лимит", allowB2bDelegate: "Может передавать право B2B", allowB2bDelegateHelp: "Сможет дать своей команде меньший B2B-лимит.", sendInvitation: "Отправить приглашение", inviteSent: "Приглашение отправлено.", existingOnly: "Почта должна принадлежать активному аккаунту apiToken.sale.", teamLimit: "Ваш лимит команды", hardLimit: "Глобальный максимум 20%", directMembers: "Прямые участники", valid30: "Действуют 30 дней",
@@ -442,45 +445,86 @@ function EarningsChart({ snapshot, language }: { snapshot: ReferralActiveSnapsho
   const ids = [...new Set(points.flatMap((point) => point.providers.filter((provider) => provider.earned > 0n).map((provider) => provider.id)))];
   const providerOrder = new Map(DASHBOARD_PROVIDERS.map((provider, index) => [provider.id, index]));
   ids.sort((left, right) => (providerOrder.get(left) ?? 999) - (providerOrder.get(right) ?? 999) || left.localeCompare(right));
-  const providers = ids.map((id, index) => ({ ...metadata(id), color: DASHBOARD_CHART_COLORS[index % DASHBOARD_CHART_COLORS.length]! }));
+  // Same provider palette as the Usage trend chart.
+  const providers = ids.map((id, index) => ({ ...metadata(id), color: USAGE_PROVIDER_COLORS[index % USAGE_PROVIDER_COLORS.length]! }));
   const totals = points.map((point) => point.providers.reduce((sum, provider) => sum + provider.earned, 0n));
   const rawMax = totals.reduce((value, item) => item > value ? item : value, 0n);
-  const scale = niceReferralScale(rawMax);
-  const gridTicks = Array.from({ length: scale.divisions + 1 }, (_, index) => scale.max - BigInt(index) * scale.step);
-  const [hover, setHover] = useState<number | null>(null);
-  const markCount = Math.min(7, points.length);
-  const marks = points.length === 0 ? [] : [...new Set(Array.from({ length: markCount }, (_, index) => Math.round(index * (points.length - 1) / Math.max(1, markCount - 1))))];
   const totalEarned = totals.reduce((sum, value) => sum + value, 0n);
   const totalSpend = points.reduce((sum, point) => sum + point.providers.reduce((day, provider) => day + provider.spend, 0n), 0n);
   const totalEvents = points.reduce((sum, point) => sum + point.providers.reduce((day, provider) => day + provider.events, 0), 0);
   const peakIndex = totals.reduce((best, value, index) => value > (totals[best] ?? 0n) ? index : best, 0);
 
-  return <div className="usage-graph usage-analytics-card referral-earnings-graph">
-    <div className="uchart">
-      <div className="uchart-head"><div><h2 className="rp-chart-title">{text.chartTitle}</h2><p className="rp-chart-window">{text.chartWindow}</p></div><div className="uchart-head-meta"><div className="usage-chart-legend" aria-label={text.providerSummary}>{providers.map((provider) => <span key={provider.id}><i style={{ background: provider.color }} />{provider.name}</span>)}</div></div></div>
-      {rawMax === 0n ? <div className="uchart-empty">{text.noEarnings}</div> : <div className="uchart-grid">
-        <div className="uchart-yaxis">{gridTicks.map((tick, index) => <span key={index}>{formatReferralAxis(tick, locale)}</span>)}</div>
-        <div className="uchart-plotwrap"><div className="uchart-lines">{gridTicks.map((_, index) => <i key={index} />)}</div>
-          <div className="uchart-plot" onMouseLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) setHover(null); }}>
-            {points.map((point, index) => <button type="button" key={`${point.date}-${index}`} className={`uchart-col${hover === index ? " is-hover" : ""}`} aria-label={[`${date(point.date, locale)}. ${text.earned}: ${formatNanoUsd(totals[index] ?? 0n, locale)}`, ...point.providers.filter((item) => item.earned > 0n).map((item) => `${metadata(item.id).name}: ${formatNanoUsd(item.earned, locale)}`)].join(". ")} onMouseEnter={() => setHover(index)} onFocus={() => setHover(index)} onBlur={() => setHover((current) => current === index ? null : current)} onClick={() => setHover((current) => current === index ? null : index)} onKeyDown={(event) => { if (event.key === "Escape") { setHover(null); event.currentTarget.blur(); } }}><div className="uchart-col-fill">{providers.map((provider) => { const item = point.providers.find((candidate) => candidate.id === provider.id); return item && item.earned > 0n ? <div className="uchart-seg" key={provider.id} style={{ height: `${boundedReferralPercent(item.earned, scale.max)}%`, background: provider.color }} /> : null; })}</div></button>)}
-            {hover !== null && points[hover] && (totals[hover] ?? 0n) > 0n && <ChartTooltip leftPercent={(hover + .5) / points.length * 100} bottomPercent={boundedReferralPercent(totals[hover] ?? 0n, scale.max)}><div className="chart-tip-h">{date(points[hover]!.date, locale)}</div>{providers.map((provider) => { const item = points[hover]!.providers.find((candidate) => candidate.id === provider.id); return item && item.earned > 0n ? <div className="chart-tip-row" key={provider.id}><span className="chart-tip-dot" style={{ background: provider.color }} /><span className="chart-tip-nm">{provider.name}</span><b>{formatNanoUsd(item.earned, locale)}</b></div> : null; })}<div className="chart-tip-total"><span>{text.earned}</span><b>{formatNanoUsd(totals[hover] ?? 0n, locale)}</b></div></ChartTooltip>}
-          </div>
-          <div className="uchart-axis">{marks.map((mark, index) => <span key={mark} style={index === 0 ? { left: 0, transform: "none" } : index === marks.length - 1 ? { right: 0, transform: "none" } : { left: `${(mark + .5) / points.length * 100}%` }}>{date(points[mark]!.date, locale)}</span>)}</div>
-        </div>
-      </div>}
-    </div>
-    <div className="usum"><span className="usum-t">{text.providerSummary}</span><div className="usum-row"><span>{text.earned}</span><b className="accent">{formatNanoUsd(totalEarned, locale)}</b></div><div className="usum-row"><span>{text.spend}</span><b>{formatNanoUsd(totalSpend, locale)}</b></div><div className="usum-row"><span>{text.events}</span><b>{totalEvents.toLocaleString(locale)}</b></div><div className="usum-row"><span>{text.peakDay}</span><b>{rawMax > 0n && points[peakIndex] ? `${date(points[peakIndex]!.date, locale)} · ${formatNanoUsd(rawMax, locale)}` : "—"}</b></div><div className="usum-row"><span>{text.dailyAverage}</span><b>{points.length ? formatNanoUsd(totalEarned / BigInt(points.length), locale) : "—"}</b></div></div>
-  </div>;
-}
+  // Same line-chart format as the Usage trend: stacked provider areas, a
+  // crosshair, a day-detail panel and shared geometry/palette.
+  const geometryPoints = points.map((point, pointIndex) => ({
+    official: totals[pointIndex] ?? 0n,
+    providers: point.providers.map((provider) => ({ provider: provider.id, officialNano: String(provider.earned) })),
+    unattributedOfficialNano: "0",
+  }));
+  const providerIds: (string | null)[] = providers.map((provider) => provider.id);
+  const geometry = usageChartGeometry(geometryPoints, providerIds);
+  const [selected, setSelected] = useState<number | null>(null);
+  const index = Math.min(selected ?? points.length - 1, points.length - 1);
+  const point = points[index];
+  const dateFull = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString(locale, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+  const axisMarks = Array.from({ length: Math.min(5, points.length) }, (_, i) => Math.round(i * (points.length - 1) / Math.max(1, Math.min(5, points.length) - 1)));
+  const peak = points.length && rawMax > 0n ? points[peakIndex] : undefined;
+  const money = (amount: bigint) => formatNanoUsd(amount, locale, 0, amount > 0n && amount < 10_000_000n ? 4 : 2);
+  const ariaValue = point ? [`${dateFull(point.date)}. ${text.earned}: ${money(totals[index] ?? 0n)}`, ...providers.flatMap((provider, providerIndex) => geometry.layers[providerIndex]!.values[index]! > 0n ? [`${provider.name}: ${money(geometry.layers[providerIndex]!.values[index]!)}`] : [])].join(". ") : text.noEarnings;
+  function selectPointer(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.pointerType === "touch" && event.type === "pointermove" && !event.buttons) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setSelected(Math.max(0, Math.min(points.length - 1, Math.round((event.clientX - bounds.left) / bounds.width * (points.length - 1)))));
+  }
+  function selectKey(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const next = event.key === "ArrowLeft" || event.key === "ArrowDown" ? index - 1
+      : event.key === "ArrowRight" || event.key === "ArrowUp" ? index + 1
+      : event.key === "Home" ? 0 : event.key === "End" ? points.length - 1 : null;
+    if (next !== null) { event.preventDefault(); setSelected(Math.max(0, Math.min(points.length - 1, next))); }
+    if (event.key === "Escape") { setSelected(null); event.currentTarget.blur(); }
+  }
 
-function niceReferralScale(max: bigint): { max: bigint; step: bigint; divisions: number } {
-  const divisions = 4;
-  const dollar = 1_000_000_000n;
-  if (max <= 0n) return { max: dollar, step: dollar / 4n, divisions };
-  const rough = (max + BigInt(divisions) - 1n) / BigInt(divisions);
-  const magnitude = 10n ** BigInt(Math.max(0, rough.toString().length - 1));
-  const step = [magnitude, 2n * magnitude, 5n * magnitude, 10n * magnitude].find((candidate) => candidate >= rough) ?? 10n * magnitude;
-  return { max: step * BigInt(divisions), step, divisions };
+  return <div className="referral-earnings-graph">
+    <section className="usage-trend referral-trend" aria-labelledby="referral-trend-title">
+      <header className="usage-trend-head">
+        <div><h2 id="referral-trend-title">{text.chartTitle}</h2><p>{text.chartSubtitle}</p></div>
+        <span className="usage-trend-window">{text.chartWindow}</span>
+      </header>
+      <div className="usage-trend-overview">
+        <div><span>{text.earned}</span><strong>{money(totalEarned)}</strong></div>
+        <div className="usage-trend-legend">{providers.map((provider) => <span key={provider.id}><i style={{ borderColor: provider.color }} />{provider.name}</span>)}</div>
+      </div>
+      {rawMax === 0n ? <div className="usage-trend-empty">{text.noEarnings}</div> : <div className="usage-trend-body">
+        <div className="usage-trend-canvas">
+          <div className="usage-trend-y" aria-hidden="true">{geometry.ticks.map((tick) => <span key={String(tick.value)} style={{ top: `${tick.y / 260 * 100}%` }}>{formatReferralAxis(tick.value, locale)}</span>)}</div>
+          <div className="usage-trend-plot" role="slider" tabIndex={0} aria-label={text.chartTitle} aria-valuemin={0} aria-valuemax={points.length - 1} aria-valuenow={index} aria-valuetext={ariaValue} aria-orientation="horizontal" onPointerMove={selectPointer} onPointerDown={selectPointer} onKeyDown={selectKey}>
+            <svg viewBox="0 0 1000 260" preserveAspectRatio="none" aria-hidden="true">
+              {geometry.ticks.map((tick) => <line className="trend-grid" key={String(tick.value)} x1="0" x2="1000" y1={tick.y} y2={tick.y} />)}
+              {geometry.layers.map((layer, providerIndex) => <g key={layer.id ?? "unattributed"}>
+                <path className="trend-provider-area" d={layer.area} fill={providers[providerIndex]!.color} />
+                <path className="trend-line" d={layer.line} stroke={providers[providerIndex]!.color} />
+              </g>)}
+              <line className="trend-crosshair" x1={geometry.x(index)} x2={geometry.x(index)} y1="12" y2="240" />
+            </svg>
+            {point && geometry.layers.map((layer, providerIndex) => layer.values[index]! > 0n && <i key={layer.id ?? "unattributed"} className="trend-dot" style={{ left: `${geometry.x(index) / 10}%`, top: `${geometry.y(layer.upper[index]!) / 260 * 100}%`, background: providers[providerIndex]!.color, boxShadow: `0 0 0 1px ${providers[providerIndex]!.color}` }} />)}
+          </div>
+          <div className="usage-trend-x" aria-hidden="true">{axisMarks.map((mark, i) => <span key={mark} style={{ left: `${geometry.x(mark) / 10}%`, transform: i === 0 ? "none" : i === axisMarks.length - 1 ? "translateX(-100%)" : "translateX(-50%)" }}>{date(points[mark]!.date, locale)}</span>)}</div>
+          <p className="usage-trend-hint">{text.chartHint}</p>
+        </div>
+        {point && <aside className="usage-trend-detail" aria-label={text.dayDetail} data-day-index={index}>
+          <span className="trend-detail-label">{text.dayDetail}</span><h3>{dateFull(point.date)}</h3>
+          <dl><div className="trend-detail-primary"><dt>{text.earned}</dt><dd>{money(totals[index] ?? 0n)}</dd></div><div><dt>{text.spend}</dt><dd>{money(point.providers.reduce((day, provider) => day + provider.spend, 0n))}</dd></div><div><dt>{text.events}</dt><dd>{point.providers.reduce((day, provider) => day + provider.events, 0).toLocaleString(locale)}</dd></div></dl>
+          {(totals[index] ?? 0n) > 0n && <div className="trend-detail-providers"><span>{text.earned}</span>{providers.map((provider, providerIndex) => geometry.layers[providerIndex]!.values[index]! > 0n && <div key={provider.id}><span><i style={{ background: provider.color }} />{provider.name}</span><b>{money(geometry.layers[providerIndex]!.values[index]!)}</b></div>)}</div>}
+        </aside>}
+      </div>}
+      <footer className="usage-trend-summary" aria-label={text.providerSummary}>
+        <div><span>{text.spend}</span><b>{money(totalSpend)}</b></div>
+        <div><span>{text.dailyAverage}</span><b>{points.length ? money(totalEarned / BigInt(points.length)) : "—"}</b></div>
+        <div><span>{text.peakDay}</span><b>{peak ? `${date(peak.date, locale)} · ${money(rawMax)}` : "—"}</b></div>
+        <div><span>{text.events}</span><b>{totalEvents.toLocaleString(locale)}</b></div>
+      </footer>
+    </section>
+  </div>;
 }
 
 function formatReferralAxis(value: bigint, locale: string): string {
@@ -488,12 +532,6 @@ function formatReferralAxis(value: bigint, locale: string): string {
   if (value >= 1_000_000_000n) return formatNanoUsd(value, locale, 0, 1);
   if (value >= 10_000_000n) return formatNanoUsd(value, locale, 0, 2);
   return formatNanoUsd(value, locale, 0, 4);
-}
-
-function boundedReferralPercent(value: bigint, maximum: bigint): number {
-  if (value <= 0n || maximum <= 0n) return 0;
-  const bounded = value > maximum ? maximum : value;
-  return Number(bounded * 1_000_000n / maximum) / 10_000;
 }
 
 // ---------------------------------------------------------------------------
