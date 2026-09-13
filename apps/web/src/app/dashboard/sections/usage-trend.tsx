@@ -10,8 +10,8 @@ import { usageChartGeometry } from "./usage-chart-data";
 import "./usage-charts.css";
 
 const labels = {
-  en: { title: "Daily spending", subtitle: "List-price value by provider", detail: "Day details", hint: "Hover or tap to explore · ← → to change day", models: "Spending by model", unattributed: "Unattributed" },
-  ru: { title: "Расходы по дням", subtitle: "Стоимость по официальному тарифу в разрезе провайдеров", detail: "Детали за день", hint: "Наведите или нажмите · ← → для выбора дня", models: "Расходы по моделям", unattributed: "Без провайдера" },
+  en: { title: "Daily spending", subtitle: "List-price value by provider", window: "Last 30 days", detail: "Day details", hint: "Hover or tap to explore · ← → to change day", models: "Spending by model", unattributed: "Unattributed" },
+  ru: { title: "Расходы по дням", subtitle: "Стоимость по официальному тарифу в разрезе провайдеров", window: "Последние 30 дней", detail: "Детали за день", hint: "Наведите или нажмите · ← → для выбора дня", models: "Расходы по моделям", unattributed: "Без провайдера" },
 };
 const USAGE_PROVIDER_COLORS = ["#ef4444", "#172554", "#dc2626", "#1e3a8a"] as const;
 
@@ -56,7 +56,7 @@ export function UsageTrend({ usage }: { usage: UsageView }) {
   return <section className="usage-trend" aria-labelledby="usage-trend-title">
     <header className="usage-trend-head">
       <div><h2 id="usage-trend-title">{text.title}</h2><p>{text.subtitle}</p></div>
-      <span className="usage-trend-window">{copy.chartWindowLabel}</span>
+      <span className="usage-trend-window">{text.window}</span>
     </header>
     <div className="usage-trend-overview">
       <div><span>{copy.officialValue30d}</span><strong>{money(usage.totalOfficialNano)}</strong></div>
