@@ -737,13 +737,23 @@ body.app-body .bg-decor{display:none!important}
 .overview-rate-chip{flex:none;padding:6px 10px;border:1px solid var(--accent-line);border-radius:99px;background:var(--accent-soft);
   font:650 10px/1.2 var(--font-mono);color:var(--accent-ink);white-space:nowrap}
 .overview-balance-card{position:relative;container-type:inline-size;display:flex;min-height:292px;flex-direction:column;padding:34px 36px;overflow:hidden}
-/* Match the shared card selector so surface and text stay paired in both themes. */
-.app .panel .card.overview-balance-card{background:linear-gradient(115deg,#151a2b,#232e49);color:#fff;border-color:#303c56;box-shadow:var(--overview-shadow)}
-.overview-balance-card .overview-card-label{color:#c3ccde}
-.overview-balance-card .overview-balance-number{color:#fff}
-.app .panel .overview-balance-card .btn-primary{background:#fff;color:#182139;border-color:#fff}
-.app .panel .overview-balance-card .btn-ghost{border-color:#6d7991;color:#fff;background:transparent}
-.app .panel .overview-balance-card .btn:hover{background:#dfe6f3;color:#182139;border-color:#dfe6f3}
+/* Balance hero card — brand ink surface (same family as the terminal block), no blue. */
+.app .panel .card.overview-balance-card{
+  background:
+    radial-gradient(520px 240px at 88% -60px,color-mix(in srgb,var(--accent) 16%,transparent),transparent 72%),
+    linear-gradient(rgba(240,239,235,.035) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(240,239,235,.035) 1px,transparent 1px),
+    linear-gradient(135deg,var(--ink) 0%,var(--ink-2) 100%);
+  background-size:auto,26px 26px,26px 26px,auto;
+  color:var(--paper);border-color:var(--ink-3);box-shadow:var(--term-shadow)}
+.overview-balance-card .overview-card-label{color:var(--g200)}
+.overview-balance-card .overview-balance-number{color:var(--paper)}
+.overview-balance-card .overview-balance-value{color:var(--g300)}
+.overview-balance-card .overview-balance-value b{color:var(--accent-2)}
+.app .panel .overview-balance-card .btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.app .panel .overview-balance-card .btn-primary:hover{background:var(--accent-2);border-color:var(--accent-2);color:#fff}
+.app .panel .overview-balance-card .btn-ghost{border-color:var(--g400);color:var(--paper);background:transparent}
+.app .panel .overview-balance-card .btn-ghost:hover{background:rgba(240,239,235,.08);color:var(--paper);border-color:var(--g200)}
 .overview-balance-card::after{content:none}
 .overview-balance-card>*{position:relative;z-index:1}
 .overview-balance-main{display:flex;flex:1;min-width:0;flex-direction:column}
