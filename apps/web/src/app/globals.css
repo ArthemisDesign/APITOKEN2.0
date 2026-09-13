@@ -1022,65 +1022,65 @@ a.step:hover .step-cta::after{margin-left:4px}
 @media(max-width:900px){
   .prod-grid{grid-template-columns:1fr}
 }
-/* --- Balance and top-up: dark app-shell with a coral receipt (reference format) --- */
+/* --- Balance and top-up: app-shell with a coral receipt (reference format) --- */
 .credits-layout{display:flex;flex-direction:column;gap:22px;align-items:stretch}
 .credits-layout>.credits-history{width:100%;min-width:0;margin:0;max-width:none}
 .credits-history-banner{margin-bottom:-8px}
 .credits-history .table-scroll{overflow-x:auto}
 
-/* The shell is always the brand ink block (same family as the terminal/code
-   surface) — one deliberate dark panel per page, identical in both themes. */
-.credits-shell{border-radius:22px;padding:30px 32px 34px;color:var(--paper);
-  background:linear-gradient(180deg,var(--ink) 0%,var(--ink-2) 100%);
-  box-shadow:var(--term-shadow)}
+/* The shell follows the theme surface — light card in light theme, dark card
+   in dark theme. Only the coral receipt keeps a fixed accent surface. */
+.credits-shell{border-radius:22px;padding:30px 32px 34px;color:var(--txt);
+  background:linear-gradient(180deg,color-mix(in srgb,var(--bg-card) 97%,var(--txt) 3%),var(--bg-card) 52%);
+  border:1px solid color-mix(in srgb,var(--line) 88%,transparent);
+  box-shadow:var(--overview-shadow)}
 .credits-shell-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:26px}
-.credits-shell-label{font:650 10px/1.4 var(--font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--g300)}
+.credits-shell-label{font:650 10px/1.4 var(--font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--txt-4)}
 .credits-shell-chip{flex:none;padding:5px 11px;border-radius:99px;background:var(--accent);color:#fff;
   font:650 10px/1.2 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
 .credits-shell-body{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr);gap:36px;align-items:start}
 
 /* Left: the question + amount + methods. */
 .credits-form{display:flex;min-width:0;flex-direction:column;gap:18px}
-.credits-form-title{margin:0;font-family:var(--font-ui);font-size:clamp(22px,2.4vw,28px);font-weight:680;line-height:1.15;letter-spacing:-.025em;color:var(--paper)}
-.credits-form-sub{margin:-8px 0 0;font-size:12.5px;line-height:1.55;color:var(--g300)}
+.credits-form-title{margin:0;font-family:var(--font-ui);font-size:clamp(22px,2.4vw,28px);font-weight:680;line-height:1.15;letter-spacing:-.025em;color:var(--txt)}
+.credits-form-sub{margin:-8px 0 0;font-size:12.5px;line-height:1.55;color:var(--txt-3)}
 .credits-amount-row{display:flex;flex-direction:column;gap:12px}
-.credits-amount{display:flex;align-items:center;gap:2px;border-bottom:2px solid var(--ink-3);padding-bottom:6px;transition:border-color .15s}
+.credits-amount{display:flex;align-items:center;gap:2px;border-bottom:2px solid var(--line-strong);padding-bottom:6px;transition:border-color .15s}
 .credits-amount:focus-within{border-color:var(--accent)}
-.credits-amount-cur{position:static;font-family:var(--font-ui);font-size:clamp(24px,2.6vw,30px);font-weight:650;color:var(--g300);padding:0 6px 0 2px}
-.credits-amount input{flex:1;min-width:0;border:0;background:transparent;outline:0;color:var(--paper);
+.credits-amount-cur{position:static;font-family:var(--font-ui);font-size:clamp(24px,2.6vw,30px);font-weight:650;color:var(--txt-4);padding:0 6px 0 2px}
+.credits-amount input{flex:1;min-width:0;border:0;background:transparent;outline:0;color:var(--txt);
   font-family:var(--font-ui);font-size:clamp(38px,4.6vw,52px);font-weight:730;letter-spacing:-.045em;line-height:1.1;
   font-variant-numeric:tabular-nums lining-nums;caret-color:var(--accent)}
-.credits-amount input::placeholder{color:var(--g400)}
+.credits-amount input::placeholder{color:var(--txt-4)}
 .credits-shell .tc-presets{display:flex;flex-wrap:wrap;gap:8px}
-.credits-shell .tc-preset{display:grid;place-items:center;min-height:36px;padding:8px 14px;border:1px solid var(--ink-3);border-radius:99px;
-  background:transparent;cursor:pointer;transition:.15s;font:650 12px/1 var(--font-mono);color:var(--g200);text-align:center}
-.credits-shell .tc-preset:hover{border-color:var(--g300);color:var(--paper)}
+.credits-shell .tc-preset{display:grid;place-items:center;min-height:36px;padding:8px 14px;border:1px solid var(--line-strong);border-radius:99px;
+  background:transparent;cursor:pointer;transition:.15s;font:650 12px/1 var(--font-mono);color:var(--txt-3);text-align:center}
+.credits-shell .tc-preset:hover{border-color:var(--accent-line);color:var(--accent-ink)}
 .credits-shell .tc-preset.on{border-color:var(--accent);background:var(--accent);color:#fff}
 .credits-shell .tc-methods{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:6px}
-.credits-shell .pm-card{position:relative;display:flex;align-items:center;gap:10px;padding:11px 13px;border:1px solid var(--ink-3);border-radius:13px;
-  background:rgba(240,239,235,.045);cursor:pointer;text-align:left;transition:.15s;min-height:64px}
-.credits-shell .pm-card:hover{border-color:var(--g300)}
-.credits-shell .pm-card.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 13%,transparent)}
+.credits-shell .pm-card{position:relative;display:flex;align-items:center;gap:10px;padding:11px 13px;border:1px solid var(--line-strong);border-radius:13px;
+  background:color-mix(in srgb,var(--bg-card) 86%,transparent);cursor:pointer;text-align:left;transition:.15s;min-height:64px}
+.credits-shell .pm-card:hover{border-color:var(--accent-line)}
+.credits-shell .pm-card.on{border-color:var(--accent);background:var(--accent-soft)}
 .credits-shell .pm-card:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
 .credits-shell .pm-tag{position:absolute;top:-8px;right:12px;padding:3px 8px;border-radius:99px;background:var(--accent);color:#fff;
   font:650 8.5px/1 var(--font-mono);letter-spacing:.07em;text-transform:uppercase}
-.credits-shell .pm-ic{flex:none;width:38px;height:38px;display:flex;align-items:center;justify-content:center;color:var(--paper);
-  background:rgba(240,239,235,.07);border:1px solid var(--ink-3);border-radius:10px}
+.credits-shell .pm-ic{flex:none;width:38px;height:38px;display:flex;align-items:center;justify-content:center;color:var(--accent-ink);
+  background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:10px}
 .credits-shell .pm-ic svg{width:20px;height:20px}
-/* Бренд-знак СБП — на белом чипе, чтобы фирменные цвета читались на тёмной панели */
-.credits-shell .pm-ic-logo{background:#fff;border-color:transparent}
+/* Бренд-знак СБП — на белом чипе, чтобы фирменные цвета читались в обеих темах */
+.credits-shell .pm-ic-logo{background:#fff;border-color:var(--line-strong)}
 .credits-shell .pm-ic-logo svg{width:24px;height:24px}
 .credits-shell .pm-txt{display:flex;flex-direction:column;gap:2px;min-width:0}
-.credits-shell .pm-txt b{font-family:var(--font-mono);font-size:12.5px;color:var(--paper);line-height:1.15;overflow-wrap:normal}
-.credits-shell .pm-txt span{font-size:10.5px;color:var(--g300);line-height:1.3;overflow-wrap:anywhere}
-.credits-shell-balance{margin-top:auto;padding-top:22px;border-top:1px solid var(--ink-3);display:flex;flex-direction:column;gap:4px}
-.credits-shell-balance-label{font:650 9px/1.35 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--g300)}
-.credits-shell-balance strong{font-family:var(--font-ui);font-size:22px;font-weight:700;letter-spacing:-.02em;color:var(--paper);font-variant-numeric:tabular-nums}
+.credits-shell .pm-txt b{font-family:var(--font-mono);font-size:12.5px;color:var(--txt);line-height:1.15;overflow-wrap:normal}
+.credits-shell .pm-txt span{font-size:10.5px;color:var(--txt-3);line-height:1.3;overflow-wrap:anywhere}
+.credits-shell-balance{margin-top:auto;padding-top:22px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:4px}
+.credits-shell-balance-label{font:650 9px/1.35 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--txt-4)}
+.credits-shell-balance strong{font-family:var(--font-ui);font-size:22px;font-weight:700;letter-spacing:-.02em;color:var(--txt);font-variant-numeric:tabular-nums}
 .credits-shell-balance strong.is-negative{color:var(--danger)}
-.credits-shell-balance .credits-balance-hint{margin:2px 0 0;font-size:12px;line-height:1.5;color:var(--g300)}
+.credits-shell-balance .credits-balance-hint{margin:2px 0 0;font-size:12px;line-height:1.5;color:var(--txt-3)}
 .credits-shell.tone-low .credits-balance-hint{color:var(--warn)}
 .credits-shell.tone-empty .credits-balance-hint,.credits-shell.tone-debt .credits-balance-hint{color:var(--danger)}
-.credits-shell .auth-msg.err{color:#ffd9d4}
 .credits-shell-msg{margin-top:18px}
 
 /* Right: the coral receipt. Dark ink text on the accent, like the reference. */
