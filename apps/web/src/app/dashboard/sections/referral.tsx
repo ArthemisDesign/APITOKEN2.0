@@ -511,10 +511,11 @@ function EarningsChart({ snapshot, language }: { snapshot: ReferralActiveSnapsho
           <div className="usage-trend-x" aria-hidden="true">{axisMarks.map((mark, i) => <span key={mark} style={{ left: `${geometry.x(mark) / 10}%`, transform: i === 0 ? "none" : i === axisMarks.length - 1 ? "translateX(-100%)" : "translateX(-50%)" }}>{date(points[mark]!.date, locale)}</span>)}</div>
           <p className="usage-trend-hint">{text.chartHint}</p>
         </div>
-        {point && <aside className="usage-trend-detail" aria-label={text.dayDetail} data-day-index={index}>
+        {point && <aside key={index} className="usage-trend-detail" aria-label={text.dayDetail} data-day-index={index}>
+          {/* Fixed slots keep the panel geometry constant between days. */}
           <span className="trend-detail-label">{text.dayDetail}</span><h3>{dateFull(point.date)}</h3>
           <dl><div className="trend-detail-primary"><dt>{text.earned}</dt><dd>{money(totals[index] ?? 0n)}</dd></div><div><dt>{text.spend}</dt><dd>{money(point.providers.reduce((day, provider) => day + provider.spend, 0n))}</dd></div><div><dt>{text.events}</dt><dd>{point.providers.reduce((day, provider) => day + provider.events, 0).toLocaleString(locale)}</dd></div></dl>
-          {(totals[index] ?? 0n) > 0n && <div className="trend-detail-providers"><span>{text.earned}</span>{providers.map((provider, providerIndex) => geometry.layers[providerIndex]!.values[index]! > 0n && <div key={provider.id}><span><i style={{ background: provider.color }} />{provider.name}</span><b>{money(geometry.layers[providerIndex]!.values[index]!)}</b></div>)}</div>}
+          <div className="trend-detail-providers"><span>{text.earned}</span>{providers.map((provider, providerIndex) => { const value = geometry.layers[providerIndex]!.values[index]!; return <div key={provider.id} className={value > 0n ? undefined : "is-empty"} aria-hidden={value > 0n ? undefined : true}><span><i style={{ background: provider.color }} />{provider.name}</span><b>{money(value)}</b></div>; })}</div>
         </aside>}
       </div>}
       <footer className="usage-trend-summary" aria-label={text.providerSummary}>

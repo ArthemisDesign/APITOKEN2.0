@@ -11,7 +11,7 @@
 .usage-trend-legend{display:flex;flex-wrap:wrap;gap:12px 20px;padding-bottom:5px}
 .usage-trend-legend span{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--txt-3)}
 .usage-trend-legend i{display:block;width:20px;height:0;border-top:3px solid var(--trend-color);border-radius:2px}
-.usage-trend-body{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:24px;align-items:start}
+.usage-trend-body{display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:24px;align-items:stretch}
 .usage-trend-canvas{min-width:0;display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:14px;grid-template-rows:260px 24px auto}
 .usage-trend-y{position:relative;min-width:36px;font-size:11px;color:var(--txt-3);font-variant-numeric:tabular-nums}
 .usage-trend-y span{position:absolute;right:0;transform:translateY(-50%);white-space:nowrap}
@@ -27,6 +27,10 @@
 .usage-trend-x span{position:absolute;top:3px;white-space:nowrap}
 .usage-trend-hint{grid-column:2;margin:10px 0 0;font-size:11px;line-height:1.6;color:var(--txt-4)}
 .usage-trend-detail{padding:20px;border:1px solid var(--line);border-radius:14px;background:var(--bg-soft);min-width:0;min-height:260px}
+/* Day switching must not move the layout: the panel reserves the worst-case
+   content height (373px — primary label wrapped + 2-line provider names) so
+   the card height is identical for every day; text inside cross-fades. */
+@media(min-width:821px){.usage-trend-detail{height:373px;overflow:hidden}}
 .trend-detail-label{font-size:11px;color:var(--txt-3)}
 .usage-trend-detail h3{margin:5px 0 20px;font:600 15px/1.5 var(--font-ui);letter-spacing:-.01em}
 .usage-trend-detail dl{margin:0;display:grid;gap:13px}
@@ -41,6 +45,13 @@
 .trend-detail-providers>div{display:flex;justify-content:space-between;gap:10px;min-width:0}
 .trend-detail-providers b{font-weight:500;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .trend-detail-providers div>span{color:var(--txt-3);overflow-wrap:anywhere}
+/* Days with no usage in a provider keep their row slot invisible, so the panel
+   height never changes while the selected day moves. */
+.trend-detail-providers>div.is-empty{visibility:hidden}
+/* Smooth day switching: the panel geometry is fixed (min-height + fixed slots),
+   only the text cross-fades. Same-day re-renders skip the animation. */
+@keyframes trendDetailSwap{from{opacity:.35}}
+.usage-trend-detail>h3,.usage-trend-detail dl,.usage-trend-detail .trend-detail-providers{animation:trendDetailSwap .18s ease-out}
 .usage-trend-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px;padding-top:22px;margin-top:24px;border-top:1px solid var(--line)}
 .usage-trend-summary>div{min-width:0;display:flex;flex-direction:column;gap:7px}
 .usage-trend-summary span{font-size:11px;color:var(--txt-3);line-height:1.5}
