@@ -26,25 +26,29 @@
 .usage-trend-x{position:relative;grid-column:2;font-size:11px;color:var(--txt-3);font-variant-numeric:tabular-nums}
 .usage-trend-x span{position:absolute;top:3px;white-space:nowrap}
 .usage-trend-hint{grid-column:2;margin:10px 0 0;font-size:11px;line-height:1.6;color:var(--txt-4)}
-.usage-trend-detail{padding:20px;border:1px solid var(--line);border-radius:14px;background:var(--bg-soft);min-width:0;min-height:260px}
+/* The day-detail panel is the chart's coral accent block (same accent family
+   as the balance hero and the top-up receipt), identical in both themes. */
+.usage-trend-detail{padding:20px;border:1px solid transparent;border-radius:14px;min-width:0;min-height:260px;
+  background:linear-gradient(150deg,var(--accent) 0%,var(--accent-2) 100%);color:#fff;
+  box-shadow:0 14px 34px -22px color-mix(in srgb,var(--accent) 65%,transparent)}
 /* Day switching must not move the layout: the panel reserves the worst-case
    content height (373px — primary label wrapped + 2-line provider names) so
    the card height is identical for every day; text inside cross-fades. */
 @media(min-width:821px){.usage-trend-detail{height:373px;overflow:hidden}}
-.trend-detail-label{font-size:11px;color:var(--txt-3)}
-.usage-trend-detail h3{margin:5px 0 20px;font:600 15px/1.5 var(--font-ui);letter-spacing:-.01em}
+.trend-detail-label{font-size:11px;color:rgba(255,255,255,.8)}
+.usage-trend-detail h3{margin:5px 0 20px;font:600 15px/1.5 var(--font-ui);letter-spacing:-.01em;color:#fff}
 .usage-trend-detail dl{margin:0;display:grid;gap:13px}
 .usage-trend-detail dl>div{display:flex;align-items:baseline;justify-content:space-between;gap:12px}
-.usage-trend-detail dt{min-width:0;font-size:11px;line-height:1.5;color:var(--txt-3)}
-.usage-trend-detail dd{flex-shrink:0;margin:0;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+.usage-trend-detail dt{min-width:0;font-size:11px;line-height:1.5;color:rgba(255,255,255,.82)}
+.usage-trend-detail dd{flex-shrink:0;margin:0;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;color:#fff}
 .usage-trend-detail .trend-detail-primary{flex-direction:column;gap:3px;margin-bottom:5px}
-.usage-trend-detail .trend-detail-primary dt{display:flex;align-items:center;gap:6px;color:var(--txt-3)}
-.usage-trend-detail .trend-detail-primary dd{font:600 26px/1.3 var(--font-ui);letter-spacing:-.03em;color:var(--txt);text-align:left}
-.trend-detail-providers{display:grid;gap:9px;border-top:1px solid var(--line);padding-top:14px;margin-top:16px;font-size:11px}
-.trend-detail-providers>span{color:var(--txt-4);font-size:10px}
+.usage-trend-detail .trend-detail-primary dt{display:flex;align-items:center;gap:6px;color:rgba(255,255,255,.82)}
+.usage-trend-detail .trend-detail-primary dd{font:600 26px/1.3 var(--font-ui);letter-spacing:-.03em;color:#fff;text-align:left}
+.trend-detail-providers{display:grid;gap:9px;border-top:1px solid rgba(255,255,255,.32);padding-top:14px;margin-top:16px;font-size:11px}
+.trend-detail-providers>span{color:rgba(255,255,255,.72);font-size:10px}
 .trend-detail-providers>div{display:flex;justify-content:space-between;gap:10px;min-width:0}
-.trend-detail-providers b{font-weight:500;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-.trend-detail-providers div>span{color:var(--txt-3);overflow-wrap:anywhere}
+.trend-detail-providers b{font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:#fff}
+.trend-detail-providers div>span{color:rgba(255,255,255,.88);overflow-wrap:anywhere}
 /* Days with no usage in a provider keep their row slot invisible, so the panel
    height never changes while the selected day moves. */
 .trend-detail-providers>div.is-empty{visibility:hidden}
@@ -90,4 +94,4 @@
 .usage-trend-plot .trend-provider-area{opacity:.09}
 [data-theme="dark"] .usage-trend-plot .trend-provider-area{opacity:.3}
 .trend-detail-providers div>span{display:flex;align-items:center;gap:6px}
-.trend-detail-providers i{width:6px;height:6px;flex:none;border-radius:50%}
+.trend-detail-providers i{width:6px;height:6px;flex:none;border-radius:50%;box-shadow:0 0 0 1.5px rgba(255,255,255,.55)}
