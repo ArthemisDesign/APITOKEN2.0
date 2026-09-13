@@ -1022,50 +1022,102 @@ a.step:hover .step-cta::after{margin-left:4px}
 @media(max-width:900px){
   .prod-grid{grid-template-columns:1fr}
 }
-/* --- Balance and top-up --- */
-.credits-layout{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,.8fr);grid-template-areas:"topup side" "history history";gap:22px;align-items:start}
-.credits-layout>.credits-side,.credits-layout>.topup-simple,.credits-layout>.credits-history,.credits-layout>.credits-history-banner{width:100%;min-width:0;margin:0;max-width:none}
-.credits-side{grid-area:side;display:flex;flex-direction:column;gap:22px}
-.credits-layout>.topup-simple{grid-area:topup}
-.credits-layout>.credits-history{grid-area:history}
-.credits-layout>.credits-history-banner{grid-area:history;margin-bottom:-8px}
+/* --- Balance and top-up: dark app-shell with a coral receipt (reference format) --- */
+.credits-layout{display:flex;flex-direction:column;gap:22px;align-items:stretch}
+.credits-layout>.credits-history{width:100%;min-width:0;margin:0;max-width:none}
+.credits-history-banner{margin-bottom:-8px}
 .credits-history .table-scroll{overflow-x:auto}
-/* Balance summary follows the theme surface (see the overview hero note); the
-   coral glow and the discount chip keep it the page hero. */
-.app .panel .card.credits-balance-summary{display:flex;flex-direction:column;align-items:stretch;gap:26px;padding:30px 28px;
-  background:
-    radial-gradient(460px 210px at 92% -50px,color-mix(in srgb,var(--accent) 12%,transparent),transparent 72%),
-    linear-gradient(180deg,color-mix(in srgb,var(--bg-card) 97%,var(--txt) 3%),var(--bg-card) 52%);
-  color:var(--txt);border-color:color-mix(in srgb,var(--line) 88%,transparent);box-shadow:var(--overview-shadow)}
-.credits-balance-summary .dlabel{color:var(--txt-4)}
-.credits-balance-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.credits-discount-chip{flex:none;padding:5px 10px;border:1px solid var(--accent-line);border-radius:99px;
-  background:var(--accent-soft);
-  font:650 10px/1.2 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--accent-ink);white-space:nowrap}
-.credits-balance-primary{display:flex;min-width:0;flex-direction:column;gap:8px}
-.credits-balance-primary strong{display:block;margin-top:5px;font-family:var(--font-ui);font-size:clamp(40px,5vw,56px);font-weight:730;line-height:.98;letter-spacing:-.065em;color:var(--txt);font-variant-numeric:tabular-nums lining-nums;overflow-wrap:anywhere}
-.credits-balance-primary strong.is-negative{color:var(--danger)}
-.credits-balance-hint{margin:4px 0 0;font-size:12.5px;line-height:1.5;color:var(--txt-3)}
-.credits-balance-summary.tone-low .credits-balance-hint{color:var(--warn)}
-.credits-balance-summary.tone-empty .credits-balance-hint,.credits-balance-summary.tone-debt .credits-balance-hint{color:var(--danger)}
-.credits-balance-facts{display:grid;grid-template-columns:1fr 1fr;align-items:stretch;margin:0;border-top:1px solid var(--line);padding-top:20px}
-.credits-balance-facts>div{display:flex;min-width:0;flex-direction:column;gap:5px;padding:3px 14px 3px 0}
-.credits-balance-facts>div+div{padding-left:14px;border-left:1px solid var(--line)}
-.credits-balance-facts dt{font:650 9px/1.35 var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--txt-4)}
-.credits-balance-facts dd{margin:0;font:680 clamp(14px,1.5vw,16px)/1.35 var(--font-ui);color:var(--txt);overflow-wrap:anywhere}
-.credits-balance-facts small{display:block;margin-top:2px;font:400 10px/1.35 var(--font-mono);color:var(--txt-4)}
-/* Value explainer: sells the discount in one glance ($1 → $2 of official API usage). */
-.credits-value{display:flex;flex-direction:column;gap:14px;padding:24px 26px}
-.credits-value h2{margin:0;font-family:var(--font-ui);font-size:15px;font-weight:680;letter-spacing:-.015em;color:var(--txt)}
-.credits-value-mult{display:flex;align-items:baseline;gap:10px;margin:0;flex-wrap:wrap}
-.credits-value-mult b{font-family:var(--font-ui);font-size:34px;font-weight:730;line-height:1;letter-spacing:-.045em;color:var(--txt);font-variant-numeric:tabular-nums}
-.credits-value-mult b:last-of-type{color:var(--accent-ink)}
-.credits-value-arrow{font-size:22px;color:var(--txt-4);transform:translateY(2px)}
-.credits-value-mult small{font:500 11px/1.3 var(--font-mono);color:var(--txt-4)}
-.credits-value-note{margin:0;font-size:12.5px;line-height:1.55;color:var(--txt-3)}
-.credits-value-live{margin:0;padding:12px 14px;border:1px solid var(--accent-line);border-radius:10px;background:var(--accent-soft);
-  font:600 12.5px/1.5 var(--font-ui);color:var(--accent-ink)}
-.topup-simple{display:grid;gap:26px;padding:32px;min-width:0;border-color:var(--line-strong);background:var(--bg-card);box-shadow:0 12px 30px color-mix(in srgb,var(--txt) 5%,transparent)}
+
+/* The shell is always the brand ink block (same family as the terminal/code
+   surface) — one deliberate dark panel per page, identical in both themes. */
+.credits-shell{border-radius:22px;padding:30px 32px 34px;color:var(--paper);
+  background:linear-gradient(180deg,var(--ink) 0%,var(--ink-2) 100%);
+  box-shadow:var(--term-shadow)}
+.credits-shell-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:26px}
+.credits-shell-label{font:650 10px/1.4 var(--font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--g300)}
+.credits-shell-chip{flex:none;padding:5px 11px;border-radius:99px;background:var(--accent);color:#fff;
+  font:650 10px/1.2 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+.credits-shell-body{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr);gap:36px;align-items:start}
+
+/* Left: the question + amount + methods. */
+.credits-form{display:flex;min-width:0;flex-direction:column;gap:18px}
+.credits-form-title{margin:0;font-family:var(--font-ui);font-size:clamp(22px,2.4vw,28px);font-weight:680;line-height:1.15;letter-spacing:-.025em;color:var(--paper)}
+.credits-form-sub{margin:-8px 0 0;font-size:12.5px;line-height:1.55;color:var(--g300)}
+.credits-amount-row{display:flex;flex-direction:column;gap:12px}
+.credits-amount{display:flex;align-items:center;gap:2px;border-bottom:2px solid var(--ink-3);padding-bottom:6px;transition:border-color .15s}
+.credits-amount:focus-within{border-color:var(--accent)}
+.credits-amount-cur{position:static;font-family:var(--font-ui);font-size:clamp(24px,2.6vw,30px);font-weight:650;color:var(--g300);padding:0 6px 0 2px}
+.credits-amount input{flex:1;min-width:0;border:0;background:transparent;outline:0;color:var(--paper);
+  font-family:var(--font-ui);font-size:clamp(38px,4.6vw,52px);font-weight:730;letter-spacing:-.045em;line-height:1.1;
+  font-variant-numeric:tabular-nums lining-nums;caret-color:var(--accent)}
+.credits-amount input::placeholder{color:var(--g400)}
+.credits-shell .tc-presets{display:flex;flex-wrap:wrap;gap:8px}
+.credits-shell .tc-preset{display:grid;place-items:center;min-height:36px;padding:8px 14px;border:1px solid var(--ink-3);border-radius:99px;
+  background:transparent;cursor:pointer;transition:.15s;font:650 12px/1 var(--font-mono);color:var(--g200);text-align:center}
+.credits-shell .tc-preset:hover{border-color:var(--g300);color:var(--paper)}
+.credits-shell .tc-preset.on{border-color:var(--accent);background:var(--accent);color:#fff}
+.credits-shell .tc-methods{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:6px}
+.credits-shell .pm-card{position:relative;display:flex;align-items:center;gap:10px;padding:11px 13px;border:1px solid var(--ink-3);border-radius:13px;
+  background:rgba(240,239,235,.045);cursor:pointer;text-align:left;transition:.15s;min-height:64px}
+.credits-shell .pm-card:hover{border-color:var(--g300)}
+.credits-shell .pm-card.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 13%,transparent)}
+.credits-shell .pm-card:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+.credits-shell .pm-tag{position:absolute;top:-8px;right:12px;padding:3px 8px;border-radius:99px;background:var(--accent);color:#fff;
+  font:650 8.5px/1 var(--font-mono);letter-spacing:.07em;text-transform:uppercase}
+.credits-shell .pm-ic{flex:none;width:38px;height:38px;display:flex;align-items:center;justify-content:center;color:var(--paper);
+  background:rgba(240,239,235,.07);border:1px solid var(--ink-3);border-radius:10px}
+.credits-shell .pm-ic svg{width:20px;height:20px}
+/* Бренд-знак СБП — на белом чипе, чтобы фирменные цвета читались на тёмной панели */
+.credits-shell .pm-ic-logo{background:#fff;border-color:transparent}
+.credits-shell .pm-ic-logo svg{width:24px;height:24px}
+.credits-shell .pm-txt{display:flex;flex-direction:column;gap:2px;min-width:0}
+.credits-shell .pm-txt b{font-family:var(--font-mono);font-size:12.5px;color:var(--paper);line-height:1.15;overflow-wrap:normal}
+.credits-shell .pm-txt span{font-size:10.5px;color:var(--g300);line-height:1.3;overflow-wrap:anywhere}
+.credits-shell-balance{margin-top:auto;padding-top:22px;border-top:1px solid var(--ink-3);display:flex;flex-direction:column;gap:4px}
+.credits-shell-balance-label{font:650 9px/1.35 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--g300)}
+.credits-shell-balance strong{font-family:var(--font-ui);font-size:22px;font-weight:700;letter-spacing:-.02em;color:var(--paper);font-variant-numeric:tabular-nums}
+.credits-shell-balance strong.is-negative{color:var(--danger)}
+.credits-shell-balance .credits-balance-hint{margin:2px 0 0;font-size:12px;line-height:1.5;color:var(--g300)}
+.credits-shell.tone-low .credits-balance-hint{color:var(--warn)}
+.credits-shell.tone-empty .credits-balance-hint,.credits-shell.tone-debt .credits-balance-hint{color:var(--danger)}
+.credits-shell .auth-msg.err{color:#ffd9d4}
+.credits-shell-msg{margin-top:18px}
+
+/* Right: the coral receipt. Dark ink text on the accent, like the reference. */
+.credits-receipt{display:flex;flex-direction:column;gap:0;border-radius:18px;padding:24px 26px 26px;
+  background:linear-gradient(180deg,var(--accent) 0%,var(--accent-2) 100%);color:#fff}
+.credits-receipt-head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  font:650 10px/1.3 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.85);
+  padding-bottom:16px;border-bottom:1px dashed rgba(255,255,255,.4)}
+.credits-receipt-lines{display:grid;margin:0;padding:6px 0 14px}
+.credits-receipt-lines>div{display:flex;align-items:baseline;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px dashed rgba(255,255,255,.28)}
+.credits-receipt-lines dt{font:500 12px/1.4 var(--font-ui);color:rgba(255,255,255,.85)}
+.credits-receipt-lines dd{margin:0;font:680 13.5px/1.3 var(--font-ui);color:#fff;font-variant-numeric:tabular-nums;white-space:nowrap}
+.credits-receipt-lines dd.is-negative{color:#3d0d08}
+.credits-receipt-total{display:flex;flex-direction:column;gap:3px;padding:16px 0 20px}
+.credits-receipt-total span{font:650 10px/1.3 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.85)}
+.credits-receipt-total strong{font-family:var(--font-ui);font-size:clamp(38px,4vw,48px);font-weight:760;line-height:1;letter-spacing:-.04em;color:#fff;font-variant-numeric:tabular-nums lining-nums}
+.credits-receipt-total small{font-size:11.5px;line-height:1.45;color:rgba(255,255,255,.85)}
+/* .topup-simple-footer stays the stable checkout hook (tests, legacy CSS). */
+.credits-receipt .topup-simple-footer{margin-top:auto;padding-top:16px;border-top:1px dashed rgba(255,255,255,.4)}
+.credits-receipt .topup-simple-footer span{color:rgba(255,255,255,.8)}
+.credits-receipt .topup-simple-footer strong{color:#fff}
+.credits-receipt-cta{white-space:nowrap;border:1px solid var(--ink);border-radius:99px;background:var(--ink);color:var(--paper);
+  font-family:var(--font-ui);font-size:13.5px;font-weight:650;letter-spacing:-.005em;cursor:pointer;transition:.15s}
+.credits-receipt-cta:hover:not([disabled]){background:var(--ink-2);border-color:var(--ink-2)}
+.credits-receipt-cta[disabled]{opacity:.55;cursor:not-allowed}
+
+@media(max-width:900px){
+  .credits-shell-body{grid-template-columns:1fr;gap:30px}
+}
+@media(max-width:560px){
+  .credits-shell{padding:22px 20px 24px;border-radius:18px}
+  .credits-shell .tc-methods{grid-template-columns:1fr}
+}
+@media(max-width:700px){
+  .credits-receipt .topup-simple-footer{align-items:stretch;flex-direction:column}
+  .credits-receipt .topup-simple-footer .btn{width:100%;justify-content:center}
+}
 .docs-h3{font-family:var(--font-mono);font-weight:700;font-size:17px;margin:26px 0 10px;color:var(--txt)}
 .docs-para{font-family:var(--font-mono);font-size:15px;line-height:1.75;color:var(--txt-2);margin:0 0 8px;max-width:74ch}
 .pricing-howto-row{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}

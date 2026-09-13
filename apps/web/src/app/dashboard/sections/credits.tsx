@@ -47,37 +47,33 @@ const PLATEGA_METHODS = [
 const pricingCopy = {
   en: {
     offListPrice: "off the official rate",
-    addPaid: "Credited to your balance",
+    addPaid: "Top-up",
     creditAmount: "Amount",
     invalidAmount: "Enter a positive whole amount using digits only.",
     topupTitle: "Amount",
+    topupQuestion: "How much will you add?",
     topupHelp: "Whole US dollars only. The payment provider shows the exact amount to pay before you confirm.",
     paymentStep: "Payment method",
-    valueTitle: "What your payment buys",
-    valueNote: "Every $1 you pay buys $2 of API usage at official provider list prices.",
-    youGet: "You receive ≈ {value} of API usage at official prices.",
-    enterAmountHint: "Enter an amount to see its API value.",
+    receiptTitle: "Receipt",
+    officialRate: "Official rate",
     lowBalance: "Low balance — top up to keep your API keys working.",
     emptyBalance: "Balance is empty — API requests are paused until you top up.",
     debtBalance: "Balance is negative — settle the debt to resume API requests.",
-    methodsNote: "The provider page shows the final amount and fees before payment.",
   },
   ru: {
     offListPrice: "от официального тарифа",
-    addPaid: "Будет зачислено на баланс",
+    addPaid: "Пополнение",
     creditAmount: "Сумма",
     invalidAmount: "Введите целую положительную сумму только цифрами.",
     topupTitle: "Сумма пополнения",
+    topupQuestion: "Сколько добавить на баланс?",
     topupHelp: "Только целые доллары США. Точную сумму к оплате провайдер покажет перед подтверждением.",
     paymentStep: "Способ оплаты",
-    valueTitle: "Что даёт это пополнение",
-    valueNote: "Каждый $1 оплаты даёт $2 использования API по официальным листовым ценам.",
-    youGet: "Вы получите ≈ {value} использования API по официальным ценам.",
-    enterAmountHint: "Введите сумму, чтобы увидеть её ценность в API.",
+    receiptTitle: "Квитанция",
+    officialRate: "Официальный тариф",
     lowBalance: "Баланс на исходе — пополните, чтобы ключи продолжали работать.",
     emptyBalance: "Баланс пуст — запросы к API приостановлены до пополнения.",
     debtBalance: "Баланс отрицательный — погасите долг, чтобы возобновить запросы.",
-    methodsNote: "Итоговую сумму и комиссию покажет страница провайдера перед оплатой.",
   },
 } as const;
 
@@ -122,46 +118,29 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
   const balanceHint = balanceTone === "debt" ? policyCopy.debtBalance
     : balanceTone === "empty" ? policyCopy.emptyBalance
     : balanceTone === "low" ? policyCopy.lowBalance : null;
+  const selectedMethod = PLATEGA_METHODS.find((m) => m.id === method) ?? PLATEGA_METHODS[0]!;
+  const selectedMethodName = language === "ru" ? selectedMethod.ru : selectedMethod.en;
   const topups = ledger.filter((entry) => entry.kind === "topup");
   const ledgerMayBePartial = ledger.length >= 100;
   return <section className="panel"><PageHeading eyebrow={copy.creditsEyebrow} title={copy.creditsTitle} subtitle={copy.creditsSubtitle} />
     <div className="credits-layout">
-      <div className="credits-side">
-        <section className={`card credits-balance-summary tone-${balanceTone}`} aria-label={copy.currentBalance}>
-          <div className="credits-balance-primary">
-            <div className="credits-balance-head">
-              <span className="dlabel">{copy.currentBalance}</span>
-              {discountPercent !== null && <span className="credits-discount-chip">{discountPercent}% {policyCopy.offListPrice}</span>}
+      <section className={`credits-shell tone-${balanceTone}`} aria-label={copy.creditsTitle}>
+        <div className="credits-shell-head">
+          <span className="credits-shell-label">{policyCopy.paymentStep}</span>
+          {discountPercent !== null && <span className="credits-shell-chip">{discountPercent}% {policyCopy.offListPrice}</span>}
+        </div>
+
+        <div className="credits-shell-body">
+          <div className="credits-form">
+            <h2 className="credits-form-title">{policyCopy.topupQuestion}</h2>
+            <p className="credits-form-sub" id="topup-amount-help">{policyCopy.topupHelp}</p>
+
+            <div className="credits-amount-row">
+              <label className="credits-amount"><span className="credits-amount-cur currency-prefix">$</span><input name="topup-amount" autoComplete="off" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => { setAmount(event.target.value); setError(null); }} placeholder="100" aria-label={policyCopy.topupTitle} aria-describedby={amountValidation ? "topup-amount-help topup-amount-error" : "topup-amount-help"} aria-invalid={amountValidation ? true : undefined} /></label>
+              <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}>${preset}</button>)}</div>
             </div>
-            <strong className={balanceNano < 0n ? "is-negative" : undefined}>{formatNanoUsd(account.balanceNano, locale)}</strong>
-            {balanceHint && <p className="credits-balance-hint">{balanceHint}</p>}
-          </div>
-          <dl className="credits-balance-facts">
-            <div><dt>{copy.used}</dt><dd>{formatNanoUsd(account.spentNano, locale)}</dd></div>
-            <div><dt>{copy.currentPricing}</dt><dd>{discountPercent === null ? "—" : `${discountPercent}%`} <small>{policyCopy.offListPrice}</small></dd></div>
-          </dl>
-        </section>
-
-        <section className="card credits-value" aria-label={policyCopy.valueTitle}>
-          <h2>{policyCopy.valueTitle}</h2>
-          <p className="credits-value-mult"><b>$1</b><span className="credits-value-arrow" aria-hidden="true">→</span><b>$2</b><small>{policyCopy.offListPrice}</small></p>
-          <p className="credits-value-note">{policyCopy.valueNote}</p>
-          <p className="credits-value-live">{amountNano > 0n
-            ? interpolate(policyCopy.youGet, { value: formatNanoUsd(amountNano * 2n, locale) })
-            : policyCopy.enterAmountHint}</p>
-        </section>
-      </div>
-
-      <section className="card topup-simple">
-        <div className="topup-simple-body">
-          <div className="tc-input">
-            <div className="tc-head"><h2>{policyCopy.topupTitle}</h2><p className="p-sub" id="topup-amount-help">{policyCopy.topupHelp}</p></div>
-            <label className="tc-field"><span className="currency-prefix">$</span><input className="set-in" name="topup-amount" autoComplete="off" inputMode="numeric" pattern="[1-9][0-9]*" value={amount} onChange={(event) => { setAmount(event.target.value); setError(null); }} placeholder="100" aria-label={policyCopy.topupTitle} aria-describedby={amountValidation ? "topup-amount-help topup-amount-error" : "topup-amount-help"} aria-invalid={amountValidation ? true : undefined} /></label>
-            <div className="tc-presets" role="group" aria-label={copy.quickAmounts}>{TOPUP_PRESETS.map((preset) => <button key={preset} type="button" className={`tc-preset ${amount === String(preset) ? "on" : ""}`} data-topup-preset={preset} aria-pressed={amount === String(preset)} onClick={() => { setAmount(String(preset)); setError(null); }}>${preset}</button>)}</div>
             {amountValidation && <div className="auth-msg err" id="topup-amount-error">{amountValidation}</div>}
-          </div>
-          <div className="tc-pay">
-            <span className="tc-pay-label">{policyCopy.paymentStep}</span>
+
             <div className="tc-methods" role="radiogroup" aria-label={policyCopy.paymentStep}>
               {PLATEGA_METHODS.map((m) => <label key={m.id} className={`pm-card ${method === m.id ? "on" : ""}`}>
                 <input type="radio" name="topup-payment-method" className="sr-only" checked={method === m.id} onChange={() => setMethod(m.id)} />
@@ -170,14 +149,36 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
                 {m.tag && <span className="pm-tag">{language === "ru" ? m.tag.ru : m.tag.en}</span>}
               </label>)}
             </div>
-            <p className="tc-methods-note">{policyCopy.methodsNote}</p>
+
+            <div className="credits-shell-balance">
+              <span className="credits-shell-balance-label">{copy.currentBalance}</span>
+              <strong className={balanceNano < 0n ? "is-negative" : undefined}>{formatNanoUsd(account.balanceNano, locale)}</strong>
+              {balanceHint && <p className="credits-balance-hint">{balanceHint}</p>}
+            </div>
           </div>
+
+          <aside className="credits-receipt" aria-label={policyCopy.receiptTitle}>
+            <div className="credits-receipt-head"><span>{policyCopy.receiptTitle}</span><span>{policyCopy.officialRate}</span></div>
+            <dl className="credits-receipt-lines">
+              <div><dt>{copy.currentBalance}</dt><dd className={balanceNano < 0n ? "is-negative" : undefined}>{formatNanoUsd(account.balanceNano, locale)}</dd></div>
+              <div><dt>{policyCopy.addPaid}</dt><dd>{amountNano > 0n ? `+${formatNanoUsd(amountNano, locale)}` : "—"}</dd></div>
+              <div><dt>{copy.currentPricing}</dt><dd>{discountPercent === null ? "—" : `${discountPercent}%`}</dd></div>
+              <div><dt>{policyCopy.paymentStep}</dt><dd>{selectedMethodName}</dd></div>
+            </dl>
+            <div className="credits-receipt-total">
+              <span>{copy.youReceive}</span>
+              <strong>{amountNano > 0n ? `≈ ${formatNanoUsd(amountNano * 2n, locale)}` : "—"}</strong>
+              <small>{copy.inClaudeApi}</small>
+            </div>
+            {/* .topup-simple-footer is kept as the stable checkout hook (tests, legacy CSS). */}
+            <div className="topup-simple-footer">
+              <div><span>{policyCopy.addPaid}</span><strong>{amountNano > 0n ? formatNanoUsd(amountNano, locale) : "—"}</strong></div>
+              <button className="btn credits-receipt-cta" disabled={busy || !amountValid} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button>
+            </div>
+          </aside>
         </div>
-        <div className="topup-simple-footer">
-          <div><span>{policyCopy.addPaid}</span><strong>{amountNano > 0n ? formatNanoUsd(amountNano, locale) : "—"}</strong></div>
-          <button className="btn btn-primary" disabled={busy || !amountValid} onClick={start}>{busy ? copy.creating : copy.continuePayment}</button>
-        </div>
-        {error && <div className="auth-msg err">{error}</div>}{checkout && !checkout.checkoutUrl && <div className="banner">{interpolate(copy.checkoutPending, { id: checkout.id, status: checkout.status })}</div>}
+        {error && <div className="auth-msg err credits-shell-msg">{error}</div>}
+        {checkout && !checkout.checkoutUrl && <div className="banner credits-shell-msg">{interpolate(copy.checkoutPending, { id: checkout.id, status: checkout.status })}</div>}
       </section>
 
       {ledgerAvailable && ledgerMayBePartial && <div className="banner credits-history-banner">{localCopy.partialLedger}</div>}
