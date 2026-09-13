@@ -737,38 +737,17 @@ body.app-body .bg-decor{display:none!important}
 .overview-rate-chip{flex:none;padding:6px 10px;border:1px solid var(--accent-line);border-radius:99px;background:var(--accent-soft);
   font:650 10px/1.2 var(--font-mono);color:var(--accent-ink);white-space:nowrap}
 .overview-balance-card{position:relative;container-type:inline-size;display:flex;min-height:292px;flex-direction:column;padding:34px 36px;overflow:hidden}
-/* Balance hero card — brand ink surface (same family as the terminal block), no blue. */
+/* Balance hero card follows the theme surface — a fixed ink/paper card read as
+   if the theme toggle did nothing. The coral glow keeps it the hero. */
 .app .panel .card.overview-balance-card{
   background:
-    radial-gradient(520px 240px at 88% -60px,color-mix(in srgb,var(--accent) 16%,transparent),transparent 72%),
-    linear-gradient(rgba(240,239,235,.035) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(240,239,235,.035) 1px,transparent 1px),
-    linear-gradient(135deg,var(--ink) 0%,var(--ink-2) 100%);
-  background-size:auto,26px 26px,26px 26px,auto;
-  color:var(--paper);border-color:var(--ink-3);box-shadow:var(--term-shadow)}
-.overview-balance-card .overview-card-label{color:var(--g200)}
-.overview-balance-card .overview-balance-number{color:var(--paper)}
-.overview-balance-card .overview-balance-value{color:var(--g300)}
-.overview-balance-card .overview-balance-value b{color:var(--accent-2)}
-.app .panel .overview-balance-card .btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-.app .panel .overview-balance-card .btn-primary:hover{background:var(--accent-2);border-color:var(--accent-2);color:#fff}
-.app .panel .overview-balance-card .btn-ghost{border-color:var(--g400);color:var(--paper);background:transparent}
-.app .panel .overview-balance-card .btn-ghost:hover{background:rgba(240,239,235,.08);color:var(--paper);border-color:var(--g200)}
-/* Dark theme inverts the hero to the paper surface: a fixed ink card would
-   ignore the theme toggle and merge into the dark page background. */
-[data-theme="dark"] .app .panel .card.overview-balance-card{
-  background:
-    radial-gradient(520px 240px at 88% -60px,color-mix(in srgb,var(--accent) 18%,transparent),transparent 72%),
-    linear-gradient(rgba(12,11,17,.045) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(12,11,17,.045) 1px,transparent 1px),
-    linear-gradient(135deg,var(--bg-card) 0%,var(--paper-2) 100%);
-  color:var(--ink);border-color:var(--line-strong);box-shadow:0 18px 50px rgba(0,0,0,.5)}
-[data-theme="dark"] .overview-balance-card .overview-card-label{color:var(--g400)}
-[data-theme="dark"] .overview-balance-card .overview-balance-number{color:var(--ink)}
-[data-theme="dark"] .overview-balance-card .overview-balance-value{color:var(--g400)}
-[data-theme="dark"] .overview-balance-card .overview-balance-value b{color:var(--accent-ink)}
-[data-theme="dark"] .app .panel .overview-balance-card .btn-ghost{border-color:var(--g200);color:var(--ink)}
-[data-theme="dark"] .app .panel .overview-balance-card .btn-ghost:hover{background:rgba(12,11,17,.06);color:var(--ink);border-color:var(--g300)}
+    radial-gradient(520px 240px at 88% -60px,color-mix(in srgb,var(--accent) 12%,transparent),transparent 72%),
+    linear-gradient(180deg,color-mix(in srgb,var(--bg-card) 97%,var(--txt) 3%),var(--bg-card) 52%);
+  color:var(--txt);border-color:color-mix(in srgb,var(--line) 88%,transparent);box-shadow:var(--overview-shadow)}
+.overview-balance-card .overview-card-label{color:var(--txt-4)}
+.overview-balance-card .overview-balance-number{color:var(--txt)}
+.overview-balance-card .overview-balance-value{color:var(--txt-3)}
+.overview-balance-card .overview-balance-value b{color:var(--accent-ink)}
 .overview-balance-card::after{content:none}
 .overview-balance-card>*{position:relative;z-index:1}
 .overview-balance-main{display:flex;flex:1;min-width:0;flex-direction:column}
