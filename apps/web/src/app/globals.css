@@ -1052,6 +1052,22 @@ a.step:hover .step-cta::after{margin-left:4px}
 .credits-balance-facts dt{font:650 9px/1.35 var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--g300)}
 .credits-balance-facts dd{margin:0;font:680 clamp(14px,1.5vw,16px)/1.35 var(--font-ui);color:var(--paper);overflow-wrap:anywhere}
 .credits-balance-facts small{display:block;margin-top:2px;font:400 10px/1.35 var(--font-mono);color:var(--g300)}
+/* Dark theme inverts the hero to the paper surface: a fixed ink card would
+   ignore the theme toggle and merge into the dark page background. */
+[data-theme="dark"] .app .panel .card.credits-balance-summary{
+  background:
+    radial-gradient(460px 210px at 92% -50px,color-mix(in srgb,var(--accent) 17%,transparent),transparent 72%),
+    linear-gradient(135deg,var(--bg-card) 0%,var(--paper-2) 100%);
+  color:var(--ink);border-color:var(--line-strong);box-shadow:0 18px 50px rgba(0,0,0,.5)}
+[data-theme="dark"] .credits-balance-summary .dlabel{color:var(--g400)}
+[data-theme="dark"] .credits-discount-chip{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent-ink)}
+[data-theme="dark"] .credits-balance-primary strong{color:var(--ink)}
+[data-theme="dark"] .credits-balance-primary strong.is-negative{color:var(--danger)}
+[data-theme="dark"] .credits-balance-hint{color:var(--g400)}
+[data-theme="dark"] .credits-balance-facts{border-top-color:var(--line)}
+[data-theme="dark"] .credits-balance-facts>div+div{border-left-color:var(--line)}
+[data-theme="dark"] .credits-balance-facts dt,[data-theme="dark"] .credits-balance-facts small{color:var(--g400)}
+[data-theme="dark"] .credits-balance-facts dd{color:var(--ink)}
 /* Value explainer: sells the discount in one glance ($1 → $2 of official API usage). */
 .credits-value{display:flex;flex-direction:column;gap:14px;padding:24px 26px}
 .credits-value h2{margin:0;font-family:var(--font-ui);font-size:15px;font-weight:680;letter-spacing:-.015em;color:var(--txt)}
