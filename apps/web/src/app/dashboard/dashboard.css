@@ -613,9 +613,13 @@
     radial-gradient(900px 460px at 38% -110px,color-mix(in srgb,var(--accent) 6%,transparent),transparent 72%),
     var(--dash-bg)}
 [data-theme="dark"] .app-main{
-  --overview-shadow:0 1px 2px rgba(12,11,17,.04),0 18px 46px -34px rgba(12,11,17,.28)}
+  --overview-shadow:0 1px 2px rgba(12,11,17,.04),0 18px 46px -34px rgba(12,11,17,.28);
+  /* Dark theme keeps ink inner surfaces; the white --bg-soft above is the
+     light-theme-only rule. */
+  --bg-soft:#141218}
 .app-top{position:sticky;top:0;z-index:5;min-height:72px;padding:0 40px;
   background:#FFFFFF;border-bottom:1px solid var(--line)}
+[data-theme="dark"] .app-top{background:#18161D}
 .app-top-in{display:flex;align-items:center;gap:14px;width:100%;max-width:1280px;min-height:71px;margin:0 auto}
 .app-burger{display:none;background:none;border:0;font-size:22px;color:var(--txt);cursor:pointer}
 /* Keep every section title on one line; truncate instead of growing the sticky top bar. */
@@ -717,6 +721,10 @@ body.app-body .bg-decor{display:none!important}
   box-shadow:var(--overview-shadow)}
 [data-theme="dark"] .app .panel .card{
   background:#18161D}
+/* Dark theme: neutral surfaces return to the ink card (no white cards). */
+[data-theme="dark"] .dcard,[data-theme="dark"] .chart-card,[data-theme="dark"] .uprovider-card,
+[data-theme="dark"] .app .table-scroll,[data-theme="dark"] .usum,[data-theme="dark"] .key-table-wrap,
+[data-theme="dark"] .uchart,[data-theme="dark"] .banner{background:#18161D}
 .app .panel .btn{min-height:40px;padding:9px 17px;border-radius:10px;font-family:var(--font-ui);font-size:13.5px;font-weight:650;letter-spacing:-.005em}
 .app .panel .link,.app .panel strong,.app .panel b{font-family:var(--font-ui)}
 .app .panel strong,.app .panel b{font-weight:680}
