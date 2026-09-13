@@ -325,6 +325,9 @@
 .keys-heading-row{margin-bottom:24px}
 .keys-heading-row .page-heading{margin-bottom:0}
 .keys-create-button{flex:none}
+/* The section's primary action carries the accent, not another ink button. */
+.app .panel .keys-create-button.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.app .panel .keys-create-button.btn-primary:hover{background:var(--accent-2);border-color:var(--accent-2);color:#fff}
 .keys-panel .key-issued-reveal{margin-bottom:28px}
 .keys-panel .key-issued-reveal>.btn{justify-self:end}
 .keys-manager{margin-top:0}
@@ -404,6 +407,8 @@
 .key-status{display:inline-flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid var(--accent-line);border-radius:99px;
   color:var(--accent-ink);background:var(--accent-soft);font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
 .key-status i{width:6px;height:6px;border-radius:50%;background:currentColor}
+/* Working keys read as a positive state instead of another grey chip. */
+.key-status-active{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 30%,transparent);background:color-mix(in srgb,var(--ok) 8%,transparent)}
 .key-status-disabled{color:var(--txt-4);border-color:var(--line);background:var(--bg-soft)}
 .key-status-expired,.key-status-limit{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 28%,transparent);background:color-mix(in srgb,var(--danger) 8%,transparent)}
 .key-status-expires-soon,.key-status-near-limit{color:#8F5708;border-color:rgba(217,119,6,.25);background:rgba(217,119,6,.08)}
@@ -601,9 +606,10 @@
 .app-main{display:flex;flex-direction:column;min-width:0;
   --overview-radius:16px;
   --overview-shadow:0 1px 2px rgba(12,11,17,.04),0 18px 46px -34px rgba(12,11,17,.28);
+  /* The canvas stays light so cards read as crisp surfaces, not grey-on-grey. */
   background:
-    radial-gradient(900px 460px at 38% -110px,color-mix(in srgb,var(--accent) 5%,transparent),transparent 72%),
-    var(--bg-soft)}
+    radial-gradient(900px 460px at 38% -110px,color-mix(in srgb,var(--accent) 6%,transparent),transparent 72%),
+    var(--bg)}
 [data-theme="dark"] .app-main{
   --overview-shadow:0 1px 2px rgba(12,11,17,.04),0 18px 46px -34px rgba(12,11,17,.28)}
 .app-top{position:sticky;top:0;z-index:5;min-height:72px;padding:0 40px;
@@ -694,6 +700,8 @@ body.app-body .bg-decor{display:none!important}
   padding:16px 18px;margin:0 0 22px;font-family:var(--font-mono);font-size:12px;color:var(--txt-2);line-height:1.65;box-shadow:var(--shadow)}
 .banner b{color:var(--txt)}
 .banner-accent{background:var(--accent-soft);border-color:var(--accent-line);color:var(--txt-2)}
+/* Informational tips read as a warm note, not a grey strip on the canvas. */
+.app .usage-dashboard>.banner{background:var(--accent-soft);border-color:var(--accent-line)}
 .chip{display:inline-flex;font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.04em;
   color:var(--accent-ink);border:1px solid var(--accent-line);border-radius:99px;padding:3px 10px;margin-bottom:12px}
 
