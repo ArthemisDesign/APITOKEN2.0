@@ -767,6 +767,17 @@ body.app-body .bg-decor{display:none!important}
 .overview-balance-card .overview-balance-number{color:#fff}
 .overview-balance-card .overview-balance-value{color:rgba(255,255,255,.85)}
 .overview-balance-card .overview-balance-value b{color:#fff}
+/* Dark theme inverts the coral hero to the paper surface: the accent fill
+   ignores the theme toggle and reads as a stray red card on the ink page. */
+[data-theme="dark"] .app .panel .card.overview-balance-card{
+  background:linear-gradient(135deg,var(--paper) 0%,var(--paper-2) 100%);
+  color:var(--ink);border-color:rgba(244,243,239,.24);box-shadow:0 18px 46px -30px rgba(0,0,0,.6)}
+[data-theme="dark"] .overview-balance-card .overview-card-label{color:rgba(12,11,17,.62)}
+[data-theme="dark"] .overview-balance-card .overview-balance-number{color:var(--ink)}
+[data-theme="dark"] .overview-balance-card .overview-balance-value{color:rgba(12,11,17,.72)}
+[data-theme="dark"] .overview-balance-card .overview-balance-value b{color:var(--accent-ink)}
+[data-theme="dark"] .app .panel .overview-balance-card .btn-ghost{background:transparent;color:var(--ink);border-color:rgba(12,11,17,.45)}
+[data-theme="dark"] .app .panel .overview-balance-card .btn-ghost:hover{background:rgba(12,11,17,.06);border-color:var(--ink);color:var(--ink)}
 .app .panel .overview-balance-card .btn-primary{background:var(--ink);color:var(--paper);border-color:var(--ink);border-radius:99px}
 .app .panel .overview-balance-card .btn-primary:hover{background:var(--ink-2);border-color:var(--ink-2)}
 .app .panel .overview-balance-card .btn-ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.55);border-radius:99px}

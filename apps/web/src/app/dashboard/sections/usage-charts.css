@@ -27,10 +27,25 @@
 .usage-trend-x span{position:absolute;top:3px;white-space:nowrap}
 .usage-trend-hint{grid-column:2;margin:10px 0 0;font-size:11px;line-height:1.6;color:var(--txt-4)}
 /* The day-detail panel is the chart's coral accent block (same accent family
-   as the balance hero and the top-up receipt), identical in both themes. */
+   as the balance hero and the top-up receipt) in the light theme. */
 .usage-trend-detail{padding:20px;border:1px solid transparent;border-radius:14px;min-width:0;min-height:260px;
   background:linear-gradient(150deg,var(--accent) 0%,var(--accent-2) 100%);color:#fff;
   box-shadow:0 14px 34px -22px color-mix(in srgb,var(--accent) 65%,transparent)}
+/* Dark theme inverts the panel to the paper surface: a fixed coral block
+   ignores the theme toggle and reads as a stray red card on the ink page. */
+[data-theme="dark"] .usage-trend-detail{
+  background:linear-gradient(150deg,var(--paper) 0%,var(--paper-2) 100%);color:var(--ink);
+  border-color:rgba(244,243,239,.24);box-shadow:0 14px 34px -22px rgba(0,0,0,.6)}
+[data-theme="dark"] .usage-trend-detail .trend-detail-label,
+[data-theme="dark"] .usage-trend-detail dt,
+[data-theme="dark"] .usage-trend-detail .trend-detail-primary dt{color:rgba(12,11,17,.72)}
+[data-theme="dark"] .usage-trend-detail h3,
+[data-theme="dark"] .usage-trend-detail dd,
+[data-theme="dark"] .usage-trend-detail .trend-detail-primary dd,
+[data-theme="dark"] .trend-detail-providers b{color:var(--ink)}
+[data-theme="dark"] .trend-detail-providers{border-top-color:rgba(12,11,17,.24)}
+[data-theme="dark"] .trend-detail-providers>span{color:rgba(12,11,17,.56)}
+[data-theme="dark"] .trend-detail-providers div>span{color:rgba(12,11,17,.82)}
 /* Day switching must not move the layout: the panel reserves the worst-case
    content height (373px — primary label wrapped + 2-line provider names) so
    the card height is identical for every day; text inside cross-fades. */
