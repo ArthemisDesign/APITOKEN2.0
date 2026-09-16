@@ -56,6 +56,20 @@
 .trend-detail-providers>div{display:flex;justify-content:space-between;gap:10px;min-width:0}
 .trend-detail-providers b{font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:#fff}
 .trend-detail-providers div>span{color:rgba(255,255,255,.88);overflow-wrap:anywhere}
+/* Dark theme: the day-detail panel stops being a solid coral block and becomes
+   a quiet maroon panel with a coral outline, matching the receipt and the
+   balance hero card. */
+[data-theme="dark"] .usage-trend-detail{background:#392226;color:#F3F2EE;border:1px solid #FF6A5A;box-shadow:none}
+[data-theme="dark"] .usage-trend-detail .trend-detail-label{color:rgba(243,242,238,.8)}
+[data-theme="dark"] .usage-trend-detail h3{color:#F3F2EE}
+[data-theme="dark"] .usage-trend-detail dt{color:rgba(243,242,238,.78)}
+[data-theme="dark"] .usage-trend-detail dd{color:#F3F2EE}
+[data-theme="dark"] .usage-trend-detail .trend-detail-primary dt{color:rgba(243,242,238,.78)}
+[data-theme="dark"] .usage-trend-detail .trend-detail-primary dd{color:#F3F2EE}
+[data-theme="dark"] .usage-trend-detail .trend-detail-providers{border-top-color:rgba(255,106,90,.4)}
+[data-theme="dark"] .usage-trend-detail .trend-detail-providers>span{color:rgba(243,242,238,.72)}
+[data-theme="dark"] .usage-trend-detail .trend-detail-providers b{color:#F3F2EE}
+[data-theme="dark"] .usage-trend-detail .trend-detail-providers div>span{color:rgba(243,242,238,.85)}
 /* Days with no usage in a provider keep their row slot invisible, so the panel
    height never changes while the selected day moves. */
 .trend-detail-providers>div.is-empty{visibility:hidden}
