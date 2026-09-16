@@ -758,6 +758,17 @@ body.app-body .bg-decor{display:none!important}
 .app .panel .overview-balance-card .btn-ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.55);border-radius:99px}
 .app .panel .overview-balance-card .btn-ghost:hover{background:rgba(255,255,255,.14);border-color:#fff;color:#fff}
 .overview-balance-card::after{content:none}
+
+/* Dark theme: the balance hero card stops being a solid coral block and
+   becomes a quiet maroon panel with a coral outline, matching the receipt. */
+[data-theme="dark"] .app .panel .card.overview-balance-card{
+  background:#392226;color:#F3F2EE;border:1px solid #FF6A5A;box-shadow:none}
+[data-theme="dark"] .overview-balance-card .overview-card-label{color:rgba(243,242,238,.8)}
+[data-theme="dark"] .overview-balance-card .overview-balance-number{color:#F3F2EE}
+[data-theme="dark"] .overview-balance-card .overview-balance-value{color:rgba(243,242,238,.78)}
+[data-theme="dark"] .overview-balance-card .overview-balance-value b{color:#F3F2EE}
+[data-theme="dark"] .app .panel .overview-balance-card .btn-ghost{color:#F3F2EE;border-color:rgba(255,106,90,.55)}
+[data-theme="dark"] .app .panel .overview-balance-card .btn-ghost:hover{background:rgba(255,106,90,.14);border-color:#FF6A5A;color:#F3F2EE}
 .overview-balance-card>*{position:relative;z-index:1}
 .overview-balance-main{display:flex;flex:1;min-width:0;flex-direction:column}
 .overview-balance-number{display:block;margin-top:24px;font-size:clamp(48px,5vw,64px);font-weight:710;line-height:.92;letter-spacing:-.065em;color:var(--txt);
