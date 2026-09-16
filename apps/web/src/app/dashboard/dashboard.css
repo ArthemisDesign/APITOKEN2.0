@@ -203,7 +203,8 @@
 /* Deep ink "canvas" surface: one step below the card ink, used for the KPI
    strip and summary blocks so they read as one joined blue-ink band with
    hairline gaps on the white page. */
-.usage-dashboard{--usage-card-radius:20px;--dash-canvas:#0C0B11}
+.usage-dashboard{--usage-card-radius:20px;--dash-canvas:#ECEBE6}
+[data-theme="dark"] .usage-dashboard{--dash-canvas:#0C0B11}
 .usage-dashboard>.page-heading h1{letter-spacing:-.055em}
 .usage-dashboard>.banner{border-radius:14px;padding:14px 18px}
 .usage-dashboard .usage-kpis{gap:12px;margin-bottom:30px}
