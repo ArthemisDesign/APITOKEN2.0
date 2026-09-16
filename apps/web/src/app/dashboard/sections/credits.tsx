@@ -55,8 +55,7 @@ const pricingCopy = {
     topupHelp: "Whole US dollars only. The payment provider shows the exact amount to pay before you confirm.",
     paymentStep: "Payment method",
     receiptTitle: "Receipt",
-    balanceAfter: "Balance after top-up",
-    creditedOneToOne: "Top-ups are credited 1:1 in USD. Usage is then billed per model at your discounted rates — how far the balance goes depends on the models you run.",
+    officialRate: "Official rate",
     lowBalance: "Low balance — top up to keep your API keys working.",
     emptyBalance: "Balance is empty — API requests are paused until you top up.",
     debtBalance: "Balance is negative — settle the debt to resume API requests.",
@@ -71,8 +70,7 @@ const pricingCopy = {
     topupHelp: "Только целые доллары США. Точную сумму к оплате провайдер покажет перед подтверждением.",
     paymentStep: "Способ оплаты",
     receiptTitle: "Квитанция",
-    balanceAfter: "Баланс после пополнения",
-    creditedOneToOne: "Пополнение зачисляется 1:1 в долларах. Использование списывается по тарифам конкретной модели с вашей скидкой — на сколько хватит баланса, зависит от моделей, которые вы используете.",
+    officialRate: "Официальный тариф",
     lowBalance: "Баланс на исходе — пополните, чтобы ключи продолжали работать.",
     emptyBalance: "Баланс пуст — запросы к API приостановлены до пополнения.",
     debtBalance: "Баланс отрицательный — погасите долг, чтобы возобновить запросы.",
@@ -160,7 +158,7 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
           </div>
 
           <aside className="credits-receipt" aria-label={policyCopy.receiptTitle}>
-            <div className="credits-receipt-head"><span>{policyCopy.receiptTitle}</span>{discountPercent !== null && <span>{discountPercent}% {policyCopy.offListPrice}</span>}</div>
+            <div className="credits-receipt-head"><span>{policyCopy.receiptTitle}</span><span>{policyCopy.officialRate}</span></div>
             <dl className="credits-receipt-lines">
               <div><dt>{copy.currentBalance}</dt><dd className={balanceNano < 0n ? "is-negative" : undefined}>{formatNanoUsd(account.balanceNano, locale)}</dd></div>
               <div><dt>{policyCopy.addPaid}</dt><dd>{amountNano > 0n ? `+${formatNanoUsd(amountNano, locale)}` : "—"}</dd></div>
@@ -168,9 +166,9 @@ export function Credits({ account, ledger, ledgerAvailable }: { account: Account
               <div><dt>{policyCopy.paymentStep}</dt><dd>{selectedMethodName}</dd></div>
             </dl>
             <div className="credits-receipt-total">
-              <span>{policyCopy.balanceAfter}</span>
-              <strong>{amountNano > 0n ? formatNanoUsd(balanceNano + amountNano, locale) : "—"}</strong>
-              <small>{policyCopy.creditedOneToOne}</small>
+              <span>{copy.youReceive}</span>
+              <strong>{amountNano > 0n ? `≈ ${formatNanoUsd(amountNano * 2n, locale)}` : "—"}</strong>
+              <small>{copy.inClaudeApi}</small>
             </div>
             {/* .topup-simple-footer is kept as the stable checkout hook (tests, legacy CSS). */}
             <div className="topup-simple-footer">
