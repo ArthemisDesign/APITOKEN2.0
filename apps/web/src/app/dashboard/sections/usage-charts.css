@@ -18,10 +18,13 @@
 .usage-trend-canvas>.usage-trend-y,.usage-trend-canvas>.usage-trend-plot{position:relative;min-height:0;height:100%}
 .usage-trend-canvas>.usage-trend-y>*{position:absolute;inset:0;width:100%;height:100%}
 /* X-axis labels overlay the plot's bottom edge and the hint moves under the
-   day-detail card, so the card height equals the chart plot height exactly. */
-.usage-trend-x{position:absolute;left:0;right:0;bottom:-24px;grid-column:auto;pointer-events:none;font-size:11px;color:var(--txt-3);font-variant-numeric:tabular-nums}
+   day-detail card, so the card height equals the chart plot height exactly.
+   Both sit in the plot column (grid-column:2): if they stay in the first
+   (auto) column, the long hint text stretches that column to ~270px and leaves
+   a dead gap between the Y axis and the chart. */
+.usage-trend-x{position:absolute;left:0;right:0;bottom:-24px;grid-column:2;pointer-events:none;font-size:11px;color:var(--txt-3);font-variant-numeric:tabular-nums}
 .usage-trend-x span{position:absolute;top:3px;white-space:nowrap}
-.usage-trend-hint{grid-column:auto;margin:10px 0 0;font-size:11px;line-height:1.6;color:var(--txt-4)}
+.usage-trend-hint{grid-column:2;margin:10px 0 0;font-size:11px;line-height:1.6;color:var(--txt-4)}
 .usage-trend-y{min-width:36px;font-size:11px;color:var(--txt-3);font-variant-numeric:tabular-nums}
 .usage-trend-y span{position:absolute;right:0;transform:translateY(-50%);white-space:nowrap}
 .usage-trend-y::before{content:"$0.0000";visibility:hidden}
