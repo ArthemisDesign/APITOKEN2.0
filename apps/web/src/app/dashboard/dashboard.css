@@ -10,7 +10,7 @@
 .num{font-family:var(--font-display);font-weight:600;letter-spacing:0;color:var(--txt);display:block}
 
 .dash-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:36px}
-.dcard{background:#FFFFFF;border:1px solid var(--line);border-radius:var(--radius);
+.dcard{background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius);
   padding:20px;display:flex;flex-direction:column;gap:6px}
 .dcard .dlabel{font-family:var(--font-mono);font-size:12px;text-transform:uppercase;
   letter-spacing:.04em;color:var(--txt-3)}
@@ -25,7 +25,7 @@
 .chart-toggle button{font-family:var(--font-mono);font-size:12px;color:var(--txt-3);
   background:transparent;border:1px solid var(--line);border-radius:999px;padding:5px 12px;cursor:pointer}
 .chart-toggle button.on{color:var(--accent-ink);border-color:var(--accent-line);background:var(--accent-soft)}
-.chart-card{background:#FFFFFF;border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px}
+.chart-card{background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px}
 .chart-svg{width:100%;height:auto;display:block}
 .chart-svg .cgrid{stroke:var(--line);stroke-width:1;shape-rendering:crispEdges}
 .chart-svg .cy{fill:var(--txt-4);font-family:var(--font-mono);font-size:10px;text-anchor:end}
@@ -59,7 +59,7 @@
 
 .dsec{margin:28px 0 0}
 .uprovider-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:18px}
-.uprovider-card{position:relative;overflow:hidden;container-type:inline-size;display:flex;min-width:0;flex-direction:column;gap:16px;padding:22px;border:1px solid var(--line);border-radius:10px;background:#FFFFFF;box-shadow:var(--shadow)}
+.uprovider-card{position:relative;overflow:hidden;container-type:inline-size;display:flex;min-width:0;flex-direction:column;gap:16px;padding:22px;border:1px solid var(--line);border-radius:10px;background:var(--bg-card);box-shadow:var(--shadow)}
 @container (max-width:400px){.uprovider-endpoint>span{display:none}}
 .uprovider-card::before{content:"";position:absolute;inset:1px 1px auto;height:2px;border-radius:9px 9px 0 0;background:var(--provider-color);opacity:.85}
 .uprovider-head{display:flex;align-items:center;gap:12px}
@@ -87,7 +87,7 @@
 .dsec h2{font-size:clamp(20px,2.4vw,26px);margin:0 0 16px}
 .dsec-head h2{margin:0}
 .panel>.dsec:last-child{margin-bottom:0}
-.app .table-scroll{overflow:hidden;border:1px solid var(--line);border-radius:10px;background:#FFFFFF;box-shadow:var(--shadow)}
+.app .table-scroll{overflow:hidden;border:1px solid var(--line);border-radius:10px;background:var(--bg-card);box-shadow:var(--shadow)}
 .app .table-scroll .mtable{border:0;border-radius:0}
 .analytics-heading{align-items:flex-end;gap:24px}
 .analytics-heading>div{min-width:0}
@@ -140,7 +140,7 @@
 .chart-tip-total{display:flex;justify-content:space-between;gap:14px;margin-top:7px;padding-top:7px;border-top:1px solid rgba(255,255,255,.16);font-size:11px;font-weight:700}
 .chart-tip-total>span{opacity:.75}
 .chart-tip-total>b{font-variant-numeric:tabular-nums}
-.usum{background:#FFFFFF;border:1px solid var(--line);border-radius:10px;padding:20px 22px;display:flex;flex-direction:column}
+.usum{background:var(--bg-card);border:1px solid var(--line);border-radius:10px;padding:20px 22px;display:flex;flex-direction:column}
 .usum-t{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--txt-4);margin-bottom:6px}
 .usum-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
 .usum-row:last-child{border-bottom:0}
@@ -200,7 +200,10 @@
 }
 
 /* Reference-inspired bento treatment. Geometry stays on the existing responsive grids. */
-.usage-dashboard{--usage-card-radius:20px}
+/* Deep ink "canvas" surface: one step below the card ink, used for the KPI
+   strip and summary blocks so they read as one joined blue-ink band with
+   hairline gaps on the white page. */
+.usage-dashboard{--usage-card-radius:20px;--dash-canvas:#0C0B11}
 .usage-dashboard>.page-heading h1{letter-spacing:-.055em}
 .usage-dashboard>.banner{border-radius:14px;padding:14px 18px}
 .usage-dashboard .usage-kpis{gap:12px;margin-bottom:30px}
@@ -255,24 +258,17 @@
   .usage-dashboard .usage-models-section .tok-buckets,.usage-dashboard .usage-keys-section .ubreak-sum{gap:8px}
 }
 
-/* Neutral cards with an inverted summary for contrast. */
+/* KPI cards: the first is the coral-soft highlight, the rest read as one
+   joined ink strip on the white canvas (deep canvas ink, one step below the
+   card ink so the gridline gaps stay visible). */
 .usage-dashboard .usage-kpis .ovstat{border:0}
-.usage-dashboard .usage-kpis .ovstat:nth-child(2){background:var(--txt);color:var(--bg)}
-.usage-dashboard .usage-kpis .ovstat:nth-child(2) .dlabel,
-.usage-dashboard .usage-kpis .ovstat:nth-child(2) .dtrend,
-.usage-dashboard .usage-kpis .ovstat:nth-child(2) .num{color:var(--bg)}
+.usage-dashboard .usage-kpis .ovstat:not(:first-child){background:var(--dash-canvas);color:var(--txt)}
 .usage-dashboard .usage-analytics-card{grid-template-columns:minmax(0,2.15fr) minmax(250px,.85fr)}
 .usage-dashboard .usage-analytics-card .uchart{position:relative;min-height:340px;border:0;background:var(--bg-card);color:var(--txt)}
-.usage-dashboard .usage-analytics-card .usum{border:0;background:var(--txt);color:var(--bg)}
-.usage-dashboard .usage-analytics-card .usum-t,
-.usage-dashboard .usage-analytics-card .usum-row>span,
-.usage-dashboard .usage-analytics-card .usum-row>b,
-.usage-dashboard .usage-analytics-card .usum-row>b.accent{color:var(--bg)}
-.usage-dashboard .usage-analytics-card .usum-row{border-color:color-mix(in srgb,var(--bg) 20%,transparent)}
+.usage-dashboard .usage-analytics-card .usum{border:0;background:var(--dash-canvas);color:var(--txt)}
+.usage-dashboard .usage-analytics-card .usum-row{border-color:color-mix(in srgb,var(--txt) 20%,transparent)}
 .usage-dashboard .usage-models-section,.usage-dashboard .usage-keys-section{padding:28px;border:0;border-radius:24px;box-shadow:var(--shadow)}
-.usage-dashboard .usage-keys-section .ubreak-sum>div:last-child{background:var(--txt);border-color:var(--txt)}
-.usage-dashboard .usage-keys-section .ubreak-sum>div:last-child .dlabel,
-.usage-dashboard .usage-keys-section .ubreak-sum>div:last-child>b{color:var(--bg)}
+.usage-dashboard .usage-keys-section .ubreak-sum>div:last-child{background:var(--dash-canvas);border-color:var(--dash-canvas)}
 @media(max-width:1020px){.usage-dashboard .usage-analytics-card{grid-template-columns:1fr}}
 @media(max-width:520px){
   .usage-dashboard .usage-analytics-card .uchart{min-height:290px}
@@ -357,28 +353,28 @@
 .keys-filter-tab b{min-width:20px;height:20px;display:inline-grid;place-items:center;padding:0 6px;border-radius:99px;
   background:color-mix(in srgb,var(--txt-4) 10%,transparent);color:var(--txt-3);font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
 .keys-filter-tab.on b{background:var(--accent-soft);color:var(--accent-ink)}
-/* Dark theme: bg-card is DARKER than the bg-soft track, so the light-theme "raised white chip" look
-   inverts and the active tab disappears. Give the track a faint fill and lift the active tab up. */
-[data-theme="dark"] .keys-filter-tabs{background:rgba(255,255,255,.03);border-color:rgba(255,255,255,.10)}
-[data-theme="dark"] .keys-filter-tab{color:var(--txt-4)}
-[data-theme="dark"] .keys-filter-tab:hover{color:#fff;background:rgba(255,255,255,.05)}
-[data-theme="dark"] .keys-filter-tab.on{color:#fff;background:rgba(255,255,255,.10);
+/* On the ink surfaces (both themes now) bg-card is DARKER than the bg-soft track,
+   so the "raised chip" look inverts and the active tab would disappear. Give the
+   track a faint fill and lift the active tab up. */
+.keys-filter-tabs{background:rgba(255,255,255,.03);border-color:rgba(255,255,255,.10)}
+.keys-filter-tab{color:var(--txt-4)}
+.keys-filter-tab:hover{color:#fff;background:rgba(255,255,255,.05)}
+.keys-filter-tab.on{color:#fff;background:rgba(255,255,255,.10);
   box-shadow:0 1px 2px rgba(0,0,0,.45),inset 0 0 0 1px rgba(255,255,255,.07)}
-[data-theme="dark"] .keys-filter-tab b{background:rgba(255,255,255,.08);color:rgba(255,255,255,.72)}
-[data-theme="dark"] .keys-filter-tab.on b{background:var(--accent-soft);color:var(--accent-ink)}
-/* Dark-mode contrast fixes. */
+.keys-filter-tab b{background:rgba(255,255,255,.08);color:rgba(255,255,255,.72)}
+.keys-filter-tab.on b{background:var(--accent-soft);color:var(--accent-ink)}
+/* Ink-surface contrast fixes. */
 /* Corner affordance marks on overview stat cards: bg-soft fill on a bg-card surface with an
-   8%-alpha border was near-invisible in dark — lift fill, border, and glyph. */
-[data-theme="dark"] .overview-metric-mark{border-color:rgba(255,255,255,.20);background:rgba(255,255,255,.06);color:var(--txt-2)}
-/* Native date-picker indicator follows color-scheme; declare it explicitly on the dialog date
-   inputs so the calendar icon is not dark-on-dark where UA inheritance falls short. */
-.key-modal input.set-in[type="date"]{color-scheme:light}
-[data-theme="dark"] .key-modal input.set-in[type="date"]{color-scheme:dark}
-/* Disabled «Save changes» on the dark key-edit modal: bg-soft fill on bg-card with quiet text
+   8%-alpha border was near-invisible on ink — lift fill, border, and glyph. */
+.overview-metric-mark{border-color:rgba(255,255,255,.20);background:rgba(255,255,255,.06);color:var(--txt-2)}
+/* Native date-picker indicator follows color-scheme; the key dialogs are ink in
+   both themes, so the calendar icon needs the dark scheme everywhere. */
+.key-modal input.set-in[type="date"]{color-scheme:dark}
+/* Disabled «Save changes» on the key-edit modal: bg-soft fill on bg-card with quiet text
    read as a hole in the dialog — give it a visible fill, border, and legible label. */
-[data-theme="dark"] .key-modal .btn.btn-primary[disabled]{background:rgba(255,255,255,.07);
+.key-modal .btn.btn-primary[disabled]{background:rgba(255,255,255,.07);
   border-color:rgba(255,255,255,.16);color:var(--txt-3)}
-.key-table-wrap{border:1px solid var(--line);border-radius:10px;background:#FFFFFF;box-shadow:var(--shadow)}
+.key-table-wrap{border:1px solid var(--line);border-radius:10px;background:var(--bg-card);box-shadow:var(--shadow)}
 .key-table{width:100%;border-collapse:collapse;table-layout:fixed;font-family:var(--font-mono);font-size:11px;color:var(--txt-3)}
 .key-table th{padding:11px 13px;text-align:left;background:var(--bg-soft);border-bottom:1px solid var(--line);
   color:var(--txt-4);font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}
@@ -458,7 +454,7 @@
 @media(max-width:900px){
   .keys-toolbar-right{align-items:stretch;flex-direction:column}.keys-sort{justify-content:space-between}.keys-sort select{max-width:none;flex:1;text-align:right}.keys-filter-tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr))}.keys-filter-tab{min-height:40px;white-space:normal}
   .key-table-wrap{border:0;background:transparent;box-shadow:none}.key-table{display:block}.key-table thead{display:none}.key-table tbody{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
-  .key-table tr{display:grid;grid-template-columns:112px minmax(0,1fr);padding:14px;border:1px solid var(--line);border-radius:10px;background:#FFFFFF;box-shadow:var(--shadow)}
+  .key-table tr{display:grid;grid-template-columns:112px minmax(0,1fr);padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--bg-card);box-shadow:var(--shadow)}
   .key-table tr:hover{background:var(--bg-card)}.key-table td{display:grid;grid-template-columns:112px minmax(0,1fr);grid-column:1/-1;align-items:start;gap:8px;padding:7px 0;border:0;text-align:left!important;min-width:0}
   .key-table td::before{content:attr(data-label);color:var(--txt-4);font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}.key-table .key-name-cell{padding-top:0}.key-name-cell>strong,.key-name-cell>span{grid-column:2}.key-name-cell::before{grid-row:1/3}
   .key-credential-cell>.key-mask,.key-credential-cell>span,.key-usage-cell>div,.key-usage-cell>.key-usage-track,.key-usage-cell>small,.key-guardrail-cell>span{grid-column:2}
@@ -496,7 +492,7 @@
 .seg button{background:transparent;border:0;cursor:pointer;font-family:var(--font-mono);font-size:12px;
   color:var(--txt-4);padding:5px 13px;border-radius:999px;transition:background-color .15s,color .15s;letter-spacing:.02em}
 .seg button.on{background:var(--accent);color:#fff}
-.chart-card{background:#FFFFFF;border:1px solid var(--line);border-radius:var(--radius);padding:22px}
+.chart-card{background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius);padding:22px}
 .chart-legend{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;font-family:var(--font-mono);font-size:12px;color:var(--txt-3)}
 .chart-legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:middle}
 .chart-svg{width:100%;height:200px;display:block;overflow:visible}
@@ -559,7 +555,7 @@
 .side{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
   --side-hover:rgba(12,11,17,.055);--side-icon:rgba(12,11,17,.045);
   --side-active:#18161D;--side-active-text:#F4F3EF;--side-active-icon:rgba(255,255,255,.09);
-  background:#FFFFFF;
+  background:#F4F3EF;
   border-right:1px solid rgba(12,11,17,.1);padding:24px 18px;overflow:hidden;overscroll-behavior:contain}
 [data-theme="dark"] .side{
   --side-hover:rgba(244,243,239,.065);--side-icon:rgba(244,243,239,.055);
@@ -606,20 +602,13 @@
 .app-main{display:flex;flex-direction:column;min-width:0;
   --overview-radius:16px;
   --overview-shadow:0 1px 2px rgba(12,11,17,.04),0 18px 46px -34px rgba(12,11,17,.28);
-  /* White canvas and white inner surfaces — no grey fills inside dashboard
-     cards (tracks, wells, table headers, chips read as white elements). */
-  --bg-soft:#FFFFFF;
+  /* Inner surfaces (tracks, wells, table headers, chips) read as lifted ink
+     in both themes — the .app token block keeps --bg-soft on #141218. */
   background:
     radial-gradient(900px 460px at 38% -110px,color-mix(in srgb,var(--accent) 6%,transparent),transparent 72%),
     var(--dash-bg)}
-[data-theme="dark"] .app-main{
-  --overview-shadow:0 1px 2px rgba(12,11,17,.04),0 18px 46px -34px rgba(12,11,17,.28);
-  /* Dark theme keeps ink inner surfaces; the white --bg-soft above is the
-     light-theme-only rule. */
-  --bg-soft:#141218}
 .app-top{position:sticky;top:0;z-index:5;min-height:72px;padding:0 40px;
-  background:#FFFFFF;border-bottom:1px solid var(--line)}
-[data-theme="dark"] .app-top{background:#18161D}
+  background:var(--bg-card);border-bottom:1px solid var(--line)}
 .app-top-in{display:flex;align-items:center;gap:14px;width:100%;max-width:1280px;min-height:71px;margin:0 auto}
 .app-burger{display:none;background:none;border:0;font-size:22px;color:var(--txt);cursor:pointer}
 /* Keep every section title on one line; truncate instead of growing the sticky top bar. */
@@ -716,15 +705,11 @@ body.app-body .bg-decor{display:none!important}
 .overview-panel{display:grid;gap:28px}
 /* Dashboard cards are liquid glass on the white canvas: translucent fill,
    blur and a bright top edge instead of opaque grey surfaces. */
+/* Dashboard cards are ink surfaces in both themes (the .app token block maps
+   --bg-card to #18161D) — no white cards anywhere in the dashboard. */
 .app .panel .card{border-color:color-mix(in srgb,var(--line) 88%,transparent);border-radius:var(--overview-radius);
-  background:#FFFFFF;
+  background:var(--bg-card);
   box-shadow:var(--overview-shadow)}
-[data-theme="dark"] .app .panel .card{
-  background:#18161D}
-/* Dark theme: neutral surfaces return to the ink card (no white cards). */
-[data-theme="dark"] .dcard,[data-theme="dark"] .chart-card,[data-theme="dark"] .uprovider-card,
-[data-theme="dark"] .app .table-scroll,[data-theme="dark"] .usum,[data-theme="dark"] .key-table-wrap,
-[data-theme="dark"] .uchart,[data-theme="dark"] .banner{background:#18161D}
 .app .panel .btn{min-height:40px;padding:9px 17px;border-radius:10px;font-family:var(--font-ui);font-size:13.5px;font-weight:650;letter-spacing:-.005em}
 .app .panel .link,.app .panel strong,.app .panel b{font-family:var(--font-ui)}
 .app .panel strong,.app .panel b{font-weight:680}
@@ -767,17 +752,6 @@ body.app-body .bg-decor{display:none!important}
 .overview-balance-card .overview-balance-number{color:#fff}
 .overview-balance-card .overview-balance-value{color:rgba(255,255,255,.85)}
 .overview-balance-card .overview-balance-value b{color:#fff}
-/* Dark theme inverts the coral hero to the paper surface: the accent fill
-   ignores the theme toggle and reads as a stray red card on the ink page. */
-[data-theme="dark"] .app .panel .card.overview-balance-card{
-  background:linear-gradient(135deg,var(--paper) 0%,var(--paper-2) 100%);
-  color:var(--ink);border-color:rgba(244,243,239,.24);box-shadow:0 18px 46px -30px rgba(0,0,0,.6)}
-[data-theme="dark"] .overview-balance-card .overview-card-label{color:rgba(12,11,17,.62)}
-[data-theme="dark"] .overview-balance-card .overview-balance-number{color:var(--ink)}
-[data-theme="dark"] .overview-balance-card .overview-balance-value{color:rgba(12,11,17,.72)}
-[data-theme="dark"] .overview-balance-card .overview-balance-value b{color:var(--accent-ink)}
-[data-theme="dark"] .app .panel .overview-balance-card .btn-ghost{background:transparent;color:var(--ink);border-color:rgba(12,11,17,.45)}
-[data-theme="dark"] .app .panel .overview-balance-card .btn-ghost:hover{background:rgba(12,11,17,.06);border-color:var(--ink);color:var(--ink)}
 .app .panel .overview-balance-card .btn-primary{background:var(--ink);color:var(--paper);border-color:var(--ink);border-radius:99px}
 .app .panel .overview-balance-card .btn-primary:hover{background:var(--ink-2);border-color:var(--ink-2)}
 .app .panel .overview-balance-card .btn-ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.55);border-radius:99px}
@@ -892,10 +866,8 @@ body.app-body .bg-decor{display:none!important}
 .bill4{grid-template-columns:repeat(4,1fr)}
 .ovstat{min-height:124px;border:1px solid color-mix(in srgb,var(--line) 88%,transparent);border-radius:var(--overview-radius);padding:20px 22px;
   display:flex;flex-direction:column;justify-content:center;gap:6px;
-  background:#FFFFFF;
+  background:var(--bg-card);
   box-shadow:var(--overview-shadow)}
-[data-theme="dark"] .ovstat{
-  background:#18161D}
 /* Labels reserve two lines so sibling card values share one baseline when a long label wraps. */
 .ovstat .dlabel{font-family:var(--font-mono);font-size:10px;font-weight:650;letter-spacing:.12em;text-transform:uppercase;color:var(--txt-4);
   line-height:1.4;min-height:2.8em}
