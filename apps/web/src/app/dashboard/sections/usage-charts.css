@@ -37,7 +37,7 @@
    follows the chart canvas through align-items:stretch on the body grid, so
    the card and the chart always share top and bottom edges; overflow hidden
    keeps the worst-case day (2-line provider names) from breaking that edge. */
-.usage-trend-detail{padding:20px;border:1px solid transparent;border-radius:14px;min-width:0;overflow:hidden;max-height:260px;
+.usage-trend-detail{padding:20px;border:1px solid transparent;border-radius:14px;min-width:0;overflow:hidden;height:260px;max-height:260px;align-self:start;box-sizing:border-box;
   background:linear-gradient(150deg,var(--accent) 0%,var(--accent-2) 100%);color:#fff;
   box-shadow:0 14px 34px -22px color-mix(in srgb,var(--accent) 65%,transparent)}
 /* Narrow screens stack the card under the chart: no height cap there. */
