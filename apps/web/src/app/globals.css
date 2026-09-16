@@ -1139,6 +1139,23 @@ a.step:hover .step-cta::after{margin-left:4px}
 .credits-receipt-cta:hover:not([disabled]){background:var(--ink-2);border-color:var(--ink-2)}
 .credits-receipt-cta[disabled]{opacity:.55;cursor:not-allowed}
 
+/* Dark theme: the receipt stops being a solid coral block and becomes a quiet
+   maroon panel with a coral outline, matching the reference card. */
+[data-theme="dark"] .credits-receipt{background:#392226;color:#F3F2EE;
+  border:1px solid #FF6A5A;box-shadow:none}
+[data-theme="dark"] .credits-receipt-head{color:rgba(243,242,238,.8);
+  border-bottom-color:rgba(255,106,90,.45)}
+[data-theme="dark"] .credits-receipt-lines>div{border-bottom-color:rgba(255,106,90,.28)}
+[data-theme="dark"] .credits-receipt-lines dt{color:rgba(243,242,238,.78)}
+[data-theme="dark"] .credits-receipt-lines dd{color:#F3F2EE}
+[data-theme="dark"] .credits-receipt-lines dd.is-negative{color:#FF9A8E}
+[data-theme="dark"] .credits-receipt-total span{color:rgba(243,242,238,.8)}
+[data-theme="dark"] .credits-receipt-total strong{color:#F3F2EE}
+[data-theme="dark"] .credits-receipt-total small{color:rgba(243,242,238,.78)}
+[data-theme="dark"] .credits-receipt .topup-simple-footer{border-top-color:rgba(255,106,90,.45)}
+[data-theme="dark"] .credits-receipt .topup-simple-footer span{color:rgba(243,242,238,.78)}
+[data-theme="dark"] .credits-receipt .topup-simple-footer strong{color:#F3F2EE}
+
 @media(max-width:900px){
   .credits-shell-body{grid-template-columns:1fr;gap:30px}
 }
