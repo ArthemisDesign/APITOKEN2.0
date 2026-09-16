@@ -20,6 +20,12 @@
 .app .rp .rp-stat-f{margin:0;font-size:12px;line-height:1.5;color:var(--txt-3)}
 .app .rp .rp-stat:nth-child(2){background:var(--txt)}
 .app .rp .rp-stat:nth-child(2) :is(.rp-stat-l,.rp-stat-v,.rp-stat-f){color:var(--bg)}
+/* Dark theme: the inverted accent stat stops being a near-white block on the
+   dark canvas and becomes the same translucent coral panel as the other
+   accent surfaces. */
+[data-theme="dark"] .app .rp .rp-stat:nth-child(2){background:var(--accent-soft);border:1px solid var(--accent-line)}
+[data-theme="dark"] .app .rp .rp-stat:nth-child(2) :is(.rp-stat-l,.rp-stat-f){color:var(--txt-3)}
+[data-theme="dark"] .app .rp .rp-stat:nth-child(2) .rp-stat-v{color:var(--accent-ink)}
 
 /* Navigation keeps all five workflows visible, with comfortable touch targets. */
 .app .rp .referral-subnav{padding:5px;gap:4px;margin:0 0 28px;border:0;border-radius:16px;background:var(--bg-card)}
