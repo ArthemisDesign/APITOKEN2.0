@@ -1,11 +1,12 @@
-/* Covers borrow the landing's TT Runs type, paper/ink/coral and editorial grid.
+/* Covers borrow the landing's TT Runs type, paper/ink/blue + coral and editorial grid.
+   Blue is the surface, coral (--hot) marks the accents on every cover.
    Literal palette values keep the illustrations legible in both page themes. */
 .vid__stage,.tut__thumb{container-type:inline-size}
-.vcover{--cover-bg:var(--paper);--cover-fg:var(--ink);--cover-accent:var(--accent);position:absolute;inset:0;isolation:isolate;overflow:hidden;padding:6%;background:var(--cover-bg);color:var(--cover-fg);font-family:var(--sans);text-align:left;transition:opacity .25s}
-.vcover--coral{--cover-bg:var(--accent);--cover-fg:var(--ink);--cover-accent:var(--ink)}
-.vcover--ink{--cover-bg:var(--ink);--cover-fg:var(--paper);--cover-accent:var(--accent)}
+.vcover{--cover-bg:var(--paper);--cover-fg:var(--ink);--cover-accent:var(--hot);position:absolute;inset:0;isolation:isolate;overflow:hidden;padding:6%;background:var(--cover-bg);color:var(--cover-fg);font-family:var(--sans);text-align:left;transition:opacity .25s}
+.vcover--coral{--cover-bg:var(--accent);--cover-fg:#fff;--cover-accent:var(--hot)}
+.vcover--ink{--cover-bg:var(--ink);--cover-fg:var(--paper);--cover-accent:var(--hot)}
 .vcover::before{content:"";position:absolute;z-index:-1;inset:0;background-image:linear-gradient(color-mix(in srgb,var(--cover-fg) 7%,transparent) 1px,transparent 1px),linear-gradient(90deg,color-mix(in srgb,var(--cover-fg) 7%,transparent) 1px,transparent 1px);background-size:12.5% 22.22%;mask-image:linear-gradient(90deg,transparent 30%,#000)}
-.vcover::after{content:"";position:absolute;z-index:-1;width:46%;aspect-ratio:1;right:-9%;bottom:-36%;border:2.5cqw solid color-mix(in srgb,var(--cover-fg) 10%,transparent);border-radius:50%}
+.vcover::after{content:"";position:absolute;z-index:-1;width:46%;aspect-ratio:1;right:-9%;bottom:-36%;border:2.5cqw solid var(--hot);border-radius:50%}
 .vcover-brand{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:clamp(12px,2.8cqw,24px);font-weight:600;letter-spacing:-.045em;line-height:1}
 .vcover-brand__reg{font-size:.55em;vertical-align:top;margin-left:2px}
 .vcover-number{font-size:clamp(8px,1.8cqw,13px);font-weight:500;letter-spacing:.08em;white-space:nowrap}
@@ -32,41 +33,41 @@
 .vcover-code-line.short{width:66%}
 .vcover-access{display:grid;gap:2cqw;padding:2.5cqw;border:1px solid currentColor;border-radius:1.7cqw;transform:rotate(-7deg);background:var(--cover-bg);box-shadow:1.4cqw 1.4cqw 0 color-mix(in srgb,var(--cover-fg) 12%,transparent)}
 .vcover-access__label{font-size:.8em;letter-spacing:.09em}
-.vcover-key{position:relative;display:block;width:100%;height:6cqw}
+.vcover-key{position:relative;display:block;width:100%;height:6cqw;color:var(--cover-accent)}
 .vcover-key::before{content:"";position:absolute;width:6cqw;height:6cqw;border:1.2cqw solid currentColor;border-radius:50%;left:1cqw;top:0}
 .vcover-key::after{content:"";position:absolute;left:7cqw;right:2cqw;top:2.5cqw;height:1.2cqw;background:currentColor}
 .vcover-key>i{position:absolute;right:3cqw;top:3cqw;width:1.1cqw;height:2.6cqw;background:currentColor}
 .vcover-response{display:flex;justify-content:space-between;align-items:center;gap:1cqw;margin:3cqw 0 0 2cqw;padding:1.5cqw 2cqw;border-radius:1cqw;background:var(--ink);color:var(--paper);font-size:.85em;white-space:nowrap;transform:rotate(3deg)}
-.vcover-response>b{color:var(--accent)}
+.vcover-response>b{color:var(--hot)}
 .vcover-editor{transform:rotate(5deg)}
 .vcover-editor__body{display:grid;gap:2cqw;padding:2.5cqw}
 .vcover-editor__body>div{display:grid;gap:1cqw;padding:1.4cqw;border:1px solid color-mix(in srgb,var(--cover-fg) 20%,transparent);border-radius:.8cqw;font-size:.75em}
-.vcover-editor__body>div:last-child{border-color:var(--accent)}
+.vcover-editor__body>div:last-child{border-color:var(--hot);background:color-mix(in srgb,var(--hot) 14%,transparent)}
 .vcover-braces{font-size:8cqw;line-height:1;letter-spacing:-.12em;color:var(--cover-accent);font-weight:500}
 .vcover-models{display:grid;gap:1.7cqw;transform:rotate(-6deg)}
 .vcover-models>div{display:flex;align-items:center;gap:1.8cqw;padding:1.7cqw 2.2cqw;border:1px solid color-mix(in srgb,var(--cover-fg) 25%,transparent);border-radius:1.2cqw;background:var(--cover-bg)}
-.vcover-models>div:nth-child(2){margin-left:3cqw;margin-right:-3cqw;background:var(--ink);color:var(--paper)}
+.vcover-models>div:nth-child(2){margin-left:3cqw;margin-right:-3cqw;background:var(--ink);color:var(--paper);border-color:var(--hot)}
 .vcover-models .vcover-logo{width:3.8cqw;height:3.8cqw}
 .vcover-models__route{display:flex;justify-content:space-between;align-items:center;gap:1cqw;padding:1cqw 2cqw;font-size:.8em;letter-spacing:.06em}
-.vcover-models__route>b{font-size:2em;color:var(--accent-ink)}
+.vcover-models__route>b{font-size:2em;color:var(--hot)}
 .vcover-api{position:relative;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2cqw;border:1px solid color-mix(in srgb,var(--cover-fg) 28%,transparent);border-radius:2cqw;background:var(--cover-bg);transform:rotate(5deg)}
-.vcover-api__method{position:absolute;left:-2cqw;top:-1cqw;padding:1cqw 2cqw;border-radius:.6cqw;background:var(--accent);color:var(--ink);font-size:.85em;font-weight:600;letter-spacing:.07em}
+.vcover-api__method{position:absolute;left:-2cqw;top:-1cqw;padding:1cqw 2cqw;border-radius:.6cqw;background:var(--hot);color:var(--ink);font-size:.85em;font-weight:600;letter-spacing:.07em}
 .vcover-api .vcover-braces{font-size:12cqw}
 .vcover-api__response{display:flex;align-items:baseline;gap:1.3cqw;font-size:.8em}
 .vcover-api__response>b{font-size:1.8em;font-weight:500}
-.vcover-stream{width:66%;height:1cqw;background:repeating-linear-gradient(90deg,var(--accent) 0 8%,transparent 8% 13%)}
+.vcover-stream{width:66%;height:1cqw;background:repeating-linear-gradient(90deg,var(--hot) 0 8%,transparent 8% 13%)}
 .vcover-billing{transform:rotate(-4deg)}
 .vcover-billing .vcover-window__bar>span{margin:0}
 .vcover-bars{display:flex;align-items:end;gap:1.3cqw;height:18cqw;margin:2.5cqw 2.5cqw 0;border-bottom:1px solid currentColor}
 .vcover-bars>i{flex:1;height:40%;border-radius:.5cqw .5cqw 0 0;background:var(--ink)}
-.vcover-bars>i:nth-child(2){height:65%;opacity:.4}
+.vcover-bars>i:nth-child(2){height:65%;background:var(--hot)}
 .vcover-bars>i:nth-child(3){height:52%}
-.vcover-bars>i:nth-child(4){height:86%;opacity:.4}
+.vcover-bars>i:nth-child(4){height:86%;background:var(--hot)}
 .vcover-bars>i:nth-child(5){height:70%}
-.vcover-bars>i:nth-child(6){height:100%;opacity:.4}
+.vcover-bars>i:nth-child(6){height:100%;background:var(--hot)}
 .vcover-billing__legend{display:flex;justify-content:space-between;padding:1.7cqw 2.5cqw;font-size:.75em;letter-spacing:.08em}
 .vcover-caption{position:absolute;left:6%;bottom:7%;display:flex;align-items:center;gap:1.8cqw;font-size:clamp(10px,2.5cqw,15px);line-height:1.2}
-.vcover-caption>i{display:grid;place-items:center;width:6cqw;height:6cqw;border:1px solid color-mix(in srgb,var(--cover-fg) 45%,transparent);border-radius:50%}
+.vcover-caption>i{display:grid;place-items:center;width:6cqw;height:6cqw;border:1px solid var(--hot);border-radius:50%;background:var(--hot);color:var(--ink)}
 .vcover-caption>i::after{content:"";border-left:1.5cqw solid currentColor;border-block:1cqw solid transparent;margin-left:.4cqw}
 .vcover--compact .vcover-subtitle{display:none}
 .vcover--compact .vcover-title{font-size:clamp(20px,7.4cqw,42px)}
@@ -75,9 +76,9 @@
 /* Keep cover copy clear of the existing demo controls. The terminal is revealed on play. */
 .vid__stage>.vcover{z-index:1}
 .vid__stage .vid__scrim{z-index:2;align-items:flex-end;justify-content:flex-start;padding:0 6% 6%;background:transparent;pointer-events:none}
-.vid__stage .vid__play{min-height:44px;padding:10px 20px;background:var(--paper);border-color:var(--paper);color:var(--ink);font-size:clamp(10px,1.65cqw,13px);letter-spacing:0;text-transform:none}
-.vid__stage:hover .vid__play{background:var(--ink);border-color:var(--ink);color:var(--paper)}
-.vid__stage:focus-visible{outline:3px solid var(--accent);outline-offset:4px}
+.vid__stage .vid__play{min-height:44px;padding:10px 20px;background:var(--hot);border-color:var(--hot);color:var(--ink);font-size:clamp(10px,1.65cqw,13px);letter-spacing:0;text-transform:none}
+.vid__stage:hover .vid__play{background:var(--paper);border-color:var(--paper);color:var(--ink)}
+.vid__stage:focus-visible{outline:3px solid var(--hot);outline-offset:4px}
 .vid.playing .vcover{opacity:0;pointer-events:none}
 .tut__thumb::after{display:none}
 .tut__thumb{border-radius:0}
