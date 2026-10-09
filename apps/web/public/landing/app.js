@@ -98,6 +98,7 @@ const PROFILES = [
   { id:'custom',  name:'Другое',            base:20000 }
 ];
 
+const GUIDE_SLUGS = { start: 'claude-api-quick-setup', 'claude-code': 'claude-code-api-key', cursor: 'claude-api-key-for-cursor', models: 'claude-api-gateway', direct: 'anthropic-sdk-base-url', billing: 'how-billing-works' };
 const TUTORIALS = [
   ['01','Начало работы','2:04','start'],['02','Claude Code','1:42','claude-code'],['03','Cursor','2:16','cursor'],
   ['04','Переключение моделей','1:18','models'],['05','Прямой API','2:35','direct'],['06','Биллинг и расходы','1:26','billing']
@@ -346,7 +347,9 @@ $$('[data-count]').forEach(n => countIO.observe(n));
     active.picks.forEach((id, i) => {
       const m = byId(id); if (!m) return;
       const r = ROLES[i] || ROLES[ROLES.length - 1];
-      const n = el('article', 'pick');
+      // the whole card is the "use this model" action — a real link, not a lookalike
+      const n = el('a', 'pick');
+      n.href = '/ru/register';
       n.innerHTML = `
         <span class="pick__role">${r.role}</span>
         <span class="pick__name">${m.name}</span>
@@ -357,7 +360,7 @@ $$('[data-count]').forEach(n => countIO.observe(n));
           <div><span>выход / 1M</span><b>${m.out}</b></div>
           <div><span>контекст</span><b>${m.ctx}</b></div>
         </div>
-        <span class="pick__cta">Использовать модель →</span>`;
+        <span class="pick__cta">Использовать модель</span>`;
       out.appendChild(n);
     });
     observeReveals();
@@ -500,8 +503,10 @@ $$('[data-count]').forEach(n => countIO.observe(n));
 (() => {
   const lib = $('#lib');
   if (!lib) return;
+  // each card opens the matching written guide, so the play-styled cover leads somewhere
   TUTORIALS.forEach(([num, name, dur, cover]) => {
-    const n = el('article', 'tut reveal');
+    const n = el('a', 'tut reveal');
+    n.href = '/ru/docs/learn/' + GUIDE_SLUGS[cover];
     n.innerHTML = `
       <div class="tut__thumb">${window.apiTokenVideoCover(cover, 'ru', true)}</div>
       <div class="tut__body">

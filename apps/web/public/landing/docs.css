@@ -515,3 +515,7 @@
   .docs-cta{width:100%;margin-top:24px}
   .docs-cta .btn{width:100%}
 }
+
+/* "New" is a status note, not a pill button: dot + text */
+.docs-tag{border:0;border-radius:0;padding:0;color:var(--fg)}
+.docs-tag::before{content:"";display:inline-block;width:6px;height:6px;margin-right:5px;border-radius:50%;background:var(--hot);vertical-align:1px}
