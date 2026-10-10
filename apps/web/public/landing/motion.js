@@ -41,7 +41,9 @@ if (REDUCED) return;
    --------------------------------------------------------- */
 let lenis = null;
 if (window.Lenis && window.MO_SMOOTH !== false && !REDUCED && !TOUCH) {
-  lenis = new Lenis({ lerp: .095, wheelMultiplier: 1, smoothWheel: true, syncTouch: false });
+  /* lerp .095 felt sluggish on laptop touchpads (feedback 05:02): the pad
+     already adds its own inertia, so a slow lerp stacks a second delay on top */
+  lenis = new Lenis({ lerp: .16, wheelMultiplier: 1, smoothWheel: true, syncTouch: false });
   lenis.on('scroll', ScrollTrigger.update);
   gsap.ticker.add(t => lenis.raf(t * 1000));
   gsap.ticker.lagSmoothing(0);
@@ -338,14 +340,14 @@ $$('.btn, .nav a, .lnk--arrow').forEach(b => {
    16 · DYNAMIC CONTENT — app.js re-renders these
    --------------------------------------------------------- */
 function decorate(host) {
-  const fresh = $$('.prov, .pick, .tut', host).filter(n => !n.dataset.moSeen);
+  const fresh = $$('.prov, .tut', host).filter(n => !n.dataset.moSeen);
   if (!fresh.length) return;
   fresh.forEach(n => n.dataset.moSeen = '1');
   reveal(fresh, { from: { y: 34 }, duration: .9, stagger: .05 }, host, { start: 'top 85%' });
   drawRules(host);
   ScrollTrigger.refresh();
 }
-['#universe', '#picks', '#lib'].forEach(sel => {
+['#universe', '#lib'].forEach(sel => {
   const host = $(sel);
   if (!host) return;
   decorate(host);

@@ -1,7 +1,8 @@
 /* =========================================================
    apiToken landing — prototype logic
    Everything model-related is data-driven: add an entry to
-   PROVIDERS / PICKS and the layout absorbs it with no CSS change.
+   PROVIDERS and the layout absorbs it with no CSS change. A model
+   flagged isNew: true goes first in its row with a soft highlight.
    ========================================================= */
 
 /* ---------------------------------------------------------
@@ -22,53 +23,36 @@ const PROVIDERS = [
   {
     name: 'Anthropic', note: 'Claude',
     models: [
-      { name: 'Claude Opus 5',   id: 'claude-opus-5',   ctx: '200K', in: '$2.50', out: '$12.50', caps: ['coding','reasoning','agents','long'], badge: 'Лучшее качество' },
-      { name: 'Claude Sonnet 5', id: 'claude-sonnet-5', ctx: '200K', in: '$1.00', out: '$5.00',  caps: ['coding','reasoning','agents'],        badge: 'Новинка', badgeKind: 'new' },
-      { name: 'Claude Haiku 4.5',id: 'claude-haiku-4-5',ctx: '200K', in: '$0.50', out: '$2.50',  caps: ['fast','cheap','agents'] },
-      { name: 'Claude Fable 5',  id: 'claude-fable-5',  ctx: '200K', in: '$5.00', out: '$25.00', caps: ['reasoning','long'] }
+      { name: 'Claude Opus 5',   id: 'claude-opus-5',   ctx: '200K', in: '$2.50', out: '$12.50', caps: ['coding','reasoning','agents','long'], edge: 'Сильнейшая в сложном коде и длинных агентных задачах' },
+      { name: 'Claude Sonnet 5', id: 'claude-sonnet-5', ctx: '200K', in: '$1.00', out: '$5.00',  caps: ['coding','reasoning','agents'], edge: 'Качество близко к Opus, цена в 2,5 раза ниже', isNew: true },
+      { name: 'Claude Haiku 4.5',id: 'claude-haiku-4-5',ctx: '200K', in: '$0.50', out: '$2.50',  caps: ['fast','cheap','agents'], edge: 'Быстрые ответы для чатов и массовых задач' },
+      { name: 'Claude Fable 5',  id: 'claude-fable-5',  ctx: '200K', in: '$5.00', out: '$25.00', caps: ['reasoning','long'], edge: 'Глубокие рассуждения над длинными текстами' }
     ]
   },
   {
     name: 'OpenAI', note: 'GPT',
     models: [
-      { name: 'GPT-5.6 Sol',  id: 'gpt-5-6-sol',  ctx: '400K', in: '$1.75', out: '$9.00',  caps: ['coding','reasoning','agents','long'] },
-      { name: 'GPT-5.6 Terra',id: 'gpt-5-6-terra',ctx: '400K', in: '$0.90', out: '$4.50',  caps: ['coding','agents'] },
-      { name: 'GPT-5.6 Luna', id: 'gpt-5-6-luna', ctx: '128K', in: '$0.30', out: '$1.50',  caps: ['fast','cheap'] },
-      { name: 'GPT-5.5',      id: 'gpt-5-5',      ctx: '256K', in: '$1.20', out: '$6.00',  caps: ['reasoning'] }
+      { name: 'GPT-5.6 Sol',  id: 'gpt-5-6-sol',  ctx: '400K', in: '$1.75', out: '$9.00',  caps: ['coding','reasoning','agents','long'], edge: 'Флагман OpenAI: код, агенты и контекст 400K' },
+      { name: 'GPT-5.6 Terra',id: 'gpt-5-6-terra',ctx: '400K', in: '$0.90', out: '$4.50',  caps: ['coding','agents'], edge: 'Надёжная рабочая модель для кода и агентов' },
+      { name: 'GPT-5.6 Luna', id: 'gpt-5-6-luna', ctx: '128K', in: '$0.30', out: '$1.50',  caps: ['fast','cheap'], edge: 'Дешёвая и быстрая для простых запросов' },
+      { name: 'GPT-5.5',      id: 'gpt-5-5',      ctx: '256K', in: '$1.20', out: '$6.00',  caps: ['reasoning'], edge: 'Проверенная модель для рассуждений' }
     ]
   },
   {
     name: 'Google', note: 'Gemini',
     models: [
-      { name: 'Gemini 3 Pro',   id: 'gemini-3-pro',   ctx: '1M',   in: '$1.10', out: '$5.50', caps: ['reasoning','long','image'] },
-      { name: 'Gemini 3 Flash', id: 'gemini-3-flash', ctx: '1M',   in: '$0.20', out: '$1.00', caps: ['fast','cheap','long'] },
-      { name: 'Gemini Image',   id: 'gemini-image',   ctx: '32K',  in: '$0.40', out: '$2.00', caps: ['image'] }
+      { name: 'Gemini 3 Pro',   id: 'gemini-3-pro',   ctx: '1M',   in: '$1.10', out: '$5.50', caps: ['reasoning','long','image'], edge: 'Контекст 1M и понимание изображений' },
+      { name: 'Gemini 3 Flash', id: 'gemini-3-flash', ctx: '1M',   in: '$0.20', out: '$1.00', caps: ['fast','cheap','long'], edge: 'Контекст 1M по цене лёгкой модели' },
+      { name: 'Gemini Image',   id: 'gemini-image',   ctx: '32K',  in: '$0.40', out: '$2.00', caps: ['image'], edge: 'Генерация и редактирование изображений' }
     ]
   },
   {
     name: 'Kimi', note: 'Moonshot',
     models: [
-      { name: 'Kimi K2.5',      id: 'kimi-k2-5',      ctx: '256K', in: '$0.28', out: '$1.40', caps: ['cheap','coding','long'], badge: 'Лучшая цена' },
-      { name: 'Kimi K2 Turbo',  id: 'kimi-k2-turbo',  ctx: '128K', in: '$0.15', out: '$0.75', caps: ['fast','cheap'] }
+      { name: 'Kimi K2.5',      id: 'kimi-k2-5',      ctx: '256K', in: '$0.28', out: '$1.40', caps: ['cheap','coding','long'], edge: 'Сильный код по минимальной цене' },
+      { name: 'Kimi K2 Turbo',  id: 'kimi-k2-turbo',  ctx: '128K', in: '$0.15', out: '$0.75', caps: ['fast','cheap'], edge: 'Самая низкая цена в каталоге' }
     ]
   }
-];
-
-const TASKS = [
-  { id: 'coding',  name: 'Код',              picks: ['claude-opus-5','gpt-5-6-sol','claude-sonnet-5','kimi-k2-5'] },
-  { id: 'agents',  name: 'AI-агент',         picks: ['claude-opus-5','gpt-5-6-terra','claude-haiku-4-5','kimi-k2-5'] },
-  { id: 'support', name: 'Поддержка',        picks: ['claude-sonnet-5','gpt-5-6-luna','claude-haiku-4-5','kimi-k2-turbo'] },
-  { id: 'content', name: 'Контент',          picks: ['claude-fable-5','gpt-5-6-sol','gemini-3-pro','kimi-k2-5'] },
-  { id: 'image',   name: 'Изображения',      picks: ['gemini-image','gemini-3-pro','gpt-5-6-terra'] },
-  { id: 'volume',  name: 'Высокие объёмы',   picks: ['gemini-3-flash','kimi-k2-turbo','claude-haiku-4-5','gpt-5-6-luna'] },
-  { id: 'reason',  name: 'Рассуждение',      picks: ['claude-opus-5','gpt-5-5','gemini-3-pro','claude-sonnet-5'] }
-];
-
-const ROLES = [
-  { role: 'Максимальное качество', why: 'Самые сложные задачи, где важна точность результата.' },
-  { role: 'Баланс',                why: 'Основная рабочая модель: качество близко к топовой, цена ниже.' },
-  { role: 'Быстрая',               why: 'Короткая латентность для интерактивных сценариев.' },
-  { role: 'Экономичная',           why: 'Массовый поток запросов с минимальной стоимостью.' }
 ];
 
 const INTEGRATIONS = [
@@ -132,7 +116,6 @@ const el = (tag, cls, html) => {
 };
 const money = n => '$' + Math.round(n).toLocaleString('ru-RU').replace(/,/g, ' ');
 const ALL_MODELS = PROVIDERS.flatMap(p => p.models.map(m => ({ ...m, provider: p.name })));
-const byId = id => ALL_MODELS.find(m => m.id === id);
 
 /* ---------------------------------------------------------
    HEADER
@@ -214,12 +197,14 @@ const observeReveals = () => $$('.reveal:not(.in)').forEach(n => io.observe(n));
   });
 
   function card(m) {
-    const n = el('article', 'mcard');
+    const n = el('article', 'mcard' + (m.isNew ? ' mcard--new' : ''));
     n.innerHTML = `
       <div class="mcard__top">
         <span class="mcard__name">${m.name}</span>
+        ${m.isNew ? '<span class="mcard__badge mcard__badge--new">Новинка</span>' : ''}
       </div>
       <span class="mcard__id">${m.id}</span>
+      <p class="mcard__edge">${m.edge}</p>
       <div class="mcard__row"><span>вход / 1M</span><b>${m.in}</b></div>
       <div class="mcard__row"><span>выход / 1M</span><b>${m.out}</b></div>
       <div class="mcard__row"><span>контекст</span><b>${m.ctx}</b></div>
@@ -230,7 +215,10 @@ const observeReveals = () => $$('.reveal:not(.in)').forEach(n => io.observe(n));
   function render() {
     wrapU.innerHTML = '';
     PROVIDERS.forEach(p => {
-      const models = p.models.filter(m => active === 'all' || m.caps.includes(active));
+      // priority rule: a model flagged isNew moves to the front of its provider row
+      const models = p.models
+        .filter(m => active === 'all' || m.caps.includes(active))
+        .sort((a, b) => (b.isNew ? 1 : 0) - (a.isNew ? 1 : 0));
       if (!models.length) return;
       const row = el('div', 'prov');
       row.innerHTML = `<div class="prov__id">
@@ -327,46 +315,6 @@ const countIO = new IntersectionObserver(es => {
   });
 }, { threshold: .5 });
 $$('[data-count]').forEach(n => countIO.observe(n));
-
-/* ---------------------------------------------------------
-   05 · MODEL EXPLORER
-   --------------------------------------------------------- */
-(() => {
-  const opts = $('#askOpts'), out = $('#picks');
-  if (!opts) return;
-  let active = TASKS[0];
-
-  TASKS.forEach(t => {
-    const b = el('button', 'chip' + (t === active ? ' on' : ''), t.name);
-    b.onclick = () => { active = t; $$('.chip', opts).forEach(x => x.classList.toggle('on', x === b)); render(); };
-    opts.appendChild(b);
-  });
-
-  function render() {
-    out.innerHTML = '';
-    active.picks.forEach((id, i) => {
-      const m = byId(id); if (!m) return;
-      const r = ROLES[i] || ROLES[ROLES.length - 1];
-      // the whole card is the "use this model" action — a real link, not a lookalike
-      const n = el('a', 'pick');
-      n.href = '/ru/register';
-      n.innerHTML = `
-        <span class="pick__role">${r.role}</span>
-        <span class="pick__name">${m.name}</span>
-        <span class="pick__prov">${m.provider}</span>
-        <p class="pick__why">${r.why}</p>
-        <div class="pick__specs">
-          <div><span>вход / 1M</span><b>${m.in}</b></div>
-          <div><span>выход / 1M</span><b>${m.out}</b></div>
-          <div><span>контекст</span><b>${m.ctx}</b></div>
-        </div>
-        <span class="pick__cta">Использовать модель</span>`;
-      out.appendChild(n);
-    });
-    observeReveals();
-  }
-  render();
-})();
 
 /* ---------------------------------------------------------
    06 · INTEGRATIONS
@@ -515,83 +463,6 @@ $$('[data-count]').forEach(n => countIO.observe(n));
       </div>`;
     lib.appendChild(n);
   });
-})();
-
-/* ---------------------------------------------------------
-   13 · GROWING CATALOG FIELD
-   --------------------------------------------------------- */
-(() => {
-  const field = $('#growField');
-  if (!field) return;
-  const seen = new Set();
-  const balls = [];
-  const place = (txt, i, isNew) => {
-    const s = el('span', isNew ? 'new' : '', txt);
-    let x, y, tries = 0;
-    do {
-      x = 6 + Math.random() * 76;
-      y = 10 + Math.random() * 72;
-      tries++;
-    } while (tries < 20 && [...seen].some(([sx, sy]) => Math.abs(sx - x) < 13 && Math.abs(sy - y) < 12));
-    seen.add([x, y]);
-    s.style.left = x + '%';
-    s.style.top = y + '%';
-    s.style.animationDelay = (i * .16) + 's';
-    field.appendChild(s);
-    // random slow drift velocity (px/s)
-    const ang = Math.random() * Math.PI * 2;
-    const speed = 14 + Math.random() * 16;
-    balls.push({ el: s, vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed });
-  };
-  const start = () => {
-    GROW_ITEMS.forEach((t, i) => place(t, i, t.startsWith('+')));
-    requestAnimationFrame(tick);
-  };
-  let last = 0;
-  const tick = (now) => {
-    const dt = Math.min((now - last) / 1000, 0.05); last = now;
-    const fw = field.clientWidth, fh = field.clientHeight;
-    // integrate + wall bounce
-    for (const b of balls) {
-      b.w = b.el.offsetWidth; b.h = b.el.offsetHeight;
-      b.x = parseFloat(b.el.style.left) / 100 * fw + b.vx * dt;
-      b.y = parseFloat(b.el.style.top) / 100 * fh + b.vy * dt;
-      if (b.x <= 0) { b.x = 0; b.vx = Math.abs(b.vx); }
-      if (b.x + b.w >= fw) { b.x = fw - b.w; b.vx = -Math.abs(b.vx); }
-      if (b.y <= 0) { b.y = 0; b.vy = Math.abs(b.vy); }
-      if (b.y + b.h >= fh) { b.y = fh - b.h; b.vy = -Math.abs(b.vy); }
-    }
-    // chip↔chip collision: push apart and swap the velocity component along the
-    // contact normal so they bounce off each other
-    for (let i = 0; i < balls.length; i++) {
-      for (let j = i + 1; j < balls.length; j++) {
-        const a = balls[i], b = balls[j];
-        const acx = a.x + a.w / 2, acy = a.y + a.h / 2;
-        const bcx = b.x + b.w / 2, bcy = b.y + b.h / 2;
-        const dx = bcx - acx, dy = bcy - acy;
-        // approximate each chip as a circle with radius = half the smaller side
-        const ra = Math.min(a.w, a.h) / 2, rb = Math.min(b.w, b.h) / 2;
-        const dist = Math.hypot(dx, dy), min = ra + rb;
-        if (dist > 0 && dist < min) {
-          const nx = dx / dist, ny = dy / dist, overlap = (min - dist) / 2;
-          a.x -= nx * overlap; a.y -= ny * overlap;
-          b.x += nx * overlap; b.y += ny * overlap;
-          // reflect velocities along the normal (equal-mass elastic bounce)
-          const avn = a.vx * nx + a.vy * ny, bvn = b.vx * nx + b.vy * ny;
-          a.vx += (bvn - avn) * nx; a.vy += (bvn - avn) * ny;
-          b.vx += (avn - bvn) * nx; b.vy += (avn - bvn) * ny;
-        }
-      }
-    }
-    for (const b of balls) {
-      b.el.style.left = (Math.max(0, Math.min(b.x, fw - b.w)) / fw * 100) + '%';
-      b.el.style.top = (Math.max(0, Math.min(b.y, fh - b.h)) / fh * 100) + '%';
-    }
-    requestAnimationFrame(tick);
-  };
-  new IntersectionObserver((es, ob) => {
-    es.forEach(e => { if (e.isIntersecting) { start(); ob.disconnect(); } });
-  }, { threshold: .3 }).observe(field);
 })();
 
 /* ---------------------------------------------------------

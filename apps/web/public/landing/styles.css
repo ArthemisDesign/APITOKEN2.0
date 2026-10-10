@@ -477,12 +477,12 @@ html{background:var(--bg)}
    HERO
    ========================================================= */
 .hero{padding-top:0}
-.hero .display--xxl{margin:clamp(30px,4vw,64px) 0}
+.hero .display--xxl{margin:clamp(8px,1.2vw,20px) 0 clamp(24px,3vw,48px)}
 .hero__claim{display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-start}
 .claim__val{font-size:clamp(52px,7vw,124px);line-height:.86;letter-spacing:-.05em;font-weight:600;color:#fff}
 .claim__val em{font-style:normal;font-size:.45em;vertical-align:super}
 .claim__lab{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-top:12px}
-.hero__cta{margin-top:34px;align-items:center}
+.hero__cta{margin-top:0;align-items:center}
 .microfacts{display:flex;justify-content:flex-end;gap:26px;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
 
 /* ---------- schematic band ---------- */
@@ -885,11 +885,13 @@ input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(254,107,77,
 /* the pop-in keyframes were never defined, so the chips stayed invisible */
 @keyframes pop{to{opacity:1;transform:scale(1)}}
 .grow span{
-  position:absolute;padding:18px 28px;border:1px solid var(--line);
-  font-family:var(--mono);font-size:19px;letter-spacing:.03em;color:var(--ink);white-space:nowrap;
+  /* grow.js moves chips with `translate`; the pop-in keeps `transform` */
+  position:absolute;left:0;top:0;
+  padding:clamp(10px,1.1vw,18px) clamp(16px,1.8vw,28px);border:1px solid var(--line);
+  font-family:var(--mono);font-size:clamp(13px,1.25vw,19px);letter-spacing:.03em;color:var(--ink);white-space:nowrap;
   opacity:0;transform:scale(.92);animation:pop .8s ease forwards;
   border-radius:999px;background:#fff;
-  box-shadow:var(--shadow-xs);will-change:transform;
+  box-shadow:var(--shadow-xs);will-change:translate;
 }
 .grow span.new{background:var(--ink);color:#fff;border-color:var(--ink)}
 /* dark theme: the field returns to the deep ink panel */
@@ -1066,7 +1068,7 @@ input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(254,107,77,
   .netwrap .node,.netwrap .core{display:none}
 
   .grow{height:auto;min-height:0;padding:22px 16px;display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
-  .grow span{position:static;left:auto;top:auto;opacity:1;transform:none;animation:none}
+  .grow span{position:static;left:auto;top:auto;translate:none;opacity:1;transform:none;animation:none}
 
   .flow__fan{height:56px}
   .term__body,.code{font-size:11px}
@@ -1476,7 +1478,7 @@ body{line-height:1.5}
 
 .plate{
   position:relative;
-  min-height:92svh;
+  min-height:min(92svh,860px);
   background:var(--accent);
   color:#fff;
   overflow:hidden;
@@ -1516,13 +1518,14 @@ body{line-height:1.5}
 .plate__in{
   position:relative;z-index:2;
   max-width:var(--maxw);margin:0 auto;width:100%;
-  padding:calc(var(--hdr-h,84px) + clamp(48px,6vw,110px)) var(--margin) clamp(48px,5vw,80px);
+  /* the headline sits close under the header — no empty band on laptops */
+  padding:calc(var(--hdr-h,84px) + clamp(20px,2.4vw,44px)) var(--margin) clamp(40px,4vw,64px);
   display:flex;flex-direction:column;
 }
 
 .plate__labels{
   display:flex;justify-content:space-between;align-items:flex-start;gap:clamp(40px,10vw,180px);
-  padding-bottom:clamp(40px,5vw,80px);
+  padding-bottom:clamp(12px,1.6vw,28px);
 }
 .plate__labels .meta{
   color:rgba(255,255,255,.92);
@@ -1531,7 +1534,8 @@ body{line-height:1.5}
 
 .plate__h{
   color:#fff;
-  font-size:clamp(58px,9vw,156px);
+  /* capped by height too, so lead + CTAs stay above the fold on short laptops */
+  font-size:min(clamp(58px,9vw,156px),15svh);
   line-height:.9;letter-spacing:-.055em;
   max-width:12ch;
   font-weight:600;
@@ -1539,8 +1543,8 @@ body{line-height:1.5}
 .plate__h span{display:block}
 
 .plate__foot{
-  margin-top:auto;padding-top:clamp(48px,6vw,110px);
-  display:flex;flex-direction:column;gap:32px;align-items:flex-start;
+  margin-top:auto;padding-top:clamp(20px,3vw,56px);
+  display:flex;flex-direction:column;gap:24px;align-items:flex-start;
   max-width:min(46ch,42vw);
 }
 .plate__foot .lead{
@@ -2296,3 +2300,39 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
 .b2b-chips{gap:10px 22px}
 .b2b-chips li{border:0!important;background:none!important;padding:0!important;border-radius:0;color:var(--fg);cursor:default}
 .b2b-chips li::before{content:"✓";margin-right:8px;color:var(--hot);font-weight:600}
+
+/* =========================================================
+   CLIENT FEEDBACK 2026-10-07
+   ========================================================= */
+
+/* catalog · one-line strength of each model (replaces the task selector) */
+.mcard__edge{margin:-4px 0 0;font-size:13px;line-height:1.45;color:var(--fg);min-height:2.9em}
+
+/* catalog · new models: calm glow, readable without hover */
+.mcard--new{
+  border-color:color-mix(in srgb,var(--accent) 55%,transparent);
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 22%,transparent),0 10px 32px -10px var(--accent-glow);
+}
+[data-theme="dark"] .mcard--new{border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
+
+/* why apiToken · the four figures in one even row instead of stacked rows */
+.numbers{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.numbers .num{
+  display:flex;flex-direction:column;align-items:flex-start;gap:14px;
+  padding:clamp(28px,3vw,48px) clamp(16px,1.6vw,28px);
+  border-top:0;border-bottom:0;border-left:1px solid var(--line);
+}
+.numbers .num:first-child{border-left:0;padding-left:0}
+.numbers .num:last-child{border-bottom:0}
+.numbers .num__val{font-size:clamp(56px,7.4vw,136px);line-height:.9}
+.numbers .num__desc{max-width:28ch}
+@media (max-width:960px){
+  .numbers{grid-template-columns:repeat(2,1fr)}
+  .numbers .num:nth-child(odd){border-left:0;padding-left:0}
+  .numbers .num:nth-child(n+3){border-top:1px solid var(--line)}
+}
+@media (max-width:560px){
+  .numbers{grid-template-columns:1fr}
+  .numbers .num{border-left:0;padding-left:0}
+  .numbers .num + .num{border-top:1px solid var(--line)}
+}

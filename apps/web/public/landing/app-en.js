@@ -17,53 +17,36 @@ const PROVIDERS = [
   {
     name: 'Anthropic', note: 'Claude',
     models: [
-      { name: 'Claude Opus 5',   id: 'claude-opus-5',   ctx: '200K', in: '$2.50', out: '$12.50', caps: ['coding','reasoning','agents','long'], badge: 'Best quality' },
-      { name: 'Claude Sonnet 5', id: 'claude-sonnet-5', ctx: '200K', in: '$1.00', out: '$5.00',  caps: ['coding','reasoning','agents'],        badge: 'New', badgeKind: 'new' },
-      { name: 'Claude Haiku 4.5',id: 'claude-haiku-4-5',ctx: '200K', in: '$0.50', out: '$2.50',  caps: ['fast','cheap','agents'] },
-      { name: 'Claude Fable 5',  id: 'claude-fable-5',  ctx: '200K', in: '$5.00', out: '$25.00', caps: ['reasoning','long'] }
+      { name: 'Claude Opus 5',   id: 'claude-opus-5',   ctx: '200K', in: '$2.50', out: '$12.50', caps: ['coding','reasoning','agents','long'], edge: 'Strongest at complex code and long agent runs' },
+      { name: 'Claude Sonnet 5', id: 'claude-sonnet-5', ctx: '200K', in: '$1.00', out: '$5.00',  caps: ['coding','reasoning','agents'], edge: 'Near-Opus quality at a 2.5× lower price', isNew: true },
+      { name: 'Claude Haiku 4.5',id: 'claude-haiku-4-5',ctx: '200K', in: '$0.50', out: '$2.50',  caps: ['fast','cheap','agents'], edge: 'Fast replies for chat and high-volume work' },
+      { name: 'Claude Fable 5',  id: 'claude-fable-5',  ctx: '200K', in: '$5.00', out: '$25.00', caps: ['reasoning','long'], edge: 'Deep reasoning over long documents' }
     ]
   },
   {
     name: 'OpenAI', note: 'GPT',
     models: [
-      { name: 'GPT-5.6 Sol',  id: 'gpt-5-6-sol',  ctx: '400K', in: '$1.75', out: '$9.00',  caps: ['coding','reasoning','agents','long'] },
-      { name: 'GPT-5.6 Terra',id: 'gpt-5-6-terra',ctx: '400K', in: '$0.90', out: '$4.50',  caps: ['coding','agents'] },
-      { name: 'GPT-5.6 Luna', id: 'gpt-5-6-luna', ctx: '128K', in: '$0.30', out: '$1.50',  caps: ['fast','cheap'] },
-      { name: 'GPT-5.5',      id: 'gpt-5-5',      ctx: '256K', in: '$1.20', out: '$6.00',  caps: ['reasoning'] }
+      { name: 'GPT-5.6 Sol',  id: 'gpt-5-6-sol',  ctx: '400K', in: '$1.75', out: '$9.00',  caps: ['coding','reasoning','agents','long'], edge: 'OpenAI flagship: code, agents, 400K context' },
+      { name: 'GPT-5.6 Terra',id: 'gpt-5-6-terra',ctx: '400K', in: '$0.90', out: '$4.50',  caps: ['coding','agents'], edge: 'Dependable workhorse for code and agents' },
+      { name: 'GPT-5.6 Luna', id: 'gpt-5-6-luna', ctx: '128K', in: '$0.30', out: '$1.50',  caps: ['fast','cheap'], edge: 'Cheap and fast for simple requests' },
+      { name: 'GPT-5.5',      id: 'gpt-5-5',      ctx: '256K', in: '$1.20', out: '$6.00',  caps: ['reasoning'], edge: 'Proven model for reasoning' }
     ]
   },
   {
     name: 'Google', note: 'Gemini',
     models: [
-      { name: 'Gemini 3 Pro',   id: 'gemini-3-pro',   ctx: '1M',   in: '$1.10', out: '$5.50', caps: ['reasoning','long','image'] },
-      { name: 'Gemini 3 Flash', id: 'gemini-3-flash', ctx: '1M',   in: '$0.20', out: '$1.00', caps: ['fast','cheap','long'] },
-      { name: 'Gemini Image',   id: 'gemini-image',   ctx: '32K',  in: '$0.40', out: '$2.00', caps: ['image'] }
+      { name: 'Gemini 3 Pro',   id: 'gemini-3-pro',   ctx: '1M',   in: '$1.10', out: '$5.50', caps: ['reasoning','long','image'], edge: '1M context plus image understanding' },
+      { name: 'Gemini 3 Flash', id: 'gemini-3-flash', ctx: '1M',   in: '$0.20', out: '$1.00', caps: ['fast','cheap','long'], edge: '1M context at a light-model price' },
+      { name: 'Gemini Image',   id: 'gemini-image',   ctx: '32K',  in: '$0.40', out: '$2.00', caps: ['image'], edge: 'Image generation and editing' }
     ]
   },
   {
     name: 'Kimi', note: 'Moonshot',
     models: [
-      { name: 'Kimi K2.5',      id: 'kimi-k2-5',      ctx: '256K', in: '$0.28', out: '$1.40', caps: ['cheap','coding','long'], badge: 'Best price' },
-      { name: 'Kimi K2 Turbo',  id: 'kimi-k2-turbo',  ctx: '128K', in: '$0.15', out: '$0.75', caps: ['fast','cheap'] }
+      { name: 'Kimi K2.5',      id: 'kimi-k2-5',      ctx: '256K', in: '$0.28', out: '$1.40', caps: ['cheap','coding','long'], edge: 'Strong coding at a minimal price' },
+      { name: 'Kimi K2 Turbo',  id: 'kimi-k2-turbo',  ctx: '128K', in: '$0.15', out: '$0.75', caps: ['fast','cheap'], edge: 'Lowest price in the catalog' }
     ]
   }
-];
-
-const TASKS = [
-  { id: 'coding',  name: 'Code',              picks: ['claude-opus-5','gpt-5-6-sol','claude-sonnet-5','kimi-k2-5'] },
-  { id: 'agents',  name: 'AI agent',          picks: ['claude-opus-5','gpt-5-6-terra','claude-haiku-4-5','kimi-k2-5'] },
-  { id: 'support', name: 'Support',           picks: ['claude-sonnet-5','gpt-5-6-luna','claude-haiku-4-5','kimi-k2-turbo'] },
-  { id: 'content', name: 'Content',           picks: ['claude-fable-5','gpt-5-6-sol','gemini-3-pro','kimi-k2-5'] },
-  { id: 'image',   name: 'Images',            picks: ['gemini-image','gemini-3-pro','gpt-5-6-terra'] },
-  { id: 'volume',  name: 'High volumes',      picks: ['gemini-3-flash','kimi-k2-turbo','claude-haiku-4-5','gpt-5-6-luna'] },
-  { id: 'reason',  name: 'Reasoning',         picks: ['claude-opus-5','gpt-5-5','gemini-3-pro','claude-sonnet-5'] }
-];
-
-const ROLES = [
-  { role: 'Maximum quality', why: 'The hardest tasks where result accuracy matters most.' },
-  { role: 'Balanced',        why: 'Your daily workhorse: near-top quality at a lower price.' },
-  { role: 'Fast',            why: 'Low latency for interactive scenarios.' },
-  { role: 'Economical',      why: 'High-volume request streams at minimum cost.' }
 ];
 
 const INTEGRATIONS = [
@@ -124,7 +107,6 @@ const el = (tag, cls, html) => {
 };
 const money = n => '$' + Math.round(n).toLocaleString('en-US').replace(/,/g, ' ');
 const ALL_MODELS = PROVIDERS.flatMap(p => p.models.map(m => ({ ...m, provider: p.name })));
-const byId = id => ALL_MODELS.find(m => m.id === id);
 
 const hdr = $('#hdr');
 addEventListener('scroll', () => hdr.classList.toggle('small', scrollY > 40), { passive: true });
@@ -163,12 +145,14 @@ const observeReveals = () => $$('.reveal:not(.in)').forEach(n => io.observe(n));
   });
 
   function card(m) {
-    const n = el('article', 'mcard');
+    const n = el('article', 'mcard' + (m.isNew ? ' mcard--new' : ''));
     n.innerHTML = `
       <div class="mcard__top">
         <span class="mcard__name">${m.name}</span>
+        ${m.isNew ? '<span class="mcard__badge mcard__badge--new">New</span>' : ''}
       </div>
       <span class="mcard__id">${m.id}</span>
+      <p class="mcard__edge">${m.edge}</p>
       <div class="mcard__row"><span>input / 1M</span><b>${m.in}</b></div>
       <div class="mcard__row"><span>output / 1M</span><b>${m.out}</b></div>
       <div class="mcard__row"><span>context</span><b>${m.ctx}</b></div>
@@ -179,7 +163,10 @@ const observeReveals = () => $$('.reveal:not(.in)').forEach(n => io.observe(n));
   function render() {
     wrapU.innerHTML = '';
     PROVIDERS.forEach(p => {
-      const models = p.models.filter(m => active === 'all' || m.caps.includes(active));
+      // priority rule: a model flagged isNew moves to the front of its provider row
+      const models = p.models
+        .filter(m => active === 'all' || m.caps.includes(active))
+        .sort((a, b) => (b.isNew ? 1 : 0) - (a.isNew ? 1 : 0));
       if (!models.length) return;
       const row = el('div', 'prov');
       row.innerHTML = `<div class="prov__id">
@@ -270,43 +257,6 @@ const countIO = new IntersectionObserver(es => {
   });
 }, { threshold: .5 });
 $$('[data-count]').forEach(n => countIO.observe(n));
-
-(() => {
-  const opts = $('#askOpts'), out = $('#picks');
-  if (!opts) return;
-  let active = TASKS[0];
-
-  TASKS.forEach(t => {
-    const b = el('button', 'chip' + (t === active ? ' on' : ''), t.name);
-    b.onclick = () => { active = t; $$('.chip', opts).forEach(x => x.classList.toggle('on', x === b)); render(); };
-    opts.appendChild(b);
-  });
-
-  function render() {
-    out.innerHTML = '';
-    active.picks.forEach((id, i) => {
-      const m = byId(id); if (!m) return;
-      const r = ROLES[i] || ROLES[ROLES.length - 1];
-      // the whole card is the "use this model" action — a real link, not a lookalike
-      const n = el('a', 'pick');
-      n.href = '/register';
-      n.innerHTML = `
-        <span class="pick__role">${r.role}</span>
-        <span class="pick__name">${m.name}</span>
-        <span class="pick__prov">${m.provider}</span>
-        <p class="pick__why">${r.why}</p>
-        <div class="pick__specs">
-          <div><span>input / 1M</span><b>${m.in}</b></div>
-          <div><span>output / 1M</span><b>${m.out}</b></div>
-          <div><span>context</span><b>${m.ctx}</b></div>
-        </div>
-        <span class="pick__cta">Use model</span>`;
-      out.appendChild(n);
-    });
-    observeReveals();
-  }
-  render();
-})();
 
 (() => {
   const tabs = $('#intTabs'), host = $('#intVideo'), steps = $('#intSteps');
@@ -423,30 +373,6 @@ $$('[data-count]').forEach(n => countIO.observe(n));
       </div>`;
     lib.appendChild(n);
   });
-})();
-
-(() => {
-  const field = $('#growField');
-  if (!field) return;
-  const seen = new Set();
-  const place = (txt, i, isNew) => {
-    const s = el('span', isNew ? 'new' : '', txt);
-    let x, y, tries = 0;
-    do {
-      x = 6 + Math.random() * 76;
-      y = 10 + Math.random() * 72;
-      tries++;
-    } while (tries < 20 && [...seen].some(([sx, sy]) => Math.abs(sx - x) < 13 && Math.abs(sy - y) < 12));
-    seen.add([x, y]);
-    s.style.left = x + '%';
-    s.style.top = y + '%';
-    s.style.animationDelay = (i * .16) + 's';
-    field.appendChild(s);
-  };
-  const start = () => GROW_ITEMS.forEach((t, i) => place(t, i, t.startsWith('+')));
-  new IntersectionObserver((es, ob) => {
-    es.forEach(e => { if (e.isIntersecting) { start(); ob.disconnect(); } });
-  }, { threshold: .3 }).observe(field);
 })();
 
 (() => {
