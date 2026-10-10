@@ -2325,12 +2325,25 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
 .page-landing .tag:not(:last-child)::after{content:",";margin-left:0;color:inherit}
 .page-landing .mcard__tags{gap:4px 6px}
 
-/* hero · the discount sits under the headline, left-aligned with it */
-.page-landing .plate__claim{
-  margin-left:0;align-items:flex-start;text-align:left;
-  flex-direction:row;align-items:baseline;gap:clamp(12px,1.4vw,22px);flex-wrap:wrap;
+/* hero · headline on the left, the discount on the right of the same row,
+   both sitting on the headline's last baseline */
+.page-landing .plate__headrow{display:flex;justify-content:space-between;align-items:flex-end;gap:clamp(24px,4vw,64px)}
+.page-landing .plate__headrow .plate__h{flex:1 1 auto;max-width:none;min-width:0}
+/* the braces drop below the headline row so the discount never lands on them */
+@media (min-width:1025px){
+  .page-landing .plate__mark{bottom:6%;width:min(26vw,360px)}
 }
-.page-landing .plate__claim .claim__lab{margin-top:0}
+.page-landing .plate__claim{
+  margin-left:auto;flex:none;align-items:flex-end;text-align:right;
+  /* matches the headline's bottom margin so both rest on one line */
+  padding-bottom:clamp(24px,3vw,48px);
+}
+.page-landing .plate__claim .claim__lab{margin-top:10px}
+/* phones and narrow tablets: no room for two columns — the claim follows the headline */
+@media (max-width:1024px){
+  .page-landing .plate__headrow{flex-direction:column;align-items:flex-start;gap:0}
+  .page-landing .plate__claim{margin-left:0;align-items:flex-start;text-align:left;padding-bottom:0}
+}
 /* the raised % used to poke out of the reveal mask (negative tracking pushed
    it past the right edge): keep it inside the line box, no tracking */
 .page-landing .plate__claim .claim__val em{
@@ -2343,3 +2356,8 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
 @media (max-width:1024px){
   .page-landing .plate__claim{order:0;width:auto;margin-top:0;margin-bottom:12px}
 }
+
+/* "one key, one balance" sits on the ink product card: blue there is 2.2:1,
+   coral reads 4.9:1 */
+.net .p-note{fill:var(--hot)}
+.netmob__product .netmob__note{color:var(--hot)}
