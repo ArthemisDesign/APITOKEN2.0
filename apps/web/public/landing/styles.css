@@ -1237,8 +1237,9 @@ body{line-height:1.5}
 .net .node rect{fill:var(--paper);stroke:var(--ink);stroke-width:1;vector-effect:non-scaling-stroke}
 .net .node text{font-family:var(--mono);font-size:14px;fill:var(--ink);letter-spacing:.02em}
 .net .node .n-count{font-size:12px;fill:var(--ink);text-anchor:end}
-.net .node--more rect{fill:none;stroke-dasharray:4 4}
-.net .node--more text{fill:var(--ink)}
+/* the open slot sits straight on the blue panel: light dashes and type, not ink on blue */
+.net .node--more rect{fill:rgba(255,255,255,.1);stroke:rgba(255,255,255,.9);stroke-width:1.5;stroke-dasharray:5 4}
+.net .node--more text{fill:#fff}
 
 .net .core rect{fill:var(--paper);stroke:var(--accent);stroke-width:1.4;vector-effect:non-scaling-stroke}
 .net .c-name{font-family:var(--sans);font-size:30px;font-weight:600;letter-spacing:-.03em;fill:var(--ink);text-anchor:middle}
