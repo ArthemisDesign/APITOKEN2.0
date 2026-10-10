@@ -1477,7 +1477,8 @@ body{line-height:1.5}
 
 .plate{
   position:relative;
-  min-height:min(92svh,860px);
+  /* the blue plate fills the first screen: no paper strip under it on load */
+  min-height:100svh;
   background:var(--accent);
   color:#fff;
   overflow:hidden;
@@ -2365,3 +2366,22 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
 /* capability tags: a plain comma list instead of middle dots */
 .page-landing .tag:not(:last-child)::after{content:",";margin-left:0;color:inherit}
 .page-landing .mcard__tags{gap:4px 6px}
+
+/* hero · the discount sits under the headline, left-aligned with it */
+.page-landing .plate__claim{
+  margin-left:0;align-items:flex-start;text-align:left;
+  flex-direction:row;align-items:baseline;gap:clamp(12px,1.4vw,22px);flex-wrap:wrap;
+}
+.page-landing .plate__claim .claim__lab{margin-top:0}
+/* the raised % used to poke out of the reveal mask (negative tracking pushed
+   it past the right edge): keep it inside the line box, no tracking */
+.page-landing .plate__claim .claim__val em{
+  vertical-align:top;padding-top:.12em;letter-spacing:0;margin-left:.04em;padding-right:.04em;
+}
+/* the labels row keeps its two captions together on the left now that the
+   claim moved out of it */
+.page-landing .plate__labels{justify-content:flex-start}
+/* phones: the old mobile order pushed the claim after the buttons */
+@media (max-width:1024px){
+  .page-landing .plate__claim{order:0;width:auto;margin-top:0;margin-bottom:12px}
+}
