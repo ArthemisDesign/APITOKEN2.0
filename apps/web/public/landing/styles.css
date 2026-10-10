@@ -2336,3 +2336,25 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
   .numbers .num{border-left:0;padding-left:0}
   .numbers .num + .num{border-top:1px solid var(--line)}
 }
+
+/* why apiToken · take A: the million leads in a double-width cell */
+.numbers--a{grid-template-columns:1.8fr 1fr 1fr 1fr}
+/* one size across the row so the captions line up */
+.numbers--a .num__val{font-size:clamp(46px,5.6vw,108px);white-space:nowrap}
+/* take B: "One balance" is a word, not a number */
+.numbers .num__val--word{font-size:clamp(34px,3.6vw,66px);line-height:.95;letter-spacing:-.04em}
+/* take C: bare 50 · 1 · 1 · 40 read as a puzzle; the captions decode it */
+.numbers--c .num__val{font-size:clamp(80px,11vw,210px)}
+.numbers--c .num__lab{font-size:12px}
+.numbers[hidden]{display:none}
+@media (max-width:960px){
+  .numbers--a{grid-template-columns:repeat(2,1fr)}
+  .numbers--a .num:first-child{grid-column:1/-1;padding-left:0}
+  .numbers--a .num:nth-child(2){border-left:0;padding-left:0;border-top:1px solid var(--line)}
+  .numbers--a .num:nth-child(3){border-left:1px solid var(--line);padding-left:clamp(16px,1.6vw,28px);border-top:1px solid var(--line)}
+  .numbers--a .num:nth-child(4){border-left:0;padding-left:0}
+}
+@media (max-width:560px){
+  .numbers--a{grid-template-columns:1fr}
+  .numbers--a .num:nth-child(3){border-left:0;padding-left:0}
+}

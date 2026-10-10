@@ -307,13 +307,20 @@ const countIO = new IntersectionObserver(es => {
     let cur = 0; const step = Math.max(1, to / 34);
     const tick = () => {
       cur = Math.min(to, cur + step);
-      n.textContent = Math.round(cur) + suf;
+      n.textContent = Math.round(cur).toLocaleString('ru-RU') + suf;
       if (cur < to) requestAnimationFrame(tick);
     };
     tick();
     countIO.unobserve(n);
   });
 }, { threshold: .5 });
+// "Why apiToken" figures: pick a take with ?nums=a|b|c (preview comparison)
+(() => {
+  const want = new URLSearchParams(location.search).get('nums');
+  const sets = $$('[data-nums]');
+  if (!want || !sets.some(x => x.dataset.nums === want)) return;
+  sets.forEach(x => { x.hidden = x.dataset.nums !== want; });
+})();
 $$('[data-count]').forEach(n => countIO.observe(n));
 
 /* ---------------------------------------------------------
