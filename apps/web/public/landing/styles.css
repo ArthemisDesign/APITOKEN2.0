@@ -2329,9 +2329,15 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
    both sitting on the headline's last baseline */
 .page-landing .plate__headrow{display:flex;justify-content:space-between;align-items:flex-end;gap:clamp(24px,4vw,64px)}
 .page-landing .plate__headrow .plate__h{flex:1 1 auto;max-width:none;min-width:0}
-/* the braces drop below the headline row so the discount never lands on them */
-@media (min-width:1025px){
-  .page-landing .plate__mark{bottom:6%;width:min(26vw,360px)}
+/* the braces live inside the claim and hang right under the percent; on
+   desktop they float into the free space between headline and lead */
+.page-landing .plate__claim{position:relative}
+.page-landing .plate__claim .plate__mark{
+  position:absolute;top:100%;right:0;bottom:auto;left:auto;margin:0;
+  width:min(22vw,300px);opacity:1;order:0;
+}
+@media (max-width:1024px){
+  .page-landing .plate__claim .plate__mark{position:static;width:min(32vw,150px);margin:18px 0 4px}
 }
 .page-landing .plate__claim{
   margin-left:auto;flex:none;align-items:flex-end;text-align:right;
