@@ -2361,3 +2361,19 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
    coral reads 4.9:1 */
 .net .p-note{fill:var(--hot)}
 .netmob__product .netmob__note{color:var(--hot)}
+
+/* calculator · the result panel is blue in both themes, paper type on it */
+.calc__out{background:var(--accent);color:var(--paper)}
+.calc__out .calc__lab,.calc__out .calc__year{color:rgba(244,245,250,.78)}
+.calc__out .calc__val{color:var(--paper)}
+.calc__out .calc__line,.calc__out .calc__save,.calc__out .adv{border-color:rgba(244,245,250,.24)}
+.calc__out .lnk--arrow,.calc__out .lnk--arrow:hover{color:var(--paper)}
+.calc__out .adv label{color:rgba(244,245,250,.78)}
+.calc__out .adv input{border-color:rgba(244,245,250,.4)}
+.calc__out .adv input:focus{border-color:var(--paper)}
+
+/* catalog · cards fill blue on hover again (they stay non-clickable: default cursor) */
+.mcard:hover,[data-theme="dark"] .mcard:hover{background:var(--accent);border-color:var(--accent);color:var(--paper)}
+.mcard:hover :is(.mcard__name,.mcard__id,.mcard__edge,.mcard__row,.mcard__row b,.mcard__badge,.tag){color:var(--paper)}
+.mcard:hover .mcard__row{border-top-color:rgba(244,245,250,.3)}
+.mcard:hover .tag:not(:last-child)::after{color:rgba(244,245,250,.6)}
