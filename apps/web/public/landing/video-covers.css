@@ -3,7 +3,7 @@
    Literal palette values keep the illustrations legible in both page themes. */
 .vid__stage,.tut__thumb{container-type:inline-size}
 .vcover{--cover-bg:var(--paper);--cover-fg:var(--ink);--cover-accent:var(--hot);position:absolute;inset:0;isolation:isolate;overflow:hidden;padding:6%;background:var(--cover-bg);color:var(--cover-fg);font-family:var(--sans);text-align:left;transition:opacity .25s}
-.vcover--coral{--cover-bg:var(--accent);--cover-fg:#fff;--cover-accent:var(--hot)}
+.vcover--coral{--cover-bg:var(--accent);--cover-fg:#F4F5FA;--cover-accent:var(--hot)}
 .vcover--ink{--cover-bg:var(--ink);--cover-fg:var(--paper);--cover-accent:var(--hot)}
 .vcover::before{content:"";position:absolute;z-index:-1;inset:0;background-image:linear-gradient(color-mix(in srgb,var(--cover-fg) 7%,transparent) 1px,transparent 1px),linear-gradient(90deg,color-mix(in srgb,var(--cover-fg) 7%,transparent) 1px,transparent 1px);background-size:12.5% 22.22%;mask-image:linear-gradient(90deg,transparent 30%,#000)}
 .vcover::after{content:"";position:absolute;z-index:-1;width:46%;aspect-ratio:1;right:-9%;bottom:-36%;border:2.5cqw solid var(--hot);border-radius:50%}
