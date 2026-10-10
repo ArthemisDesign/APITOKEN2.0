@@ -115,6 +115,10 @@ const el = (tag, cls, html) => {
   return n;
 };
 const money = n => '$' + Math.round(n).toLocaleString('ru-RU').replace(/,/g, ' ');
+const plural = (n, one, few, many) => {
+  const d = n % 10, h = n % 100;
+  return d === 1 && h !== 11 ? one : d >= 2 && d <= 4 && (h < 12 || h > 14) ? few : many;
+};
 const ALL_MODELS = PROVIDERS.flatMap(p => p.models.map(m => ({ ...m, provider: p.name })));
 
 /* ---------------------------------------------------------
@@ -223,7 +227,7 @@ const observeReveals = () => $$('.reveal:not(.in)').forEach(n => io.observe(n));
       const row = el('div', 'prov');
       row.innerHTML = `<div class="prov__id">
           <span class="prov__name">${p.name}</span>
-          <span class="prov__meta">${p.note} · ${models.length} ${models.length === 1 ? 'модель' : 'моделей'}</span>
+          <span class="prov__meta">${p.note}, ${models.length} ${plural(models.length, 'модель', 'модели', 'моделей')}</span>
         </div>`;
       const grid = el('div', 'prov__models');
       models.forEach(m => grid.appendChild(card(m)));
@@ -247,7 +251,7 @@ function buildVideo(host, cfg) {
     <div class="vid__stage" role="button" tabindex="0" aria-label="${cfg.label}" aria-pressed="false">
       ${window.apiTokenVideoCover(cfg.cover || 'start', 'ru')}
       <div class="vid__poster">${(cfg.lines || []).map(l => `<span class="ln"><b>${l[0]}</b>${l[1]}</span>`).join('')}</div>
-      <div class="vid__scrim"><span class="vid__play"><i></i>Смотреть · ${cfg.duration}</span></div>
+      <div class="vid__scrim"><span class="vid__play"><i></i>Смотреть, ${cfg.duration}</span></div>
     </div>
     <div class="vid__ctl">
       <span class="vid__state">Готово</span>

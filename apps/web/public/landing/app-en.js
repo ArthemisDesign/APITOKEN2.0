@@ -171,7 +171,7 @@ const observeReveals = () => $$('.reveal:not(.in)').forEach(n => io.observe(n));
       const row = el('div', 'prov');
       row.innerHTML = `<div class="prov__id">
           <span class="prov__name">${p.name}</span>
-          <span class="prov__meta">${p.note} · ${models.length} ${models.length === 1 ? 'model' : 'models'}</span>
+          <span class="prov__meta">${p.note}, ${models.length} ${models.length === 1 ? 'model' : 'models'}</span>
         </div>`;
       const grid = el('div', 'prov__models');
       models.forEach(m => grid.appendChild(card(m)));
@@ -192,7 +192,7 @@ function buildVideo(host, cfg) {
     <div class="vid__stage" role="button" tabindex="0" aria-label="${cfg.label}" aria-pressed="false">
       ${window.apiTokenVideoCover(cfg.cover || 'start', 'en')}
       <div class="vid__poster">${(cfg.lines || []).map(l => `<span class="ln"><b>${l[0]}</b>${l[1]}</span>`).join('')}</div>
-      <div class="vid__scrim"><span class="vid__play"><i></i>Watch · ${cfg.duration}</span></div>
+      <div class="vid__scrim"><span class="vid__play"><i></i>Watch, ${cfg.duration}</span></div>
     </div>
     <div class="vid__ctl">
       <span class="vid__state">Ready</span>

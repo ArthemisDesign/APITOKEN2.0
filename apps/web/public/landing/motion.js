@@ -135,7 +135,7 @@ $$(HEADS).forEach(el => { if (!hero || !hero.contains(el)) revealHeading(el); })
    4 · LEAD PARAGRAPHS + SMALL COPY
    --------------------------------------------------------- */
 $$('.secdesc, .final__sub, .case__body p, .num__desc').forEach(p => {
-  reveal(p, { from: { y: 24 } }, p, { start: 'top 90%' });
+  reveal(p, { from: {}, duration: .6 }, p, { start: 'top 90%' });
 });
 
 /* ---------------------------------------------------------
@@ -174,7 +174,7 @@ function stagGroup(sel, childSel) {
     const kids = (childSel ? $$(childSel, box) : [...box.children])
       .filter(el => !el.classList || !el.classList.contains('chip-thumb'));
     if (!kids.length) return;
-    reveal(kids, { from: { y: 30 }, stagger: .06 }, box, { start: 'top 88%' });
+    reveal(kids, { from: {}, duration: .6, stagger: .04 }, box, { start: 'top 88%' });
   });
 }
   ['.filters', '.ask__opts', '.calc__opts', '.steps', '.bigfacts', '.ent__args',
@@ -242,9 +242,9 @@ $$('.tut__thumb, .band .netwrap').forEach(n => {
    that a 40px shift collided with its own label.
    --------------------------------------------------------- */
 $$('.num__val').forEach(n => {
-  gsap.set(n, { yPercent: 12, opacity: 0 });
+  gsap.set(n, { opacity: 0 });
   gsap.to(n, {
-    yPercent: 0, opacity: 1, duration: 1.15, ease: EASE,
+    opacity: 1, duration: .8, ease: EASE,
     scrollTrigger: { trigger: n.closest('.num'), start: 'top 85%', once: true }
   });
 });
@@ -297,16 +297,8 @@ $$('.sec').forEach(sec => {
 
   const label = document.createElement('div');
   label.className = 'mo-vlabel';
-  label.innerHTML = `<span><b>${num.textContent.trim()}</b> — ${(meta ? meta.textContent : '').trim()}</span>`;
+  label.innerHTML = `<span>${(meta ? meta.textContent : '').trim()}</span>`;
   sec.appendChild(label);
-
-  const tick = document.createElement('i');
-  tick.className = 'mo-rot';
-  num.prepend(tick);
-  gsap.to(tick, {
-    rotate: 180, ease: 'none',
-    scrollTrigger: { trigger: sec, start: 'top bottom', end: 'bottom top', scrub: 1 }
-  });
 });
 
 /* ---------------------------------------------------------
@@ -343,7 +335,7 @@ function decorate(host) {
   const fresh = $$('.prov, .tut', host).filter(n => !n.dataset.moSeen);
   if (!fresh.length) return;
   fresh.forEach(n => n.dataset.moSeen = '1');
-  reveal(fresh, { from: { y: 34 }, duration: .9, stagger: .05 }, host, { start: 'top 85%' });
+  reveal(fresh, { from: {}, duration: .6, stagger: .03 }, host, { start: 'top 85%' });
   drawRules(host);
   ScrollTrigger.refresh();
 }

@@ -2358,3 +2358,35 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
   .numbers--a{grid-template-columns:1fr}
   .numbers--a .num:nth-child(3){border-left:0;padding-left:0}
 }
+
+/* =========================================================
+   COSMETIC PASS — remove the template tells, keep structure,
+   colors and typefaces. Landing only (b2b/docs share this file).
+   ========================================================= */
+
+/* small labels read in sentence case, not tracked-out caps */
+.page-landing :is(.meta,.claim__lab,.prov__meta,.num__lab,.calc__q,.calc__lab,.cap,.mcard__badge,
+  .vid__bar,.vid__ctl,.vid__play,.term__bar,.term__meta,.netmob__label,.netmob__note,.pill,.adv label,.mo-vlabel span){
+  text-transform:none;letter-spacing:.01em;
+}
+.page-landing :is(.meta,.claim__lab,.prov__meta,.num__lab,.calc__q,.calc__lab,.cap){font-size:12px}
+.page-landing :is(.num__lab,.prov__meta,.claim__lab)::first-letter{text-transform:uppercase}
+
+/* sections are not a sequence: drop the 01–07 counters, the name stays as the marker */
+.page-landing .sechead .secnum{display:none}
+.page-landing .sechead .meta{grid-column:1/7}
+
+/* hero: no filler labels ("System", "Est. 2026"), the claim keeps its corner */
+.page-landing .plate__labels .meta{display:none}
+.page-landing .plate__claim{margin-left:auto}
+@media (max-width:640px){.page-landing .plate__claim{margin-left:0}}
+
+/* the schematic is self-explanatory without a fake drawing-sheet caption */
+.page-landing .hero .band .cap{display:none}
+
+/* links are underlined already — no arrow glued to the text */
+.page-landing .lnk--arrow::after{content:none}
+
+/* capability tags: a plain comma list instead of middle dots */
+.page-landing .tag:not(:last-child)::after{content:",";margin-left:0;color:inherit}
+.page-landing .mcard__tags{gap:4px 6px}
