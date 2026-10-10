@@ -59,7 +59,7 @@
   --sans:"TT Runs", "Inter Tight", Inter, system-ui, sans-serif;
   --mono:"TT Runs", "Inter Tight", Inter, system-ui, sans-serif;
 
-  --sec:clamp(84px,9vw,160px);
+  --sec:clamp(72px,7vw,128px);
 }
 
 /* ---- DARK theme — deep ink surfaces, cool paper text, brighter blue accent ---- */
@@ -1634,7 +1634,7 @@ body{line-height:1.5}
 }
 
 /* the schematic band returns to paper right after the plate */
-.hero .band{padding-top:clamp(80px,9vw,140px)}
+.hero .band{padding-top:clamp(48px,5vw,88px)}
 
 @media (max-width:1024px){
   .plate__mark{right:4%;bottom:12%;width:min(46vw,380px);opacity:.85}
@@ -1830,26 +1830,14 @@ body{line-height:1.5}
 [data-theme="dark"] .page-docs .hdr:not(.small) .theme-tgl,
 [data-theme="dark"] .page-docs .hdr:not(.small) .theme-tgl:hover{color:var(--accent);border-color:rgba(77,123,255,.4)}
 
-/* ---------- language-stable section heights ----------
-   Sections keep the max height of the two languages so switching RU/EN never
-   changes element positions or page length — the layout stays put.
-   The figures were measured on the desktop composition, so they are scoped to
-   it. Applied unconditionally they injected dead space into the single-column
-   mobile layout, where the same sections are far shorter: #start +348px,
-   #value +298px, #integrations +547px and #grow +428px at 390px, about 1.6k px
-   of empty scroll. Below 1025px the sections size to their content, and a
-   language switch keeps its place through the stored scroll fraction. */
-@media (min-width:1025px){
-  #models{min-height:2791px}
-  #start{min-height:1464px}
-  #value{min-height:1335px}
-  #explorer{min-height:1103px}
-  #integrations{min-height:1770px}
-  #switch{min-height:877px}
-  #calc{min-height:1160px}
-  #learn{min-height:1288px}
-  #grow{min-height:1115px}
-}
+/* ---------- section heights follow their content ----------
+   Fixed min-heights (measured once per language at one desktop width) used
+   to keep RU/EN page length identical. Section height depends on the
+   viewport width far more than on the language (#value: 545px at 1100,
+   589px at 1366, 766px at 1920), so any fixed figure left hundreds of px of
+   dead space on some screen — 870px under the figures row at 1366. Sections
+   now size to their content; a language switch keeps its place through the
+   stored scroll fraction. */
 
 /* =========================================================
    B2B PAGE — /landing/b2b.html + /landing/b2b-en.html
@@ -2371,18 +2359,6 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
 }
 .page-landing :is(.meta,.claim__lab,.prov__meta,.num__lab,.calc__q,.calc__lab,.cap){font-size:12px}
 .page-landing :is(.num__lab,.prov__meta,.claim__lab)::first-letter{text-transform:uppercase}
-
-/* sections are not a sequence: drop the 01–07 counters, the name stays as the marker */
-.page-landing .sechead .secnum{display:none}
-.page-landing .sechead .meta{grid-column:1/7}
-
-/* hero: no filler labels ("System", "Est. 2026"), the claim keeps its corner */
-.page-landing .plate__labels .meta{display:none}
-.page-landing .plate__claim{margin-left:auto}
-@media (max-width:640px){.page-landing .plate__claim{margin-left:0}}
-
-/* the schematic is self-explanatory without a fake drawing-sheet caption */
-.page-landing .hero .band .cap{display:none}
 
 /* links are underlined already — no arrow glued to the text */
 .page-landing .lnk--arrow::after{content:none}

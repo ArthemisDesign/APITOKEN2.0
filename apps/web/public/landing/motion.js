@@ -297,8 +297,16 @@ $$('.sec').forEach(sec => {
 
   const label = document.createElement('div');
   label.className = 'mo-vlabel';
-  label.innerHTML = `<span>${(meta ? meta.textContent : '').trim()}</span>`;
+  label.innerHTML = `<span><b>${num.textContent.trim()}</b> — ${(meta ? meta.textContent : '').trim()}</span>`;
   sec.appendChild(label);
+
+  const tick = document.createElement('i');
+  tick.className = 'mo-rot';
+  num.prepend(tick);
+  gsap.to(tick, {
+    rotate: 180, ease: 'none',
+    scrollTrigger: { trigger: sec, start: 'top bottom', end: 'bottom top', scrub: 1 }
+  });
 });
 
 /* ---------------------------------------------------------
