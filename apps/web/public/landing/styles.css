@@ -2709,3 +2709,11 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
 .page-landing .net .p-code{font-size:17px}
 .page-landing .net .p-note{font-size:14px}
 @media (max-width:1024px){.page-landing .hero .band{padding-left:var(--margin);padding-right:var(--margin)}}
+
+/* header logo: larger octopus and wordmark */
+.hdr .brand{font-size:24px;gap:12px}
+.hdr .brand__mark{width:32px!important;height:27px!important}
+@media (max-width:640px){
+  .hdr .brand{font-size:19px;gap:9px}
+  .hdr .brand__mark{width:25px!important;height:21px!important}
+}
