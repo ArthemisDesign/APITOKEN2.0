@@ -2539,3 +2539,13 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
 [data-theme="dark"] .page-landing .mcard__tags :is(.tag--long,.tag--image){background:color-mix(in srgb,var(--paper) 14%,transparent);color:var(--paper)}
 /* on the blue hover fill every tag turns into a light capsule */
 .page-landing .mcard:hover .mcard__tags .tag{background:rgba(244,245,250,.18)!important;color:var(--paper)!important}
+
+/* catalog tags: solid brand colours only, no transparency */
+.page-landing .mcard__tags :is(.tag--coding,.tag--reasoning,.tag--agents),
+[data-theme="dark"] .page-landing .mcard__tags :is(.tag--coding,.tag--reasoning,.tag--agents){background:var(--accent);color:var(--paper)}
+.page-landing .mcard__tags :is(.tag--fast,.tag--cheap),
+[data-theme="dark"] .page-landing .mcard__tags :is(.tag--fast,.tag--cheap){background:var(--hot);color:var(--paper)}
+.page-landing .mcard__tags :is(.tag--long,.tag--image){background:var(--ink);color:var(--paper)}
+[data-theme="dark"] .page-landing .mcard__tags :is(.tag--long,.tag--image){background:var(--paper);color:var(--ink)}
+/* on the blue hover fill: solid paper capsules with blue type */
+.page-landing .mcard:hover .mcard__tags .tag{background:var(--paper)!important;color:var(--accent)!important}
