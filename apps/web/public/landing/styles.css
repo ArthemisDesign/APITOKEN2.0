@@ -2717,3 +2717,39 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
   .hdr .brand{font-size:19px;gap:9px}
   .hdr .brand__mark{width:25px!important;height:21px!important}
 }
+
+/* split hero, balanced: viewport-tall, everything at its natural size,
+   the group centred vertically. The schematic's own height sets the rhythm:
+   headline level with its top edge, discount level with its bottom edge,
+   buttons level with the caption. */
+@media (min-width:1025px){
+  html[data-hero="a"] .page-landing .hero{
+    grid-template-columns:minmax(0,5fr) minmax(0,7fr);
+    /* no flexible track under the schematic: items spanning fr rows do not
+       size them, and the panel ran over its caption */
+    grid-template-rows:1fr auto auto auto 1fr;
+    grid-template-areas:". ." "head net" "claim net" "cta lead" ". .";
+    row-gap:0;
+  }
+  html[data-hero="a"] .page-landing .hero .netwrap{
+    align-self:center;height:auto;aspect-ratio:1120/720;
+    width:min(100%,calc((100svh - var(--hdr-h,84px) - 150px) * 1120 / 720));justify-self:end;
+  }
+  html[data-hero="a"] .page-landing .plate__h{font-size:min(4.4vw,9svh,70px);line-height:.98}
+  html[data-hero="a"] .page-landing .hero .plate__claim .claim__val{font-size:clamp(44px,4vw,72px)}
+  html[data-hero="a"] .page-landing .hero .plate__claim .claim__lab{font-size:clamp(14px,1vw,16px)}
+  html[data-hero="a"] .page-landing .hero .hero__cta{align-self:start;margin-top:clamp(16px,2.4svh,28px)}
+  html[data-hero="a"] .page-landing .hero .band__lead{align-self:start;margin-top:clamp(16px,2.4svh,28px);justify-self:end;
+    width:min(100%,calc((100svh - var(--hdr-h,84px) - 150px) * 1120 / 720))}
+  html[data-hero="a"] .page-landing .net .node text{font-size:19px}
+  html[data-hero="a"] .page-landing .net .node .n-count{font-size:15px}
+  html[data-hero="a"] .page-landing .net .c-name{font-size:38px}
+  html[data-hero="a"] .page-landing .net .c-tick{font-size:15px}
+  html[data-hero="a"] .page-landing .net .p-name{font-size:25px}
+  html[data-hero="a"] .page-landing .net .p-code{font-size:15px}
+  html[data-hero="a"] .page-landing .net .p-note{font-size:13px}
+}
+@media (min-width:1025px){
+  html[data-hero="a"] .page-landing .hero .plate{align-self:start}
+  html[data-hero="a"] .page-landing .hero .plate__claim{align-self:end}
+}
