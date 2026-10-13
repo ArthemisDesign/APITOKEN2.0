@@ -118,7 +118,6 @@ if (hero && !TOUCH) {
   const tl = gsap.timeline({ defaults: { ease: EASE } });
 
   tl.from($$('.plate__h .ln__i'), { yPercent: 115, duration: 1.3, stagger: .1 }, 0)
-    .from('.plate__mark', { opacity: 0, scale: .94, transformOrigin: 'right bottom', duration: 1.4 }, '-=1.1')
     .from('.plate__foot .lead', { y: 26, opacity: 0, duration: .9 }, '-=.95')
     .from('.hero__cta .btn', { y: 20, opacity: 0, duration: .8, stagger: .08 }, '-=.7')
     .from($$('.plate__claim .claim__val .ln__i'), { yPercent: 115, duration: 1.05, stagger: .06 }, '-=.8')

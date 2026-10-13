@@ -2437,3 +2437,34 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
 .page-landing .cap--free{
   font-family:var(--sans);font-size:14px;letter-spacing:0;text-transform:none;color:var(--muted);
 }
+
+/* =========================================================
+   CLIENT CALL 2026-10-12 · first screen
+   Action headline with the lead right under it; the routing schematic
+   sits on the same blue field below the buttons, so its top already
+   shows on the first screen and the page reads as continuing.
+   The braces are gone (the octopus mark will live in the header).
+   ========================================================= */
+.page-landing .hero{background:var(--accent)}
+.page-landing .plate{min-height:0;border-bottom:0}
+.page-landing .plate__in{padding-bottom:12px}
+.page-landing .plate{overflow:visible}
+.page-landing .plate__h{font-size:min(clamp(44px,6.6vw,120px),13svh)}
+.page-landing .plate__foot{margin-top:0;padding-top:clamp(4px,.8vw,12px);gap:clamp(20px,2vw,28px);max-width:min(52ch,52vw)}
+/* schematic on the blue field: an outlined panel instead of a second blue box */
+.page-landing .hero .band{margin-top:0;padding:clamp(32px,4vw,56px) 0 clamp(56px,6vw,96px)}
+.page-landing .hero .band::before{display:none}
+.page-landing .hero .netwrap{
+  border:1px solid rgba(244,245,250,.35);
+  background-color:color-mix(in srgb,var(--accent) 88%,var(--ink));
+}
+/* dark theme: fade the blue field into the ink page instead of a hard cut */
+[data-theme="dark"] .page-landing .hero::after{
+  content:"";display:block;height:clamp(96px,12vw,200px);
+  background:linear-gradient(to bottom,var(--accent),var(--bg));
+}
+[data-theme="dark"] .page-landing .hero .band{padding-bottom:0}
+@media (max-width:1024px){
+  .page-landing .plate__foot{max-width:none}
+  .page-landing .plate__h{font-size:clamp(36px,9vw,72px)}
+}
