@@ -2626,3 +2626,74 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
 @media (max-width:1024px){
   .page-landing .hero__foot{padding:24px var(--margin) 40px;max-width:none}
 }
+
+/* =========================================================
+   FIRST SCREEN · layout options for review (?hero=a|b|c, desktop only)
+   The hero becomes one grid: band and action row dissolve
+   (display:contents) so headline, schematic, caption, buttons and the
+   discount can be placed freely. Phones and tablets are unchanged.
+   ========================================================= */
+@media (min-width:1025px){
+  html[data-hero] .page-landing .hero{
+    display:grid;height:100svh;min-height:640px;box-sizing:border-box;
+    padding:calc(var(--hdr-h,84px) + clamp(16px,2.6svh,36px)) max(var(--margin),calc((100% - var(--maxw))/2 + var(--margin))) clamp(20px,3.2svh,36px);
+    column-gap:clamp(32px,4vw,72px);row-gap:clamp(12px,2svh,24px);
+    max-width:none;
+  }
+  html[data-hero] .page-landing .hero > .plate,
+  html[data-hero] .page-landing .hero .plate__in{padding:0;margin:0;min-height:0;max-width:none;background:none}
+  html[data-hero] .page-landing .hero .band,
+  html[data-hero] .page-landing .hero .hero__foot{display:contents}
+  html[data-hero] .page-landing .hero .netwrap{min-height:0;height:auto;max-width:none;width:100%}
+  html[data-hero] .page-landing .hero .band__lead{margin:0;max-width:52ch}
+  html[data-hero] .page-landing .hero .plate__claim{margin:0}
+  html[data-hero] .page-landing .hero::after,
+  html[data-hero] .page-landing .hero .plate::before{content:none;display:none}
+  html[data-hero][data-theme="dark"] .page-landing #models{background:linear-gradient(var(--accent),var(--bg) clamp(96px,12vw,200px))}
+  html[data-hero] .page-landing .hero .plate{grid-area:head}
+  html[data-hero] .page-landing .hero .netwrap{grid-area:net}
+  html[data-hero] .page-landing .hero .band__lead{grid-area:lead}
+  html[data-hero] .page-landing .hero .hero__cta{grid-area:cta;margin:0}
+  html[data-hero] .page-landing .hero .plate__claim{grid-area:claim}
+
+  /* A · split: the pitch on the left, the schematic as the picture on the right */
+  html[data-hero="a"] .page-landing .hero{
+    grid-template-columns:minmax(0,5fr) minmax(0,6fr);
+    grid-template-rows:1fr auto auto auto 1fr;
+    grid-template-areas:". ." "head net" "claim net" "cta lead" ". .";
+  }
+  html[data-hero="a"] .page-landing .hero .plate{align-self:end}
+  html[data-hero="a"] .page-landing .hero .band__lead{align-self:start}
+  html[data-hero="a"] .page-landing .plate__h{font-size:min(4.6vw,9.5svh,84px)}
+  html[data-hero="a"] .page-landing .plate__h span{white-space:normal}
+  html[data-hero="a"] .page-landing .hero .netwrap{align-self:center;aspect-ratio:1120/460}
+  html[data-hero="a"] .page-landing .hero .plate__claim{justify-self:start;padding-top:8px}
+
+  /* B · centred: one axis, the drawing sits straight on the blue field */
+  html[data-hero="b"] .page-landing .hero{
+    grid-template-columns:1fr 1fr;
+    grid-template-rows:auto 1fr auto auto;
+    grid-template-areas:"head head" "net net" "lead lead" "cta claim";
+    text-align:center;
+  }
+  html[data-hero="b"] .page-landing .plate__h{font-size:min(5.6vw,9.5svh,110px)}
+  html[data-hero="b"] .page-landing .hero .netwrap{border:0;background:none}
+  html[data-hero="b"] .page-landing .hero .netwrap::before{display:none}
+  html[data-hero="b"] .page-landing .hero .band__lead{justify-self:center}
+  html[data-hero="b"] .page-landing .hero .hero__cta{justify-self:end;align-self:center}
+  html[data-hero="b"] .page-landing .hero .plate__claim{justify-self:start;align-self:center}
+
+  /* C · headline and discount face each other; the schematic gets the width;
+     buttons and caption share the last line */
+  html[data-hero="c"] .page-landing .hero{
+    grid-template-columns:max-content minmax(0,1fr) max-content;
+    grid-template-rows:auto 1fr auto;
+    grid-template-areas:"head head claim" "net net net" "cta lead lead";
+  }
+  html[data-hero="c"] .page-landing .plate__h{font-size:min(4.4vw,10svh,84px)}
+  html[data-hero="c"] .page-landing .plate__h span{white-space:normal}
+  html[data-hero="c"] .page-landing .hero .plate__claim .claim__val{white-space:nowrap}
+  html[data-hero="c"] .page-landing .hero .plate__claim{align-self:end;padding-bottom:10px}
+  html[data-hero="c"] .page-landing .hero .band__lead{justify-self:end;align-self:center;text-align:right}
+  html[data-hero="c"] .page-landing .hero .hero__cta{align-self:center}
+}
