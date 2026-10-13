@@ -2424,3 +2424,16 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
   font-size:11px;letter-spacing:.01em;line-height:1.3;
 }
 .page-landing .mcard__badge--new::before{content:none}
+
+/* =========================================================
+   CLIENT CALL 2026-10-12 · no section numbers or filler notes
+   Counters, eyebrow labels, "System / Est. 2026" and the drawing caption
+   are gone from the markup; the notes that carry meaning read as plain text.
+   ========================================================= */
+.page-landing .sechead .display{margin-top:0}
+.page-landing .plate__claim .claim__lab{
+  font-family:var(--sans);font-size:clamp(14px,1.05vw,16px);letter-spacing:0;text-transform:none;
+}
+.page-landing .cap--free{
+  font-family:var(--sans);font-size:14px;letter-spacing:0;text-transform:none;color:var(--muted);
+}

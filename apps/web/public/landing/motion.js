@@ -117,8 +117,7 @@ const hero = $('.hero');
 if (hero && !TOUCH) {
   const tl = gsap.timeline({ defaults: { ease: EASE } });
 
-  tl.from('.plate__labels .meta', { yPercent: 120, opacity: 0, duration: .9, stagger: .08 })
-    .from($$('.plate__h .ln__i'), { yPercent: 115, duration: 1.3, stagger: .1 }, '-=.55')
+  tl.from($$('.plate__h .ln__i'), { yPercent: 115, duration: 1.3, stagger: .1 }, 0)
     .from('.plate__mark', { opacity: 0, scale: .94, transformOrigin: 'right bottom', duration: 1.4 }, '-=1.1')
     .from('.plate__foot .lead', { y: 26, opacity: 0, duration: .9 }, '-=.95')
     .from('.hero__cta .btn', { y: 20, opacity: 0, duration: .8, stagger: .08 }, '-=.7')
@@ -285,29 +284,6 @@ if (!REDUCED) {
    The flashing guides were more noise than structure.
    Geometry now lives in the layout itself, not on top of it.
    --------------------------------------------------------- */
-
-/* ---------------------------------------------------------
-   12 · VERTICAL SECTION MARKERS
-   --------------------------------------------------------- */
-$$('.sec').forEach(sec => {
-  const num = $('.secnum', sec);
-  if (!num) return;
-  const meta = $('.meta', sec);
-  if (getComputedStyle(sec).position === 'static') sec.style.position = 'relative';
-
-  const label = document.createElement('div');
-  label.className = 'mo-vlabel';
-  label.innerHTML = `<span><b>${num.textContent.trim()}</b> — ${(meta ? meta.textContent : '').trim()}</span>`;
-  sec.appendChild(label);
-
-  const tick = document.createElement('i');
-  tick.className = 'mo-rot';
-  num.prepend(tick);
-  gsap.to(tick, {
-    rotate: 180, ease: 'none',
-    scrollTrigger: { trigger: sec, start: 'top bottom', end: 'bottom top', scrub: 1 }
-  });
-});
 
 /* ---------------------------------------------------------
    13 · HEADER + PROGRESS RAIL
