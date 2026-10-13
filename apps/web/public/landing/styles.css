@@ -2468,3 +2468,19 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
   .page-landing .plate__foot{max-width:none}
   .page-landing .plate__h{font-size:clamp(36px,9vw,72px)}
 }
+
+/* =========================================================
+   CLIENT CALL 2026-10-12 · octopus mark replaces the square
+   One silhouette (octopus.svg) used as a mask, so its colour follows the
+   surface: blue on paper, paper on the blue hero and on ink.
+   ========================================================= */
+.brand__mark{
+  width:20px!important;height:17px!important;border-radius:0!important;
+  -webkit-mask:url(/landing/octopus.svg) center/contain no-repeat;
+          mask:url(/landing/octopus.svg) center/contain no-repeat;
+  background:var(--accent)!important;
+}
+[data-theme="dark"] .brand__mark,
+.sec--dark .brand__mark,
+html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!important}
+@media (max-width:640px){.brand__mark{width:18px!important;height:15px!important}}
