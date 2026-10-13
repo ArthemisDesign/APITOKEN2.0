@@ -2649,7 +2649,7 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
   html[data-hero] .page-landing .hero .plate__claim{margin:0}
   html[data-hero] .page-landing .hero::after,
   html[data-hero] .page-landing .hero .plate::before{content:none;display:none}
-  html[data-hero][data-theme="dark"] .page-landing #models{background:linear-gradient(var(--accent),var(--bg) clamp(96px,12vw,200px))}
+  /* no gradient band between the hero and the next section */
   html[data-hero] .page-landing .hero .plate{grid-area:head}
   html[data-hero] .page-landing .hero .netwrap{grid-area:net}
   html[data-hero] .page-landing .hero .band__lead{grid-area:lead}
@@ -2753,3 +2753,9 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
   html[data-hero="a"] .page-landing .hero .plate{align-self:start}
   html[data-hero="a"] .page-landing .hero .plate__claim{align-self:end}
 }
+
+/* no hairline under the header, no fading rule between sections, no gradient
+   band after the hero — the blue first screen meets the page directly */
+.page-landing .hdr .hdr__in,.page-landing .hdr.small .hdr__in{border-bottom-color:transparent}
+.page-landing .sec::before{display:none}
+[data-theme="dark"] .page-landing .hero::after{content:none;display:none}
