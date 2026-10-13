@@ -2487,34 +2487,48 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
 
 /* =========================================================
    CLIENT CALL 2026-10-12 · B2B pop-up
+   Solid brand colours only (no transparency): B2C column blue, B2B coral.
    ========================================================= */
 .b2bm{
-  width:min(640px,calc(100vw - 32px));max-height:calc(100dvh - 32px);
+  --b2bm-rule:color-mix(in srgb,var(--ink) 14%,var(--paper));
+  --b2bm-k:color-mix(in srgb,var(--ink) 62%,var(--paper));
+  width:min(760px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;
   margin:auto;padding:clamp(24px,3vw,40px);border:0;border-radius:var(--r-l,20px);
-  background:var(--paper);color:var(--ink);box-shadow:var(--shadow-xl);
+  background:var(--paper);color:var(--ink);
 }
-[data-theme="dark"] .b2bm{background:var(--ink-2);color:var(--paper);border:1px solid var(--line)}
-.b2bm::backdrop{background:rgba(44,44,44,.6);backdrop-filter:blur(4px)}
+[data-theme="dark"] .b2bm{
+  --b2bm-rule:color-mix(in srgb,var(--paper) 18%,var(--ink));
+  --b2bm-k:color-mix(in srgb,var(--paper) 62%,var(--ink));
+  background:var(--ink);color:var(--paper);border:1px solid var(--b2bm-rule);
+}
+.b2bm::backdrop{background:var(--ink)}
+[data-theme="dark"] .b2bm::backdrop{background:var(--accent)}
 .b2bm[open]{animation:b2bm-in .25s ease}
-@keyframes b2bm-in{from{opacity:0;transform:translateY(12px)}}
+@keyframes b2bm-in{from{transform:translateY(12px)}}
 .b2bm__close{position:absolute;top:14px;right:14px;width:36px;height:36px;border-radius:50%;
-  border:1px solid var(--line);background:transparent;color:inherit;cursor:pointer;font-size:14px}
+  border:1px solid var(--b2bm-rule);background:var(--paper);color:var(--ink);cursor:pointer;font-size:14px}
+[data-theme="dark"] .b2bm__close{background:var(--ink);color:var(--paper)}
 .b2bm__close:hover{border-color:currentColor}
-.b2bm__title{font-size:clamp(28px,3vw,40px);font-weight:600;letter-spacing:-.04em;line-height:1.05;margin:0 40px 12px 0}
-.b2bm__lead{font-size:16px;line-height:1.5;color:var(--muted);margin:0 0 24px;max-width:46ch}
-.b2bm__table{border:1px solid var(--line);border-radius:14px;overflow:hidden}
-.b2bm__row{display:grid;grid-template-columns:.8fr 1fr 1fr;align-items:stretch}
-.b2bm__row + .b2bm__row{border-top:1px solid var(--line)}
-.b2bm__k,.b2bm__v{padding:12px 14px;font-size:14px;line-height:1.35}
-.b2bm__k{color:var(--muted)}
-.b2bm__v--b2b{background:var(--accent);color:var(--paper);font-weight:500}
-.b2bm__row--head .b2bm__v{font-weight:600}
+.b2bm__title{font-size:clamp(28px,3vw,40px);font-weight:600;letter-spacing:-.04em;line-height:1.05;margin:0 40px 14px 0}
+.b2bm__lead{font-size:16px;line-height:1.5;margin:0 0 24px;max-width:58ch;color:inherit}
+.b2bm__table{border:1px solid var(--b2bm-rule);border-radius:14px;overflow:hidden}
+.b2bm__row{display:grid;grid-template-columns:.7fr 1fr 1fr}
+.b2bm__row + .b2bm__row{border-top:1px solid var(--b2bm-rule)}
+.b2bm__k,.b2bm__v{padding:12px 16px;font-size:14px;line-height:1.4}
+.b2bm__k{color:var(--b2bm-k);font-weight:500}
+.b2bm__v + .b2bm__v{border-left:1px solid var(--b2bm-rule)}
+.b2bm__v b{font-weight:600}
+.b2bm__h{font-size:16px;font-weight:600;color:var(--paper);border-left:0!important}
+.b2bm__h--b2c{background:var(--accent)}
+.b2bm__h--b2b{background:var(--hot)}
+.b2bm__note{font-size:13px;line-height:1.45;color:var(--b2bm-k);margin:12px 0 0}
 .b2bm__acts{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;margin-top:24px}
-.b2bm__mail{font-size:14px;color:var(--muted)}
+.b2bm__mail{font-size:14px;color:var(--b2bm-k)}
 .b2bm__mail a{color:inherit;text-decoration:underline;text-underline-offset:3px}
 @media (max-width:560px){
   .b2bm__row{grid-template-columns:1fr 1fr}
   .b2bm__k{grid-column:1/-1;padding-bottom:0}
+  .b2bm__v{border-left:0!important}
   .b2bm__row--head .b2bm__k{display:none}
   .b2bm__acts .btn{width:100%}
 }
