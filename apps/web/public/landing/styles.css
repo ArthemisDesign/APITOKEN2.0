@@ -2501,8 +2501,10 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
   --b2bm-k:color-mix(in srgb,var(--paper) 62%,var(--ink));
   background:var(--ink);color:var(--paper);border:1px solid var(--b2bm-rule);
 }
-.b2bm::backdrop{background:var(--ink)}
-[data-theme="dark"] .b2bm::backdrop{background:var(--accent)}
+/* the page behind dims (a brightness filter, not a semi-transparent colour) */
+.b2bm::backdrop{background:none;-webkit-backdrop-filter:brightness(.35);backdrop-filter:brightness(.35)}
+.b2bm[open]::backdrop{animation:b2bm-dim .3s ease}
+@keyframes b2bm-dim{from{-webkit-backdrop-filter:brightness(1);backdrop-filter:brightness(1)}}
 .b2bm[open]{animation:b2bm-in .25s ease}
 @keyframes b2bm-in{from{transform:translateY(12px)}}
 .b2bm__close{position:absolute;top:14px;right:14px;width:36px;height:36px;border-radius:50%;
