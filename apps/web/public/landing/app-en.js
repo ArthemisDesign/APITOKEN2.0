@@ -155,7 +155,7 @@ const observeReveals = () => $$('.reveal:not(.in)').forEach(n => io.observe(n));
       <div class="mcard__row"><span>input / 1M</span><b>${m.in}</b></div>
       <div class="mcard__row"><span>output / 1M</span><b>${m.out}</b></div>
       <div class="mcard__row"><span>context</span><b>${m.ctx}</b></div>
-      <div class="mcard__tags">${m.caps.map(c => `<span class="tag">${(CAPS.find(x => x.id === c) || {}).name || c}</span>`).join('')}</div>`;
+      <div class="mcard__tags">${m.caps.map(c => `<span class="tag tag--${c}">${(CAPS.find(x => x.id === c) || {}).name || c}</span>`).join('')}</div>`;
     return n;
   }
 
