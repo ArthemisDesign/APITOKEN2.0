@@ -69,7 +69,7 @@
       <div class="plate__foot">
         <p class="lead">One infrastructure for leading AI models — through a single key and a single balance.</p>
         <div class="hero__cta ctas">
-          <a class="btn btn--solid" href="/landing/b2b-en.html#offer">Get a B2B quote</a>
+          <a class="btn btn--solid" href="/landing/b2b-en.html#offer" data-b2b>Get a B2B quote</a>
           <a class="btn" href="#start">Get started</a>
         </div>
       </div>
@@ -208,7 +208,7 @@
           <span class="calc__big" id="resMo">$10 000</span>
           <span class="calc__year" id="resYr">$120 000 a year</span>
         </div>
-        <a class="btn btn--solid btn--full" href="/landing/b2b-en.html#offer">Get a B2B quote</a>
+        <a class="btn btn--solid btn--full" href="/landing/b2b-en.html#offer" data-b2b>Get a B2B quote</a>
         <button class="lnk lnk--arrow" id="advToggle">Advanced calculator</button>
         <div class="adv" id="adv" hidden>
           <div class="adv__grid">
@@ -359,7 +359,7 @@
     <div class="rule grid">
       <span class="c1-7 final__sub reveal">Save up to 50% on AI API costs</span>
       <div class="c8-13 ctas reveal">
-        <a class="btn btn--solid" href="/landing/b2b-en.html#offer">Get a B2B quote</a>
+        <a class="btn btn--solid" href="/landing/b2b-en.html#offer" data-b2b>Get a B2B quote</a>
         <a class="btn" href="/register">Get started</a>
       </div>
     </div>
@@ -367,6 +367,23 @@
 </section>
 
 </main>
+
+<!-- ================= B2B POP-UP ================= -->
+<dialog class="b2bm" id="b2bDialog" aria-labelledby="b2bTitle">
+  <form method="dialog"><button class="b2bm__close" aria-label="Close">&#x2715;</button></form>
+  <h2 class="b2bm__title" id="b2bTitle">B2B offer</h2>
+  <p class="b2bm__lead">For companies with regular AI API spend: custom terms and volume discounts.</p>
+  <div class="b2bm__table">
+    <div class="b2bm__row b2bm__row--head"><span class="b2bm__k"></span><span class="b2bm__v">Standard</span><span class="b2bm__v b2bm__v--b2b">B2B</span></div>
+          <div class="b2bm__row"><span class="b2bm__k">Discount</span><span class="b2bm__v">Up to 50% off provider prices</span><span class="b2bm__v b2bm__v--b2b">Custom, grows with volume</span></div>
+          <div class="b2bm__row"><span class="b2bm__k">Terms</span><span class="b2bm__v">The same for everyone</span><span class="b2bm__v b2bm__v--b2b">Fitted to your volume and providers</span></div>
+          <div class="b2bm__row"><span class="b2bm__k">Contact</span><span class="b2bm__v">Support bot</span><span class="b2bm__v b2bm__v--b2b">Directly with the team on Telegram</span></div>
+  </div>
+  <div class="b2bm__acts">
+    <a class="btn btn--solid" href="https://t.me/apiTokenSale" target="_blank" rel="noopener">Message us on Telegram</a>
+    <span class="b2bm__mail">or by email <a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a></span>
+  </div>
+</dialog>
 
 <!-- ================= FOOTER ================= -->
 <footer class="ftr sec--dark">
@@ -418,6 +435,7 @@
 <script src="/landing/video-covers.js"></script>
 <script src="/landing/app-en.js"></script>
 <script src="/landing/grow.js"></script>
+<script src="/landing/b2b-modal.js"></script>
 <script src="/landing/motion.js"></script>
 <script src="/landing/mobile-nav.js"></script>
 </body>

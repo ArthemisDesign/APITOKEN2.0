@@ -44,6 +44,7 @@ if (window.Lenis && window.MO_SMOOTH !== false && !REDUCED && !TOUCH) {
   /* lerp .095 felt sluggish on laptop touchpads (feedback 05:02): the pad
      already adds its own inertia, so a slow lerp stacks a second delay on top */
   lenis = new Lenis({ lerp: .16, wheelMultiplier: 1, smoothWheel: true, syncTouch: false });
+  window.__lenis = lenis;   // b2b-modal.js pauses page scroll while the dialog is open
   lenis.on('scroll', ScrollTrigger.update);
   gsap.ticker.add(t => lenis.raf(t * 1000));
   gsap.ticker.lagSmoothing(0);

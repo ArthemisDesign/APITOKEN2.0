@@ -69,7 +69,7 @@
       <div class="plate__foot">
         <p class="lead">Единая инфраструктура для работы с ведущими AI-моделями — через один ключ и один баланс.</p>
         <div class="hero__cta ctas">
-          <a class="btn btn--solid" href="/landing/b2b.html">Получить B2B предложение</a>
+          <a class="btn btn--solid" href="/landing/b2b.html" data-b2b>Получить B2B предложение</a>
           <a class="btn" href="#start">Начать работу</a>
         </div>
       </div>
@@ -208,7 +208,7 @@
           <span class="calc__big" id="resMo">$10 000</span>
           <span class="calc__year" id="resYr">$120 000 в год</span>
         </div>
-        <a class="btn btn--solid btn--full" href="/landing/b2b.html">Получить B2B предложение</a>
+        <a class="btn btn--solid btn--full" href="/landing/b2b.html" data-b2b>Получить B2B предложение</a>
         <button class="lnk lnk--arrow" id="advToggle">Расширенный калькулятор</button>
         <div class="adv" id="adv" hidden>
           <div class="adv__grid">
@@ -359,7 +359,7 @@
     <div class="rule grid">
       <span class="c1-7 final__sub reveal">Экономьте до 50% на стоимости AI API</span>
       <div class="c8-13 ctas reveal">
-        <a class="btn btn--solid" href="/landing/b2b.html">Получить B2B предложение</a>
+        <a class="btn btn--solid" href="/landing/b2b.html" data-b2b>Получить B2B предложение</a>
         <a class="btn" href="/ru/register">Начать работу</a>
       </div>
     </div>
@@ -367,6 +367,23 @@
 </section>
 
 </main>
+
+<!-- ================= B2B POP-UP ================= -->
+<dialog class="b2bm" id="b2bDialog" aria-labelledby="b2bTitle">
+  <form method="dialog"><button class="b2bm__close" aria-label="Закрыть">&#x2715;</button></form>
+  <h2 class="b2bm__title" id="b2bTitle">B2B предложение</h2>
+  <p class="b2bm__lead">Для компаний с регулярными расходами на AI API: персональные условия и объёмные скидки.</p>
+  <div class="b2bm__table">
+    <div class="b2bm__row b2bm__row--head"><span class="b2bm__k"></span><span class="b2bm__v">Обычный тариф</span><span class="b2bm__v b2bm__v--b2b">B2B</span></div>
+          <div class="b2bm__row"><span class="b2bm__k">Скидка</span><span class="b2bm__v">До 50% к ценам провайдеров</span><span class="b2bm__v b2bm__v--b2b">Персональная, растёт с объёмом</span></div>
+          <div class="b2bm__row"><span class="b2bm__k">Условия</span><span class="b2bm__v">Одинаковые для всех</span><span class="b2bm__v b2bm__v--b2b">Под ваш объём и провайдеров</span></div>
+          <div class="b2bm__row"><span class="b2bm__k">Связь</span><span class="b2bm__v">Бот поддержки</span><span class="b2bm__v b2bm__v--b2b">Напрямую с командой в Telegram</span></div>
+  </div>
+  <div class="b2bm__acts">
+    <a class="btn btn--solid" href="https://t.me/apiTokenSale" target="_blank" rel="noopener">Написать в Telegram</a>
+    <span class="b2bm__mail">или на почту <a href="mailto:apitokensale@gmail.com">apitokensale@gmail.com</a></span>
+  </div>
+</dialog>
 
 <!-- ================= FOOTER ================= -->
 <footer class="ftr sec--dark">
@@ -418,6 +435,7 @@
 <script src="/landing/video-covers.js"></script>
 <script src="/landing/app.js"></script>
 <script src="/landing/grow.js"></script>
+<script src="/landing/b2b-modal.js"></script>
 <script src="/landing/motion.js"></script>
 <script src="/landing/mobile-nav.js"></script>
 </body>
