@@ -2518,3 +2518,12 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
   .b2bm__row--head .b2bm__k{display:none}
   .b2bm__acts .btn{width:100%}
 }
+
+/* the lead now explains the schematic: it sits right under it, on the blue field */
+.page-landing .band__lead{
+  max-width:1240px;margin:clamp(20px,2vw,32px) auto 0;padding:0;
+  color:var(--paper);font-size:clamp(16px,1.4vw,22px);line-height:1.45;
+}
+.page-landing .band__lead{max-width:min(1240px,100%)}
+@media (min-width:1025px){.page-landing .band__lead{text-align:left}}
+@media (max-width:1024px){.page-landing .band__lead{padding:0 var(--margin,16px)}}
