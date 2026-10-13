@@ -2565,3 +2565,34 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
 [data-theme="dark"] .page-landing .mcard__tags :is(.tag--long,.tag--image){background:var(--paper);color:var(--ink)}
 /* on the blue hover fill: solid paper capsules with blue type */
 .page-landing .mcard:hover .mcard__tags .tag{background:var(--paper)!important;color:var(--accent)!important}
+
+/* =========================================================
+   FIRST SCREEN · composition
+   Three bands on one left edge: the headline across the full width,
+   an action row (buttons left, the discount right, on one baseline),
+   then the schematic and its caption flush with the same edges.
+   ========================================================= */
+@media (min-width:1025px){
+  .page-landing .plate__in{padding-top:calc(var(--hdr-h,84px) + clamp(28px,3.4vw,56px))}
+  .page-landing .plate__headrow{display:block}
+  .page-landing .plate__h{font-size:min(6.5vw,12.5svh,124px);line-height:.94;max-width:none}
+  .page-landing .plate__h span{white-space:nowrap}
+  .page-landing .hero .display--xxl{margin:0}
+  .page-landing .plate__foot{
+    max-width:none;margin-top:clamp(28px,3vw,48px);padding-top:clamp(20px,2vw,28px);
+    flex-direction:row;justify-content:space-between;align-items:flex-end;
+    border-top:1px solid color-mix(in srgb,var(--paper) 40%,var(--accent));
+  }
+  .page-landing .plate__foot .plate__claim{
+    position:static;flex-direction:row;align-items:flex-end;gap:16px;margin:0;padding:0;text-align:right;
+  }
+  .page-landing .plate__claim .claim__val{font-size:clamp(48px,4.6vw,84px);line-height:.8}
+  .page-landing .plate__claim .claim__lab{margin:0;max-width:11ch;text-align:left;line-height:1.3;padding-bottom:4px}
+  /* schematic + caption share the text column's edges */
+  .page-landing .hero .band{max-width:var(--maxw);margin:0 auto;padding:clamp(32px,3.6vw,56px) var(--margin) clamp(56px,6vw,96px)}
+  .page-landing .hero .netwrap{max-width:none}
+  .page-landing .band__lead{max-width:60ch;margin:clamp(18px,1.8vw,28px) 0 0}
+}
+@media (max-width:1024px){
+  .page-landing .plate__foot .plate__claim{order:-1;margin:0 0 8px;position:static}
+}
