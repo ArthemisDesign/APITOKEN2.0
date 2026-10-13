@@ -70,52 +70,51 @@
   <figure class="band reveal">
     <div class="netwrap" id="netwrap">
 
-      <svg class="net" viewBox="0 0 1120 460" role="img" aria-label="Routing diagram: providers converge at apiToken and leave as a single line to your product">
+      <svg class="net" viewBox="0 0 1120 720" role="img" aria-label="Routing diagram: providers converge at apiToken and leave as a single line to your product">
 
-        <!-- converging bus (one line per provider pill; the column is centred
-             on the router) · each line lands on its own point of the
-             router's left edge, so nothing pinches into a single dot -->
+        <!-- converging bus: one line per provider pill, each landing on its own
+             point of the router's left edge -->
         <g class="net__links">
-          <path pathLength="100" d="M234 102 C 322 102, 342 180, 430 180"/>
-          <path pathLength="100" d="M234 166 C 322 166, 342 205, 430 205"/>
-          <path pathLength="100" d="M234 230 C 322 230, 342 230, 430 230"/>
-          <path pathLength="100" d="M234 294 C 322 294, 342 255, 430 255"/>
-          <path pathLength="100" d="M234 358 C 322 358, 342 280, 430 280"/>
+          <path pathLength="100" d="M284 104 C 350 104, 334 310, 400 310"/>
+          <path pathLength="100" d="M284 232 C 350 232, 334 335, 400 335"/>
+          <path pathLength="100" d="M284 360 C 350 360, 334 360, 400 360"/>
+          <path pathLength="100" d="M284 488 C 350 488, 334 385, 400 385"/>
+          <path pathLength="100" d="M284 616 C 350 616, 334 410, 400 410"/>
         </g>
         <g class="net__flow">
-          <path pathLength="100" d="M234 102 C 322 102, 342 180, 430 180"/>
-          <path pathLength="100" d="M234 166 C 322 166, 342 205, 430 205"/>
-          <path pathLength="100" d="M234 230 C 322 230, 342 230, 430 230"/>
-          <path pathLength="100" d="M234 294 C 322 294, 342 255, 430 255"/>
-          <path pathLength="100" d="M234 358 C 322 358, 342 280, 430 280"/>
+          <path pathLength="100" d="M284 104 C 350 104, 334 310, 400 310"/>
+          <path pathLength="100" d="M284 232 C 350 232, 334 335, 400 335"/>
+          <path pathLength="100" d="M284 360 C 350 360, 334 360, 400 360"/>
+          <path pathLength="100" d="M284 488 C 350 488, 334 385, 400 385"/>
+          <path pathLength="100" d="M284 616 C 350 616, 334 410, 400 410"/>
         </g>
 
         <!-- providers -->
-        <g class="node"><rect x="24" y="82"  width="210" height="40" rx="20"/><text x="48" y="108">OpenAI</text><text class="n-count" x="210" y="108">12</text></g>
-        <g class="node"><rect x="24" y="146" width="210" height="40" rx="20"/><text x="48" y="172">Anthropic</text><text class="n-count" x="210" y="172">8</text></g>
-        <g class="node"><rect x="24" y="210" width="210" height="40" rx="20"/><text x="48" y="236">Google</text><text class="n-count" x="210" y="236">7</text></g>
-        <g class="node"><rect x="24" y="274" width="210" height="40" rx="20"/><text x="48" y="300">Kimi</text><text class="n-count" x="210" y="300">4</text></g>
-        <g class="node node--more"><rect x="24" y="338" width="210" height="40" rx="20"/><text x="48" y="364">+ providers</text></g>
+        <g class="node"><rect x="24" y="70" width="260" height="68" rx="34"/><text x="58" y="112">OpenAI</text><text class="n-count" x="252" y="112">12</text></g>
+        <g class="node"><rect x="24" y="198" width="260" height="68" rx="34"/><text x="58" y="240">Anthropic</text><text class="n-count" x="252" y="240">8</text></g>
+        <g class="node"><rect x="24" y="326" width="260" height="68" rx="34"/><text x="58" y="368">Google</text><text class="n-count" x="252" y="368">7</text></g>
+        <g class="node"><rect x="24" y="454" width="260" height="68" rx="34"/><text x="58" y="496">Kimi</text><text class="n-count" x="252" y="496">4</text></g>
+        <g class="node node--more"><rect x="24" y="582" width="260" height="68" rx="34"/><text x="58" y="624">+ providers</text></g>
 
-        <!-- router · horizontal card, type reads straight -->
+        <!-- router -->
         <g class="core">
-          <rect x="430" y="156" width="230" height="148" rx="26"/>
-          <text class="c-name" x="545" y="224">apiToken</text>
-          <text class="c-tick" id="ticker" x="545" y="256">claude-opus-5</text>
+          <rect x="400" y="270" width="280" height="180" rx="32"/>
+          <text class="c-name" x="540" y="366">apiToken</text>
+          <text class="c-tick" id="ticker" x="540" y="408">claude-opus-5</text>
         </g>
 
         <!-- single outbound line -->
         <g class="net__out">
-          <path d="M660 230 L 744 230"/>
-          <path class="net__head" d="M736 222 L 748 230 L 736 238"/>
+          <path d="M680 360 L 756 360"/>
+          <path class="net__head" d="M746 350 L 760 360 L 746 370"/>
         </g>
 
         <!-- product -->
         <g class="prodcard">
-          <rect x="752" y="148" width="344" height="164" rx="22"/>
-          <text class="p-name" x="784" y="200">Your product</text>
-          <text class="p-code" x="784" y="234">POST /v1/messages</text>
-          <text class="p-note" x="784" y="268">one key, one balance</text>
+          <rect x="766" y="250" width="330" height="220" rx="26"/>
+          <text class="p-name" x="798" y="322">Your product</text>
+          <text class="p-code" x="798" y="364">POST /v1/messages</text>
+          <text class="p-note" x="798" y="402">one key, one balance</text>
         </g>
       </svg>
 

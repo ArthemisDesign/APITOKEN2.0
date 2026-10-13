@@ -2671,19 +2671,41 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
 
 }
 
-/* split layout: content-height hero, no forced 100svh with empty bands */
+/* split layout: the hero fills the viewport and the elements fill the hero —
+   headline at the top left, discount and buttons at the bottom left, the
+   schematic stretched over the full right column with its caption level
+   with the buttons */
 @media (min-width:1025px){
   html[data-hero="a"] .page-landing .hero{
-    height:auto;min-height:0;
-    padding-top:calc(var(--hdr-h,84px) + clamp(28px,4svh,56px));
-    padding-bottom:clamp(40px,6svh,72px);
+    height:100svh;min-height:640px;
+    padding-top:calc(var(--hdr-h,84px) + clamp(20px,3svh,40px));
+    padding-bottom:clamp(24px,4svh,48px);
     grid-template-columns:minmax(0,5fr) minmax(0,7fr);
-    grid-template-rows:auto auto 1fr auto;
-    grid-template-areas:"head net" "claim net" "cta net" ". lead";
-    align-items:start;
+    grid-template-rows:minmax(0,1fr) auto auto;
+    grid-template-areas:"head net" "claim net" "cta lead";
+    align-items:stretch;row-gap:clamp(14px,2.4svh,28px);
   }
   html[data-hero="a"] .page-landing .hero .plate{align-self:start}
-  html[data-hero="a"] .page-landing .plate__h{font-size:min(4.6vw,10svh,76px)}
-  html[data-hero="a"] .page-landing .hero .plate__claim{padding-top:clamp(20px,3svh,36px)}
-  html[data-hero="a"] .page-landing .hero .hero__cta{align-self:end}
+  html[data-hero="a"] .page-landing .plate__h{font-size:min(5.3vw,11.5svh,104px);line-height:.95}
+  html[data-hero="a"] .page-landing .plate__h span{white-space:normal}
+  html[data-hero="a"] .page-landing .hero .netwrap{align-self:stretch;aspect-ratio:auto;height:100%;min-height:0}
+  html[data-hero="a"] .page-landing .hero .plate__claim{align-self:end;padding-top:0}
+  html[data-hero="a"] .page-landing .hero .plate__claim .claim__val{font-size:min(6vw,12svh,120px)}
+  html[data-hero="a"] .page-landing .hero .plate__claim .claim__lab{font-size:clamp(15px,1.2vw,19px);max-width:12ch}
+  html[data-hero="a"] .page-landing .hero .hero__cta{align-self:center}
+  html[data-hero="a"] .page-landing .hero .band__lead{align-self:center;max-width:none}
 }
+
+/* hero headline: the wide face needs looser tracking — at -.055em letters touched */
+.page-landing .plate__h{letter-spacing:-.02em}
+
+/* hero schematic, redrawn taller (1120×720) so it fills its panel; type scaled to match */
+@media (min-width:821px){.page-landing .hero .netwrap{aspect-ratio:1120/720}}
+.page-landing .net .node text{font-size:22px}
+.page-landing .net .node .n-count{font-size:18px}
+.page-landing .net .c-name{font-size:44px}
+.page-landing .net .c-tick{font-size:17px}
+.page-landing .net .p-name{font-size:28px}
+.page-landing .net .p-code{font-size:17px}
+.page-landing .net .p-note{font-size:14px}
+@media (max-width:1024px){.page-landing .hero .band{padding-left:var(--margin);padding-right:var(--margin)}}
