@@ -2596,3 +2596,33 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
 @media (max-width:1024px){
   .page-landing .plate__foot .plate__claim{order:-1;margin:0 0 8px;position:static}
 }
+
+/* =========================================================
+   FIRST SCREEN · everything fits the opening viewport (desktop)
+   headline → schematic (takes the remaining height) → caption →
+   action row (buttons left, discount right).
+   ========================================================= */
+@media (min-width:1025px){
+  .page-landing .hero{display:flex;flex-direction:column;height:100svh;min-height:640px}
+  .page-landing .plate{flex:none}
+  .page-landing .plate__in{padding-top:calc(var(--hdr-h,84px) + clamp(16px,2.4svh,40px));padding-bottom:0}
+  .page-landing .plate__h{font-size:min(6.2vw,10.5svh,120px)}
+  .page-landing .hero .band{
+    flex:1 1 auto;min-height:0;display:flex;flex-direction:column;width:100%;
+    padding-top:clamp(16px,2.6svh,32px);padding-bottom:0;
+  }
+  /* the panel fills the free height; the drawing scales inside it */
+  .page-landing .hero .netwrap{flex:1 1 auto;min-height:180px;aspect-ratio:auto;height:auto}
+  .page-landing .band__lead{flex:none;margin-top:clamp(10px,1.6svh,18px);font-size:clamp(15px,1.15vw,19px)}
+  .page-landing .hero__foot{
+    flex:none;width:100%;max-width:var(--maxw);margin:0 auto;box-sizing:border-box;
+    padding:clamp(14px,2svh,22px) var(--margin) clamp(18px,3svh,32px);
+    border-top:0;display:flex;flex-direction:row;justify-content:space-between;align-items:center;
+  }
+  .page-landing .hero__foot::before{content:none}
+  .page-landing .hero__foot .plate__claim .claim__val{font-size:clamp(40px,3.8vw,68px)}
+}
+/* tablets and phones: the action row follows the schematic in the flow */
+@media (max-width:1024px){
+  .page-landing .hero__foot{padding:24px var(--margin) 40px;max-width:none}
+}
