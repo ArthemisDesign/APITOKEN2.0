@@ -62,7 +62,7 @@ export const metadata: Metadata = {
   },
 };
 
-export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#F4F3EF" };
+export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: "#FFFFFF" };
 
 // Язык документа выставляется инлайн-скриптом до первой отрисовки (тот же паттерн,
 // что и тема), поэтому корневой layout не читает headers(): весь сайт — и публичные
