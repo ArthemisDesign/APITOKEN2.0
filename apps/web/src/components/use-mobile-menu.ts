@@ -46,7 +46,12 @@ export function useMobileMenu(open: boolean, close: () => void, panelSelector: s
         document.body.style.overflow = bodyOverflow;
         document.documentElement.style.overflow = htmlOverflow;
         content.forEach((el, i) => { el.inert = inert[i]!; });
-        if (panel.contains(document.activeElement)) trigger.focus({ preventScroll: true });
+        const focused = document.activeElement;
+        // A dismissed scrim can stay focused after becoming hidden, or leave focus on body
+        // when removed. Keep a new route's deliberately focused content in place.
+        if (panel.contains(focused) || focused === document.body || focused?.closest('[aria-hidden="true"],[hidden],[inert]')) {
+          trigger.focus({ preventScroll: true });
+        }
       }
     };
   }, [open, close, panelSelector, triggerSelector, breakpoint]);

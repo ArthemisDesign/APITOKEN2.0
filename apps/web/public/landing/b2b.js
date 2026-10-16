@@ -47,7 +47,8 @@
         const target = $(link.getAttribute('href'));
         if (!target) return;
         e.preventDefault();
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+        target.scrollIntoView({ behavior: behavior, block: 'start' });
         history.replaceState(null, '', link.getAttribute('href'));
       });
     });

@@ -34,12 +34,12 @@ try {
               canvas:getComputedStyle(document.documentElement).backgroundColor,
               body:getComputedStyle(document.body).backgroundColor,
               content:getComputedStyle(document.querySelector('main')).backgroundColor,
-              expectedContent:document.documentElement.dataset.theme==='dark'?'rgb(12, 11, 17)':'rgb(244, 243, 239)',
+              expectedContent:document.documentElement.dataset.theme==='dark'?'rgb(46, 46, 46)':'rgb(255, 255, 255)',
               meta:document.querySelector('meta[name="theme-color"]').content,
               top:hero.getBoundingClientRect().top,blur:getComputedStyle(header,'::before').display};
           });
           assert.equal(surface.top,0,'Hero starts at the viewport top, behind the header');
-          assert.equal(surface.header,surface.hero,'Header must be the same solid coral as the hero');
+          assert.equal(surface.header,surface.hero,'Header must be the same solid navy as the hero');
           assert.equal(surface.canvas,surface.hero,'Safe-area canvas must match the hero');
           assert.equal(surface.body,surface.header,'Body background used by browser chrome must match the header');
           assert.equal(surface.content,surface.expectedContent,'Content keeps its own paper/ink surface');
@@ -89,7 +89,7 @@ try {
       assert.ok(Math.abs(geometry.width-geometry.activeWidth)<1,'Language thumb must match its segment');
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth<=innerWidth+1),true,'No page overflow');
       if(isLanding && width<1025) {
-        assert.equal(await header.locator('.brand').evaluate(el=>getComputedStyle(el).color),'rgb(12, 11, 17)','Wordmark stays readable on coral in both themes');
+        assert.equal(await header.locator('.brand').evaluate(el=>getComputedStyle(el).color),'rgb(255, 255, 255)','Wordmark stays white on navy in both themes');
         await page.locator('#burger').click();
         await page.waitForTimeout(250);
         const menu=page.locator('#mobNav');

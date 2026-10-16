@@ -485,6 +485,7 @@
 @media (max-width:640px){
   /* copy buttons were 28-30px tall — under the 40px touch target on a phone */
   .docs-codebar button,.docs-endpoints-base button{min-height:40px;padding-top:0;padding-bottom:0}
+  .docs-agent-chip-btn{min-width:40px;min-height:40px}
   /* the sidebar wordmark is a link back to the landing page */
   .docs-side-brand{padding:7px 0}
 

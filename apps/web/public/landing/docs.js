@@ -97,7 +97,8 @@
         const header = document.getElementById('hdr');
         const offset = (header ? header.offsetHeight : 0) + 16;
         const top = el.getBoundingClientRect().top + window.scrollY - offset;
-        window.scrollTo({ top: top, behavior: 'smooth' });
+        const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+        window.scrollTo({ top: top, behavior: behavior });
         history.replaceState(null, '', '#' + id);
       });
     });

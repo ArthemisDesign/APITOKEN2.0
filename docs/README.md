@@ -132,6 +132,7 @@ document, update this index.
 - [2026-08-24-POST-ADMISSION-MONITORING-VERIFY.md](audits/2026-08-24-POST-ADMISSION-MONITORING-VERIFY.md) — incident postmortem for three RED post-admission monitoring cycles; GREEN `8e6561da`; GitHub issue [#3](https://github.com/3xcalibur-tech/Claude_API/issues/3).
 
 - [2026-09-08-mobile-site-audit.md](audits/2026-09-08-mobile-site-audit.md) — APITOKEN2.0 mobile layout, navigation, form and internal-link audit, fixes and device/backend verification limits.
+- [2026-10-16-mobile-site-audit.md](audits/2026-10-16-mobile-site-audit.md) — APITOKEN2.0 follow-up after the palette update: narrow headers, B2B, documentation, chart layout and menu focus fixes, with targeted browser coverage and verification limits.
 
 ## Next to the code (do not move here)
 

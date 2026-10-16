@@ -630,6 +630,10 @@ html{background:var(--bg)}
 .vid__poster .ln:nth-child(5){animation-delay:2.5s}
 .vid__poster .ln:nth-child(6){animation-delay:3.1s}
 @keyframes type{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+/* Without animation, show the terminal's completed state when play starts. */
+@media (prefers-reduced-motion:reduce){
+  .vid.playing .vid__poster .ln{opacity:1;transform:none}
+}
 .vid__poster .ln b{color:var(--paper);font-weight:400}
 .vid__scrim{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(var(--ink-rgb),.5);transition:opacity .35s}
 .vid.playing .vid__scrim{opacity:0;pointer-events:none}
@@ -2527,9 +2531,9 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
 .b2bm__mail{font-size:14px;color:var(--b2bm-k)}
 .b2bm__mail a{color:inherit;text-decoration:underline;text-underline-offset:3px}
 @media (max-width:560px){
-  .b2bm__row{grid-template-columns:1fr 1fr}
+  .b2bm__row{grid-template-columns:repeat(2,minmax(0,1fr))}
   .b2bm__k{grid-column:1/-1;padding-bottom:0}
-  .b2bm__v{border-left:0!important}
+  .b2bm__v{min-width:0;overflow-wrap:anywhere;border-left:0!important}
   .b2bm__row--head .b2bm__k{display:none}
   .b2bm__acts .btn{width:100%}
 }
@@ -2715,6 +2719,14 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
 @media (max-width:640px){
   .hdr .brand{font-size:19px;gap:9px}
   .hdr .brand__mark{width:25px!important;height:21px!important}
+}
+/* Keep the full wordmark and all controls inside a 320px viewport, including
+   browsers that reserve 15px for a scrollbar. Override the logo sizing above. */
+@media (max-width:359px){
+  .hdr .brand{font-size:13px;gap:6px}
+  .hdr .brand__mark{width:18px!important;height:16px!important}
+  .hdr .hdr__in{gap:6px}
+  .hdr .hdr__acts{gap:4px}
 }
 
 /* split hero, balanced: viewport-tall, everything at its natural size,

@@ -512,7 +512,7 @@ function EarningsChart({ snapshot, language }: { snapshot: ReferralActiveSnapsho
           <p className="usage-trend-hint">{text.chartHint}</p>
         </div>
         {point && <aside key={index} className="usage-trend-detail" aria-label={text.dayDetail} data-day-index={index}>
-          {/* Fixed slots keep the panel geometry constant between days. */}
+          {/* Reserve provider rows between days; let the card grow when labels wrap. */}
           <span className="trend-detail-label">{text.dayDetail}</span><h3>{dateFull(point.date)}</h3>
           <dl><div className="trend-detail-primary"><dt>{text.earned}</dt><dd>{money(totals[index] ?? 0n)}</dd></div><div><dt>{text.spend}</dt><dd>{money(point.providers.reduce((day, provider) => day + provider.spend, 0n))}</dd></div><div><dt>{text.events}</dt><dd>{point.providers.reduce((day, provider) => day + provider.events, 0).toLocaleString(locale)}</dd></div></dl>
           <div className="trend-detail-providers"><span>{text.earned}</span>{providers.map((provider, providerIndex) => { const value = geometry.layers[providerIndex]!.values[index]!; return <div key={provider.id} className={value > 0n ? undefined : "is-empty"} aria-hidden={value > 0n ? undefined : true}><span><i style={{ background: provider.color }} />{provider.name}</span><b>{money(value)}</b></div>; })}</div>
