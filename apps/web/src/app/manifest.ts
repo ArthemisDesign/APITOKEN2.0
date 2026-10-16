@@ -8,8 +8,8 @@ export default function manifest(): MetadataRoute.Manifest {
     description: "One API key and prepaid balance for supported Claude and GPT models.",
     start_url: "/",
     display: "standalone",
-    background_color: "#FAF0AC",
-    theme_color: "#FAF0AC",
+    background_color: "#F4F3EF",
+    theme_color: "#F4F3EF",
     lang: "en",
     categories: ["developer tools", "productivity", "utilities"],
     icons: [

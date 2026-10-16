@@ -1,9 +1,9 @@
-/* Covers share the landing's butter, charcoal, navy and red palette.
+/* Covers share the landing's white, butter, charcoal, navy and red palette.
    The tokens keep these illustrations consistent in both page themes. */
 .vid__stage,.tut__thumb{container-type:inline-size}
 .vcover{--cover-bg:var(--paper);--cover-fg:var(--ink);--cover-accent:var(--hot);position:absolute;inset:0;isolation:isolate;overflow:hidden;padding:6%;background:var(--cover-bg);color:var(--cover-fg);font-family:var(--sans);text-align:left;transition:opacity .25s}
-.vcover--coral{--cover-bg:var(--accent);--cover-fg:var(--paper);--cover-accent:var(--hot)}
-.vcover--ink{--cover-bg:var(--ink);--cover-fg:var(--paper);--cover-accent:var(--hot)}
+.vcover--coral{--cover-bg:var(--accent);--cover-fg:var(--butter);--cover-accent:var(--hot)}
+.vcover--ink{--cover-bg:var(--ink);--cover-fg:var(--butter);--cover-accent:var(--hot)}
 .vcover::before{content:"";position:absolute;z-index:-1;inset:0;background-image:linear-gradient(color-mix(in srgb,var(--cover-fg) 7%,transparent) 1px,transparent 1px),linear-gradient(90deg,color-mix(in srgb,var(--cover-fg) 7%,transparent) 1px,transparent 1px);background-size:12.5% 22.22%;mask-image:linear-gradient(90deg,transparent 30%,#000)}
 .vcover::after{content:"";position:absolute;z-index:-1;width:46%;aspect-ratio:1;right:-9%;bottom:-36%;border:2.5cqw solid var(--hot);border-radius:50%}
 .vcover-brand{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:clamp(12px,2.8cqw,24px);font-weight:600;letter-spacing:-.045em;line-height:1}
@@ -36,8 +36,8 @@
 .vcover-key::before{content:"";position:absolute;width:6cqw;height:6cqw;border:1.2cqw solid currentColor;border-radius:50%;left:1cqw;top:0}
 .vcover-key::after{content:"";position:absolute;left:7cqw;right:2cqw;top:2.5cqw;height:1.2cqw;background:currentColor}
 .vcover-key>i{position:absolute;right:3cqw;top:3cqw;width:1.1cqw;height:2.6cqw;background:currentColor}
-.vcover-response{display:flex;justify-content:space-between;align-items:center;gap:1cqw;margin:3cqw 0 0 2cqw;padding:1.5cqw 2cqw;border-radius:1cqw;background:var(--ink);color:var(--paper);font-size:.85em;white-space:nowrap;transform:rotate(3deg)}
-.vcover-response>b{color:var(--paper)}
+.vcover-response{display:flex;justify-content:space-between;align-items:center;gap:1cqw;margin:3cqw 0 0 2cqw;padding:1.5cqw 2cqw;border-radius:1cqw;background:var(--ink);color:var(--butter);font-size:.85em;white-space:nowrap;transform:rotate(3deg)}
+.vcover-response>b{color:var(--butter)}
 .vcover-editor{transform:rotate(5deg)}
 .vcover-editor__body{display:grid;gap:2cqw;padding:2.5cqw}
 .vcover-editor__body>div{display:grid;gap:1cqw;padding:1.4cqw;border:1px solid color-mix(in srgb,var(--cover-fg) 20%,transparent);border-radius:.8cqw;font-size:.75em}
@@ -50,7 +50,7 @@
 .vcover-models__route{display:flex;justify-content:space-between;align-items:center;gap:1cqw;padding:1cqw 2cqw;font-size:.8em;letter-spacing:.06em}
 .vcover-models__route>b{font-size:2em;color:var(--hot)}
 .vcover-api{position:relative;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2cqw;border:1px solid color-mix(in srgb,var(--cover-fg) 28%,transparent);border-radius:2cqw;background:var(--cover-bg);transform:rotate(5deg)}
-.vcover-api__method{position:absolute;left:-2cqw;top:-1cqw;padding:1cqw 2cqw;border-radius:.6cqw;background:var(--hot);color:var(--paper);font-size:.85em;font-weight:600;letter-spacing:.07em}
+.vcover-api__method{position:absolute;left:-2cqw;top:-1cqw;padding:1cqw 2cqw;border-radius:.6cqw;background:var(--hot);color:var(--butter);font-size:.85em;font-weight:600;letter-spacing:.07em}
 .vcover-api .vcover-braces{font-size:12cqw}
 .vcover-api__response{display:flex;align-items:baseline;gap:1.3cqw;font-size:.8em}
 .vcover-api__response>b{font-size:1.8em;font-weight:500}
@@ -66,7 +66,7 @@
 .vcover-bars>i:nth-child(6){height:100%;background:var(--hot)}
 .vcover-billing__legend{display:flex;justify-content:space-between;padding:1.7cqw 2.5cqw;font-size:.75em;letter-spacing:.08em}
 .vcover-caption{position:absolute;left:6%;bottom:7%;display:flex;align-items:center;gap:1.8cqw;font-size:clamp(10px,2.5cqw,15px);line-height:1.2}
-.vcover-caption>i{display:grid;place-items:center;width:6cqw;height:6cqw;border:1px solid var(--hot);border-radius:50%;background:var(--hot);color:var(--paper)}
+.vcover-caption>i{display:grid;place-items:center;width:6cqw;height:6cqw;border:1px solid var(--hot);border-radius:50%;background:var(--hot);color:var(--butter)}
 .vcover-caption>i::after{content:"";border-left:1.5cqw solid currentColor;border-block:1cqw solid transparent;margin-left:.4cqw}
 .vcover--compact .vcover-subtitle{display:none}
 .vcover--compact .vcover-title{font-size:clamp(20px,7.4cqw,42px)}
@@ -75,7 +75,7 @@
 /* Keep cover copy clear of the existing demo controls. The terminal is revealed on play. */
 .vid__stage>.vcover{z-index:1}
 .vid__stage .vid__scrim{z-index:2;align-items:flex-end;justify-content:flex-start;padding:0 6% 6%;background:transparent;pointer-events:none}
-.vid__stage .vid__play{min-height:44px;padding:10px 20px;background:var(--hot);border-color:var(--hot);color:var(--paper);font-size:clamp(10px,1.65cqw,13px);letter-spacing:0;text-transform:none}
+.vid__stage .vid__play{min-height:44px;padding:10px 20px;background:var(--hot);border-color:var(--hot);color:var(--butter);font-size:clamp(10px,1.65cqw,13px);letter-spacing:0;text-transform:none}
 .vid__stage:hover .vid__play{background:var(--paper);border-color:var(--paper);color:var(--ink)}
 .vid__stage:focus-visible{outline:3px solid var(--hot);outline-offset:4px}
 .vid.playing .vcover{opacity:0;pointer-events:none}
@@ -87,7 +87,7 @@
 .vcover--coral .vcover-terminal code>b,
 .vcover--ink .vcover-terminal code>b,
 .vcover--coral .vcover-models__route>b,
-.vcover--ink .vcover-models__route>b{color:var(--paper)}
+.vcover--ink .vcover-models__route>b{color:var(--butter)}
 @media(max-width:520px){
   .vid__stage .vcover-subtitle{display:none}
   .vid__bar{gap:12px;padding:12px;font-size:9px;line-height:1.5}

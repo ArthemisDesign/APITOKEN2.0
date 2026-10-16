@@ -556,7 +556,7 @@
 .side{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
   --side-hover:rgba(46,46,46,.055);--side-icon:rgba(46,46,46,.045);
   --side-active:var(--blue);--side-active-text:var(--paper);--side-active-icon:rgba(250,240,172,.09);
-  background:var(--paper);
+  background:var(--bg);
   border-right:1px solid rgba(46,46,46,.1);padding:24px 18px;overflow:hidden;overscroll-behavior:contain}
 [data-theme="dark"] .side{
   --side-hover:rgba(250,240,172,.065);--side-icon:rgba(250,240,172,.055);

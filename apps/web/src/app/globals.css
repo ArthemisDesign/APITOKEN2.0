@@ -6,7 +6,7 @@
 @font-face{font-family:'TT Runs';font-style:normal;font-weight:800;font-display:swap;src:url('/landing/fonts/TTRuns-ExtraBold.woff2') format('woff2')}
 
 /* Butter palette shared by every customer route and the dashboard.
-   Light pages use butter paper; dark pages use charcoal. Navy anchors the
+   Light pages retain the original white paper; dark pages use charcoal. Navy anchors the
    brand and terminals, while red is reserved for actions and small signals. */
 :root{
   color-scheme:light;
@@ -17,20 +17,20 @@
   --ink-3:#454750;
   --blue:#304072;
   --blue-deep:#303E6A;
-  --g100:#D8D1A6;
-  --g200:#B8B393;
-  --g300:#8F8C76;
-  --g400:#666650;
-  --bg:var(--paper);
-  --bg-soft:var(--paper-2);
-  --bg-card:color-mix(in srgb,var(--paper) 94%,white);
-  --dash-bg:var(--paper);
+  --g100:#C9C8CA;
+  --g200:#A8A7AA;
+  --g300:#7E7C80;
+  --g400:#5E5C60;
+  --bg:#F4F3EF;
+  --bg-soft:#ECEBE6;
+  --bg-card:#FBFAF7;
+  --dash-bg:#FFFFFF;
   --line:rgba(46,46,46,.14);
   --line-strong:rgba(46,46,46,.26);
   --txt:var(--ink);
-  --txt-2:#414138;
-  --txt-3:#5B5C48;
-  --txt-4:#63634E;
+  --txt-2:#3A383E;
+  --txt-3:#5E5C60;
+  --txt-4:#68666A;
   --head:var(--blue);
   --accent:#C81D35;
   --accent-2:#AE192F;
@@ -39,8 +39,8 @@
   --accent-soft:rgba(200,29,53,.08);
   --accent-line:rgba(200,29,53,.35);
   --grid:rgba(48,64,114,.045);
-  --nav-bg:rgba(250,240,172,.9);
-  --menu-bg:var(--paper);
+  --nav-bg:rgba(244,243,239,.9);
+  --menu-bg:var(--bg);
   --cta-bg:var(--blue);
   --ok:#216747;
   --danger:#C81D35;
