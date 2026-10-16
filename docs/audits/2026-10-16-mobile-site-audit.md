@@ -32,6 +32,7 @@ Checks were interactive and targeted; this is not a claim that every URL was vis
 10. Long auth messages/email addresses and dynamic key-dialog names lacked safe wrapping. They now stay inside their cards.
 11. About, status and changelog used shared card classes without loading their stylesheet. Direct visits now load the existing responsive documentation styles.
 12. Reduced-motion CSS disabled tutorial text animations while leaving their initial opacity at zero. Text is now visible; static docs/B2B anchor scrolling also respects reduced motion. These branches were source-reviewed, not browser-emulated.
+13. A mobile inheritance rule made the discount caption dark on the navy hero in the light theme. The hero caption now uses opaque pure white in both themes.
 
 Static documentation copy controls also received a 40px touch target. The existing mobile palette checker was updated to expect the current navy/white/charcoal colors.
 

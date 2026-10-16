@@ -2778,3 +2778,4 @@ html.landing-home .hdr:not(.small){
   --paper:var(--white);
   --paper-rgb:var(--white-rgb);
 }
+.page-landing .hero .plate__claim .claim__lab{color:var(--paper);opacity:1}
