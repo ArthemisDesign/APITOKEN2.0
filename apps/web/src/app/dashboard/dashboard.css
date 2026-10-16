@@ -127,7 +127,7 @@
 .uchart-axis span{position:absolute;transform:translateX(-50%);white-space:nowrap}
 /* Всплывающая подсказка графиков — тёмная «пилюля» как в референсе */
 .chart-tip{position:absolute;transform:translate(-50%,-8px);z-index:6;pointer-events:none;
-  background:#1c1e26;color:#fff;border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:9px 11px;min-width:132px;
+  background:var(--blue-deep);color:var(--paper);border:1px solid rgba(250,240,172,.1);border-radius:9px;padding:9px 11px;min-width:132px;
   box-shadow:0 14px 34px -12px rgba(0,0,0,.55);font-family:var(--font-mono)}
 .chart-tip-contained{transform:none;visibility:hidden;width:max-content;min-width:0;max-width:calc(100% - 16px)}
 .chart-tip-contained .chart-tip-nm{white-space:normal;overflow-wrap:anywhere}
@@ -137,7 +137,7 @@
 .chart-tip-dot{width:8px;height:8px;border-radius:2px;flex:none}
 .chart-tip-nm{flex:1;white-space:nowrap;opacity:.92}
 .chart-tip-row>b{font-variant-numeric:tabular-nums;font-weight:700}
-.chart-tip-total{display:flex;justify-content:space-between;gap:14px;margin-top:7px;padding-top:7px;border-top:1px solid rgba(255,255,255,.16);font-size:11px;font-weight:700}
+.chart-tip-total{display:flex;justify-content:space-between;gap:14px;margin-top:7px;padding-top:7px;border-top:1px solid rgba(250,240,172,.16);font-size:11px;font-weight:700}
 .chart-tip-total>span{opacity:.75}
 .chart-tip-total>b{font-variant-numeric:tabular-nums}
 .usum{background:var(--bg-card);border:1px solid var(--line);border-radius:10px;padding:20px 22px;display:flex;flex-direction:column}
@@ -185,12 +185,12 @@
 .usage-analytics-card .uchart-col{border-radius:5px;transition:background .16s ease,transform .16s ease}
 .usage-analytics-card .uchart-col:hover,.usage-analytics-card .uchart-col.is-hover{background:color-mix(in srgb,var(--accent) 7%,transparent);transform:translateY(-2px)}
 .usage-analytics-card .uchart-col-fill{padding:0 2px}
-.usage-analytics-card .uchart-seg{min-height:2px;box-shadow:inset 0 1px rgba(255,255,255,.16)}
+.usage-analytics-card .uchart-seg{min-height:2px;box-shadow:inset 0 1px rgba(250,240,172,.16)}
 .usage-analytics-card .uchart-seg:first-child{border-radius:0 0 4px 4px}
 .usage-analytics-card .uchart-seg:last-child{border-radius:4px 4px 0 0}
 .usage-models-section .mdist-wrap{padding:5px;border:1px solid var(--line);border-radius:12px;background:var(--bg-soft)}
 .usage-models-section .mdist{height:16px;gap:3px;border-radius:8px;background:transparent}
-.usage-models-section .mdist-seg{border-radius:5px;box-shadow:inset 0 1px rgba(255,255,255,.18)}
+.usage-models-section .mdist-seg{border-radius:5px;box-shadow:inset 0 1px rgba(250,240,172,.18)}
 .usage-models-section .mdist-seg.is-hover{transform:scaleY(1.18)}
 .usage-models-section .mdist-legend>span{padding:5px 8px;border:1px solid var(--line);border-radius:7px;background:var(--bg-soft)}
 @media(max-width:520px){
@@ -203,8 +203,8 @@
 /* Deep ink "canvas" surface: one step below the card ink, used for the KPI
    strip and summary blocks so they read as one joined blue-ink band with
    hairline gaps on the white page. */
-.usage-dashboard{--usage-card-radius:20px;--dash-canvas:#ECEBE6}
-[data-theme="dark"] .usage-dashboard{--dash-canvas:#0C0B11}
+.usage-dashboard{--usage-card-radius:20px;--dash-canvas:var(--bg-soft)}
+[data-theme="dark"] .usage-dashboard{--dash-canvas:var(--ink)}
 .usage-dashboard>.page-heading h1{letter-spacing:-.055em}
 .usage-dashboard>.banner{border-radius:14px;padding:14px 18px}
 .usage-dashboard .usage-kpis{gap:12px;margin-bottom:30px}
@@ -323,8 +323,8 @@
 .keys-heading-row .page-heading{margin-bottom:0}
 .keys-create-button{flex:none}
 /* The section's primary action carries the accent, not another ink button. */
-.app .panel .keys-create-button.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.app .panel .keys-create-button.btn-primary:hover{background:var(--accent-2);border-color:var(--accent-2);color:#fff}
+.app .panel .keys-create-button.btn-primary{background:var(--accent);border-color:var(--accent);color:var(--paper)}
+.app .panel .keys-create-button.btn-primary:hover{background:var(--accent-2);border-color:var(--accent-2);color:var(--paper)}
 .keys-panel .key-issued-reveal{margin-bottom:28px}
 .keys-panel .key-issued-reveal>.btn{justify-self:end}
 .keys-manager{margin-top:0}
@@ -354,27 +354,27 @@
 .keys-filter-tab b{min-width:20px;height:20px;display:inline-grid;place-items:center;padding:0 6px;border-radius:99px;
   background:color-mix(in srgb,var(--txt-4) 10%,transparent);color:var(--txt-3);font-size:10px;font-weight:700;font-variant-numeric:tabular-nums}
 .keys-filter-tab.on b{background:var(--accent-soft);color:var(--accent-ink)}
-/* On the ink surfaces (both themes now) bg-card is DARKER than the bg-soft track,
+/* On dark surfaces bg-card is darker than the bg-soft track,
    so the "raised chip" look inverts and the active tab would disappear. Give the
    track a faint fill and lift the active tab up. */
-.keys-filter-tabs{background:rgba(255,255,255,.03);border-color:rgba(255,255,255,.10)}
-.keys-filter-tab{color:var(--txt-4)}
-.keys-filter-tab:hover{color:#fff;background:rgba(255,255,255,.05)}
-.keys-filter-tab.on{color:#fff;background:rgba(255,255,255,.10);
-  box-shadow:0 1px 2px rgba(0,0,0,.45),inset 0 0 0 1px rgba(255,255,255,.07)}
-.keys-filter-tab b{background:rgba(255,255,255,.08);color:rgba(255,255,255,.72)}
-.keys-filter-tab.on b{background:var(--accent-soft);color:var(--accent-ink)}
+[data-theme="dark"] .keys-filter-tabs{background:rgba(250,240,172,.03);border-color:rgba(250,240,172,.10)}
+[data-theme="dark"] .keys-filter-tab{color:var(--txt-4)}
+[data-theme="dark"] .keys-filter-tab:hover{color:var(--paper);background:rgba(250,240,172,.05)}
+[data-theme="dark"] .keys-filter-tab.on{color:var(--paper);background:rgba(250,240,172,.10);
+  box-shadow:0 1px 2px rgba(0,0,0,.45),inset 0 0 0 1px rgba(250,240,172,.07)}
+[data-theme="dark"] .keys-filter-tab b{background:rgba(250,240,172,.08);color:var(--paper)}
+[data-theme="dark"] .keys-filter-tab.on b{background:var(--accent-soft);color:var(--accent-ink)}
 /* Ink-surface contrast fixes. */
 /* Corner affordance marks on overview stat cards: bg-soft fill on a bg-card surface with an
    8%-alpha border was near-invisible on ink — lift fill, border, and glyph. */
-.overview-metric-mark{border-color:rgba(255,255,255,.20);background:rgba(255,255,255,.06);color:var(--txt-2)}
+.overview-metric-mark{border-color:rgba(250,240,172,.20);background:rgba(250,240,172,.06);color:var(--txt-2)}
 /* Native date-picker indicator follows color-scheme; the key dialogs are ink in
    both themes, so the calendar icon needs the dark scheme everywhere. */
-.key-modal input.set-in[type="date"]{color-scheme:dark}
+[data-theme="dark"] .key-modal input.set-in[type="date"]{color-scheme:dark}
 /* Disabled «Save changes» on the key-edit modal: bg-soft fill on bg-card with quiet text
    read as a hole in the dialog — give it a visible fill, border, and legible label. */
-.key-modal .btn.btn-primary[disabled]{background:rgba(255,255,255,.07);
-  border-color:rgba(255,255,255,.16);color:var(--txt-3)}
+.key-modal .btn.btn-primary[disabled]{background:rgba(250,240,172,.07);
+  border-color:rgba(250,240,172,.16);color:var(--txt-3)}
 .key-table-wrap{border:1px solid var(--line);border-radius:10px;background:var(--bg-card);box-shadow:var(--shadow)}
 .key-table{width:100%;border-collapse:collapse;table-layout:fixed;font-family:var(--font-mono);font-size:11px;color:var(--txt-3)}
 .key-table th{padding:11px 13px;text-align:left;background:var(--bg-soft);border-bottom:1px solid var(--line);
@@ -445,7 +445,7 @@
 .key-policy-reactivate{display:flex;align-items:flex-start;gap:8px;margin:12px 0 -8px;padding:10px 12px;border:1px solid rgba(217,119,6,.24);border-radius:8px;background:rgba(217,119,6,.07);color:color-mix(in srgb,#d97706 76%,var(--txt));font:10px/1.5 var(--font-mono)}
 .key-policy-reactivate span{flex:none;color:#8F5708}
 .key-modal .banner{margin-top:16px;font-size:11px}.key-modal-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:22px}.key-revoke-modal{width:min(470px,100%)}.key-revoke-modal>p{margin:20px 0 0;color:var(--txt-2);font-size:13px;line-height:1.6}.key-revoke-modal code{color:var(--accent-ink);font-size:11px}.danger-text{color:var(--danger)!important}
-.btn-danger{border-color:var(--danger);background:var(--danger);color:#fff}.btn-danger:hover{filter:brightness(1.06)}
+.btn-danger{border-color:var(--accent);background:var(--accent);color:var(--on-accent)}.btn-danger:hover{filter:brightness(1.06)}
 
 @media(max-width:1180px){
   .keys-toolbar{align-items:stretch;flex-direction:column}.keys-search{max-width:none}.keys-toolbar-right{justify-content:space-between}
@@ -492,7 +492,7 @@
 .seg{display:inline-flex;background:var(--bg-soft);border:1px solid var(--line);border-radius:999px;padding:3px}
 .seg button{background:transparent;border:0;cursor:pointer;font-family:var(--font-mono);font-size:12px;
   color:var(--txt-4);padding:5px 13px;border-radius:999px;transition:background-color .15s,color .15s;letter-spacing:.02em}
-.seg button.on{background:var(--accent);color:#fff}
+.seg button.on{background:var(--accent);color:var(--paper)}
 .chart-card{background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius);padding:22px}
 .chart-legend{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;font-family:var(--font-mono);font-size:12px;color:var(--txt-3)}
 .chart-legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:middle}
@@ -554,15 +554,15 @@
 /* The desktop navigation fits as one composition and follows the page scroll without an inner
    scroll track. The mobile drawer restores its own overflow below. */
 .side{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;
-  --side-hover:rgba(12,11,17,.055);--side-icon:rgba(12,11,17,.045);
-  --side-active:#18161D;--side-active-text:#F4F3EF;--side-active-icon:rgba(255,255,255,.09);
-  background:#F4F3EF;
-  border-right:1px solid rgba(12,11,17,.1);padding:24px 18px;overflow:hidden;overscroll-behavior:contain}
+  --side-hover:rgba(46,46,46,.055);--side-icon:rgba(46,46,46,.045);
+  --side-active:var(--blue);--side-active-text:var(--paper);--side-active-icon:rgba(250,240,172,.09);
+  background:var(--paper);
+  border-right:1px solid rgba(46,46,46,.1);padding:24px 18px;overflow:hidden;overscroll-behavior:contain}
 [data-theme="dark"] .side{
-  --side-hover:rgba(244,243,239,.065);--side-icon:rgba(244,243,239,.055);
-  --side-active:#F4F3EF;--side-active-text:#18161D;--side-active-icon:rgba(12,11,17,.08);
-  background:#18161D;
-  border-right-color:rgba(244,243,239,.1)}
+  --side-hover:rgba(250,240,172,.065);--side-icon:rgba(250,240,172,.055);
+  --side-active:var(--paper);--side-active-text:var(--ink-2);--side-active-icon:rgba(46,46,46,.08);
+  background:var(--bg-card);
+  border-right-color:rgba(250,240,172,.1)}
 /* Brand in the landing style: red square mark + tight wordmark on the sidebar surface. */
 .side-brand{display:inline-flex;align-items:center;gap:10px;margin:2px 10px 27px;
   font-family:var(--font-display);font-weight:700;font-size:18px;letter-spacing:-.04em;color:var(--txt)}
@@ -588,10 +588,9 @@
 .side-legal a:hover{color:var(--accent-ink)}
 .side-user{display:flex;align-items:center;gap:11px;padding:9px;border:1px solid var(--line);border-radius:11px;
   background:color-mix(in srgb,var(--bg-card) 58%,transparent)}
-/* white on the coral avatar is 3.10:1 — the ceiling for white on this coral;
-   ink on the same fill reads 6.32:1 */
+/* Butter labels retain AA contrast on the brand red avatar. */
 .side-av{width:36px;height:36px;border-radius:50%;flex:none;display:flex;align-items:center;
-  justify-content:center;background:var(--accent);color:var(--ink);font-weight:600;font-size:15px}
+  justify-content:center;background:var(--accent);color:var(--on-accent);font-weight:600;font-size:15px}
 .side-uinfo{display:flex;flex-direction:column;min-width:0}
 .side-uinfo b{font-family:var(--font-ui);font-size:13px;font-weight:650;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .side-uinfo span{font-family:var(--font-mono);font-size:11px;color:var(--txt-4);
@@ -602,9 +601,9 @@
 /* All dashboard sections share the overview surface: calm sans hierarchy, mono reserved for metadata. */
 .app-main{display:flex;flex-direction:column;min-width:0;
   --overview-radius:16px;
-  --overview-shadow:0 1px 2px rgba(12,11,17,.04),0 18px 46px -34px rgba(12,11,17,.28);
+  --overview-shadow:0 1px 2px rgba(46,46,46,.04),0 18px 46px -34px rgba(46,46,46,.28);
   /* Inner surfaces (tracks, wells, table headers, chips) read as lifted ink
-     in both themes — the .app token block keeps --bg-soft on #141218. */
+     in both themes — the .app token block keeps --bg-soft on var(--bg-soft). */
   background:
     radial-gradient(900px 460px at 38% -110px,color-mix(in srgb,var(--accent) 6%,transparent),transparent 72%),
     var(--dash-bg)}
@@ -667,10 +666,10 @@ body.app-body .bg-decor{display:none!important}
 .side-nav .side-link:hover{background:var(--side-hover);color:var(--txt);transform:translateX(2px)}
 .side-nav .side-link:hover .si{color:var(--accent-ink);transform:scale(1.04)}
 .side-nav .side-link.on{background:var(--side-active);border-color:transparent;color:var(--side-active-text);
-  box-shadow:0 8px 22px -16px rgba(12,11,17,.65)}
+  box-shadow:0 8px 22px -16px rgba(46,46,46,.65)}
 .side-nav .side-link.on::before{content:"";position:absolute;left:-3px;top:11px;bottom:11px;width:3px;
   border-radius:99px;background:var(--accent)}
-.side-nav .side-link.on .si{background:var(--side-active-icon);color:var(--accent);transform:none}
+.side-nav .side-link.on .si{background:var(--side-active-icon);color:var(--side-active-text);transform:none}
 [data-theme="dark"] .side-nav .side-link.on{box-shadow:0 10px 28px -18px rgba(0,0,0,.9)}
 .app-top-h{flex:1;display:flex;flex-direction:column;line-height:1.2;min-width:0}
 
@@ -704,10 +703,7 @@ body.app-body .bg-decor{display:none!important}
    dashboard baseline — see .app-main / .app-top / .app-body-in above. */
 
 .overview-panel{display:grid;gap:28px}
-/* Dashboard cards are liquid glass on the white canvas: translucent fill,
-   blur and a bright top edge instead of opaque grey surfaces. */
-/* Dashboard cards are ink surfaces in both themes (the .app token block maps
-   --bg-card to #18161D) — no white cards anywhere in the dashboard. */
+/* Cards inherit butter or raised charcoal surfaces from the shared theme. */
 .app .panel .card{border-color:color-mix(in srgb,var(--line) 88%,transparent);border-radius:var(--overview-radius);
   background:var(--bg-card);
   box-shadow:var(--overview-shadow)}
@@ -730,8 +726,9 @@ body.app-body .bg-decor{display:none!important}
   border:1px solid;border-radius:12px;background:var(--bg-card)}
 .overview-alert.warning{border-color:color-mix(in srgb,var(--warn) 42%,var(--line));background:color-mix(in srgb,var(--warn) 7%,var(--bg-card))}
 .overview-alert.danger{border-color:color-mix(in srgb,var(--danger) 42%,var(--line));background:color-mix(in srgb,var(--danger) 7%,var(--bg-card))}
-.overview-alert-icon{display:grid;place-items:center;width:32px;height:32px;border-radius:50%;font:700 13px var(--font-ui);color:#fff}
+.overview-alert-icon{display:grid;place-items:center;width:32px;height:32px;border-radius:50%;font:700 13px var(--font-ui);color:var(--paper)}
 .overview-alert.warning .overview-alert-icon{background:var(--warn)}
+[data-theme="dark"] .overview-alert-icon{color:var(--ink)}
 .overview-alert.danger .overview-alert-icon{background:var(--danger)}
 .overview-alert>div{display:flex;min-width:0;flex-direction:column;gap:2px}
 .overview-alert strong{font-size:13.5px;color:var(--txt)}
@@ -744,31 +741,30 @@ body.app-body .bg-decor{display:none!important}
 .overview-rate-chip{flex:none;padding:6px 10px;border:1px solid var(--accent-line);border-radius:99px;background:var(--accent-soft);
   font:650 10px/1.2 var(--font-mono);color:var(--accent-ink);white-space:nowrap}
 .overview-balance-card{position:relative;container-type:inline-size;display:flex;min-height:292px;flex-direction:column;padding:34px 36px;overflow:hidden}
-/* Balance hero card is the one fixed accent block of the dashboard: coral in
+/* Balance hero card is the one fixed accent block of the dashboard: red in
    both themes, matching the top-up receipt on the credits page. */
 .app .panel .card.overview-balance-card{
   background:linear-gradient(135deg,var(--accent) 0%,var(--accent-2) 100%);
-  color:#fff;border-color:transparent;box-shadow:0 18px 46px -30px color-mix(in srgb,var(--accent) 65%,transparent)}
-.overview-balance-card .overview-card-label{color:rgba(255,255,255,.8)}
-.overview-balance-card .overview-balance-number{color:#fff}
-.overview-balance-card .overview-balance-value{color:rgba(255,255,255,.85)}
-.overview-balance-card .overview-balance-value b{color:#fff}
+  color:var(--paper);border-color:transparent;box-shadow:0 18px 46px -30px color-mix(in srgb,var(--accent) 65%,transparent)}
+.overview-balance-card .overview-card-label{color:var(--paper)}
+.overview-balance-card .overview-balance-number{color:var(--paper)}
+.overview-balance-card .overview-balance-value{color:var(--paper)}
+.overview-balance-card .overview-balance-value b{color:var(--paper)}
 .app .panel .overview-balance-card .btn-primary{background:var(--ink);color:var(--paper);border-color:var(--ink);border-radius:99px}
 .app .panel .overview-balance-card .btn-primary:hover{background:var(--ink-2);border-color:var(--ink-2)}
-.app .panel .overview-balance-card .btn-ghost{background:transparent;color:#fff;border-color:rgba(255,255,255,.55);border-radius:99px}
-.app .panel .overview-balance-card .btn-ghost:hover{background:rgba(255,255,255,.14);border-color:#fff;color:#fff}
+.app .panel .overview-balance-card .btn-ghost{background:transparent;color:var(--paper);border-color:rgba(250,240,172,.55);border-radius:99px}
+.app .panel .overview-balance-card .btn-ghost:hover{background:rgba(250,240,172,.14);border-color:var(--paper);color:var(--paper)}
 .overview-balance-card::after{content:none}
 
-/* Dark theme: the balance hero card stops being a solid coral block and
-   becomes a quiet maroon panel with a coral outline, matching the receipt. */
+/* Dark theme uses the navy/butter pair for the balance card and receipt. */
 [data-theme="dark"] .app .panel .card.overview-balance-card{
-  background:#392226;color:#F3F2EE;border:1px solid #FF6A5A;box-shadow:none}
-[data-theme="dark"] .overview-balance-card .overview-card-label{color:rgba(243,242,238,.8)}
-[data-theme="dark"] .overview-balance-card .overview-balance-number{color:#F3F2EE}
-[data-theme="dark"] .overview-balance-card .overview-balance-value{color:rgba(243,242,238,.78)}
-[data-theme="dark"] .overview-balance-card .overview-balance-value b{color:#F3F2EE}
-[data-theme="dark"] .app .panel .overview-balance-card .btn-ghost{color:#F3F2EE;border-color:rgba(255,106,90,.55)}
-[data-theme="dark"] .app .panel .overview-balance-card .btn-ghost:hover{background:rgba(255,106,90,.14);border-color:#FF6A5A;color:#F3F2EE}
+  background:var(--blue-deep);color:var(--paper);border:1px solid var(--accent);box-shadow:none}
+[data-theme="dark"] .overview-balance-card .overview-card-label{color:var(--paper)}
+[data-theme="dark"] .overview-balance-card .overview-balance-number{color:var(--paper)}
+[data-theme="dark"] .overview-balance-card .overview-balance-value{color:var(--paper)}
+[data-theme="dark"] .overview-balance-card .overview-balance-value b{color:var(--paper)}
+[data-theme="dark"] .app .panel .overview-balance-card .btn-ghost{color:var(--paper);border-color:rgba(200,29,53,.55)}
+[data-theme="dark"] .app .panel .overview-balance-card .btn-ghost:hover{background:rgba(200,29,53,.14);border-color:var(--accent);color:var(--paper)}
 .overview-balance-card>*{position:relative;z-index:1}
 .overview-balance-main{display:flex;flex:1;min-width:0;flex-direction:column}
 .overview-balance-number{display:block;margin-top:24px;font-size:clamp(48px,5vw,64px);font-weight:710;line-height:.92;letter-spacing:-.065em;color:var(--txt);
@@ -1014,7 +1010,7 @@ body.app-body .bg-decor{display:none!important}
 .tgl{width:38px;height:22px;border-radius:99px;background:var(--bg-soft);border:1px solid var(--line);
   position:relative;flex:none;transition:background-color .18s,border-color .18s}
 .tgl::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
-  background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:transform .18s}
+  background:var(--paper);box-shadow:0 1px 2px rgba(0,0,0,.2);transition:transform .18s}
 .tgl.on{background:var(--accent);border-color:var(--accent)}
 .tgl.on::after{transform:translateX(16px)}
 
@@ -1055,7 +1051,7 @@ body.app-body .bg-decor{display:none!important}
 .session-agent{display:inline-block;max-width:62ch;margin:4px 0 0;overflow-wrap:anywhere}
 .disabled-chart{min-height:180px}
 .disabled-chart .empty-box{margin-top:24px}
-.legend-blue{background:#3767f0}
+.legend-blue{background:var(--blue)}
 .disabled-control{cursor:not-allowed;opacity:.68}
 .disabled-control .tgl{pointer-events:none}
 .card button:disabled,.card input:disabled,.card select:disabled{cursor:not-allowed}
@@ -1177,13 +1173,13 @@ body.app-body .bg-decor{display:none!important}
 .referral-roadmap-head h3{margin:0;color:var(--txt);font-size:17px}
 .referral-roadmap-head>div{display:flex;gap:12px;flex-wrap:wrap;color:var(--txt-3);font:600 10px/1.3 var(--font-mono)}
 .referral-roadmap-head span{display:inline-flex;align-items:center;gap:5px}.referral-roadmap-head i{width:9px;height:9px;border-radius:2px}
-.referral-payout-roadmap .accrue{background:#3767f0}.referral-payout-roadmap .lock{background:#d59c2e}.referral-payout-roadmap .pay{background:#26a15e}
+.referral-payout-roadmap .accrue{background:var(--blue)}.referral-payout-roadmap .lock{background:#d59c2e}.referral-payout-roadmap .pay{background:#26a15e}
 .referral-roadmap-chart{position:relative;padding-top:4px}
 .referral-roadmap-lane{position:relative;margin-bottom:16px}
 .referral-roadmap-label{display:flex;justify-content:space-between;gap:12px;margin-bottom:6px;font-size:11px}.referral-roadmap-label>span{color:var(--txt-3);font-family:var(--font-mono)}
 .referral-roadmap-track{position:relative;height:27px;border-radius:5px;background:var(--bg-soft);overflow:hidden}
-.referral-roadmap-track>i{position:absolute;top:0;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;color:#fff;font:700 9px/1 var(--font-mono);font-style:normal;white-space:nowrap}.referral-roadmap-track>i>span{padding:0 5px}
-.referral-now-line{position:absolute;top:0;bottom:20px;z-index:4;width:2px;background:var(--warn);pointer-events:none}.referral-now-line>span{position:absolute;top:-17px;left:50%;transform:translateX(-50%);padding:2px 5px;border-radius:4px;background:var(--warn);color:#fff;font:700 9px/1 var(--font-mono);white-space:nowrap}
+.referral-roadmap-track>i{position:absolute;top:0;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;color:var(--paper);font:700 9px/1 var(--font-mono);font-style:normal;white-space:nowrap}.referral-roadmap-track>i>span{padding:0 5px}
+.referral-now-line{position:absolute;top:0;bottom:20px;z-index:4;width:2px;background:var(--warn);pointer-events:none}.referral-now-line>span{position:absolute;top:-17px;left:50%;transform:translateX(-50%);padding:2px 5px;border-radius:4px;background:var(--warn);color:var(--bg);font:700 9px/1 var(--font-mono);white-space:nowrap}
 .referral-roadmap-axis{display:flex;justify-content:space-between;color:var(--txt-4);font:500 10px/1.3 var(--font-mono)}
 .referral-payout-stats{margin-top:24px}
 .referral-wallet-card{margin-top:20px}
@@ -1711,7 +1707,7 @@ body.app-body .bg-decor{display:none!important}
 .uprovider-discount,
 .uprovider-guide,
 .referral-provider-icon,
-.referral-provider-terms>label>i{color:color-mix(in srgb,var(--provider-color) 68%,#0C0B11)}
+.referral-provider-terms>label>i{color:color-mix(in srgb,var(--provider-color) 68%,var(--ink))}
 /* On ink most brand colours already pass, but the Kimi magenta reads 3.16:1 on
    the tinted card. Mixing 28% paper in lifts every provider above 4.9:1 and
    leaves the hue recognisable. */
@@ -1719,7 +1715,7 @@ body.app-body .bg-decor{display:none!important}
 [data-theme="dark"] .uprovider-discount,
 [data-theme="dark"] .uprovider-guide,
 [data-theme="dark"] .referral-provider-icon,
-[data-theme="dark"] .referral-provider-terms>label>i{color:color-mix(in srgb,var(--provider-color) 72%,#F4F3EF)}
+[data-theme="dark"] .referral-provider-terms>label>i{color:color-mix(in srgb,var(--provider-color) 45%,var(--paper))}
 
 /* The amber status text reads 3.05:1 on the card surface; #8F5708 gives 5.69:1
    on light. The dark theme keeps the brighter amber, which is legible on ink. */
@@ -1855,3 +1851,6 @@ body.app-body .bg-decor{display:none!important}
   .app .panel .support-step-top{margin-bottom:12px}
   .app .panel .support-note{align-items:flex-start}
 }
+
+/* Dark labels keep readable contrast on the lighter payout status fills. */
+.referral-payout-roadmap .lock,.referral-payout-roadmap .pay{color:var(--ink)}

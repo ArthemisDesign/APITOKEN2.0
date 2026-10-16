@@ -20,16 +20,16 @@
 .docs-header-actions{display:flex;align-items:center;gap:10px}
 .docs-layout{display:grid;grid-template-columns:264px minmax(0,1fr);max-width:none;margin:0}
 .docs-sidebar{position:sticky;top:60px;align-self:start;height:calc(100vh - 60px);padding:28px 18px;
-  --side-hover:rgba(12,11,17,.055);--side-active:#18161D;--side-active-text:#F4F3EF;
-  border-right:1px solid rgba(12,11,17,.1);overflow:visible;background:linear-gradient(180deg,#FBFAF7 0%,#F4F3EF 100%)}
-[data-theme="dark"] .docs-sidebar{--side-hover:rgba(244,243,239,.065);--side-active:#F4F3EF;--side-active-text:#18161D;
-  border-right-color:rgba(244,243,239,.1);background:linear-gradient(180deg,#18161D 0%,#100F14 100%)}
+  --side-hover:rgba(46,46,46,.055);--side-active:var(--blue);--side-active-text:var(--paper);
+  border-right:1px solid rgba(46,46,46,.1);overflow:visible;background:var(--bg-card)}
+[data-theme="dark"] .docs-sidebar{--side-hover:rgba(250,240,172,.065);--side-active:var(--paper);--side-active-text:var(--ink-2);
+  border-right-color:rgba(250,240,172,.1);background:var(--bg-card)}
 .docs-sidebar>span{display:flex;align-items:center;gap:9px;margin:0;padding:8px 10px 10px;font-family:var(--font-mono);font-size:9px;font-weight:600;letter-spacing:.145em;text-transform:uppercase;color:var(--txt-4)}
 .docs-sidebar>span::after{content:"";height:1px;flex:1;background:var(--line)}
 .docs-sidebar nav{display:flex;flex-direction:column;gap:3px}
 .docs-sidebar a{position:relative;padding:11px 12px;border:1px solid transparent;border-radius:11px;font-family:var(--font-ui);font-size:14px;font-weight:550;line-height:1.4;letter-spacing:-.01em;color:var(--txt-3);transition:color .16s ease,background-color .16s ease,transform .16s ease}
 .docs-sidebar a:hover{background:var(--side-hover);color:var(--txt);transform:translateX(2px)}
-.docs-sidebar a.active{color:var(--side-active-text);background:var(--side-active);font-weight:600;box-shadow:0 8px 22px -16px rgba(12,11,17,.65)}
+.docs-sidebar a.active{color:var(--side-active-text);background:var(--side-active);font-weight:600;box-shadow:0 8px 22px -16px rgba(46,46,46,.65)}
 .docs-sidebar a.active::before{content:"";position:absolute;left:-3px;top:11px;bottom:11px;width:3px;border-radius:99px;background:var(--accent)}
 
 /* Match the landing's TT Runs hierarchy without synthetic heavy weights. */
@@ -62,7 +62,7 @@
 .docs-support-section{margin-bottom:56px!important}
 .docs-connect-support{display:grid;grid-template-columns:44px minmax(250px,1fr) auto;gap:16px 18px;align-items:center;padding:21px 24px;border:1px solid var(--line);border-radius:18px;font-family:var(--font-ui);
   background:var(--bg-card);box-shadow:var(--shadow)}
-.docs-support-icon{display:grid;place-items:center;width:44px;height:44px;border-radius:13px;background:var(--accent);color:#fff}
+.docs-support-icon{display:grid;place-items:center;width:44px;height:44px;border-radius:13px;background:var(--accent);color:var(--paper)}
 .docs-support-copy h2{margin:0 0 4px;font-family:var(--font-display);font-size:22px;font-weight:600;line-height:1.12;letter-spacing:-.02em}
 .docs-support-copy p{margin:0;color:var(--txt-2);font-size:14px;line-height:1.4}
 .docs-support-actions{display:grid;grid-template-columns:max-content;gap:7px 9px;justify-items:end}
@@ -177,7 +177,7 @@
 .ib-code .tk-c{color:var(--term-comment)}
 .ib-code .tk-s{color:var(--term-green)}
 .ib-code .tk-k{color:var(--term-key)}
-.ib-code .tk-v{color:var(--warn)}
+.ib-code .tk-v{color:var(--term-white)}
 .ib-guide-foot{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:18px;padding:14px 18px;border:1px solid var(--accent-line);border-radius:12px;background:var(--accent-soft)}
 .ib-guide-foot>span,.ib-guide-foot>a{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:550;line-height:1.45}
 .ib-guide-foot>span{min-width:0;color:var(--txt-2)}

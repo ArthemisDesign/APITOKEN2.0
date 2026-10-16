@@ -21,7 +21,7 @@
 .app .rp .rp-stat:nth-child(2){background:var(--txt)}
 .app .rp .rp-stat:nth-child(2) :is(.rp-stat-l,.rp-stat-v,.rp-stat-f){color:var(--bg)}
 /* Dark theme: the inverted accent stat stops being a near-white block on the
-   dark canvas and becomes the same translucent coral panel as the other
+   dark canvas and becomes the same translucent butter panel as the other
    accent surfaces. */
 [data-theme="dark"] .app .rp .rp-stat:nth-child(2){background:var(--accent-soft);border:1px solid var(--accent-line)}
 [data-theme="dark"] .app .rp .rp-stat:nth-child(2) :is(.rp-stat-l,.rp-stat-f){color:var(--txt-3)}
@@ -30,7 +30,7 @@
 /* Navigation keeps all five workflows visible, with comfortable touch targets. */
 .app .rp .referral-subnav{padding:5px;gap:4px;margin:0 0 28px;border:0;border-radius:16px;background:var(--bg-card)}
 .app .rp .referral-subnav button{min-height:42px;padding:10px 18px;border-radius:12px;font:500 13px/1.4 var(--font-ui)}
-.app .rp .referral-subnav button.on{background:var(--accent);color:#0c0b11}
+.app .rp .referral-subnav button.on{background:var(--accent);color:var(--on-accent)}
 
 /* Provider tiles use the same geometry and type hierarchy as Usage. */
 .app .rp .uprovider-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}

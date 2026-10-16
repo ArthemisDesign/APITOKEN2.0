@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -20,8 +19,7 @@ function localizeHref(language: string, href: string): string {
 export function Brand() {
   const { language } = useI18n();
   return <Link className="brand" href={landingHref(language)} aria-label="apiToken.sale home">
-    <Image className="brand-mark bm-light" src="/assets/logo-mark-light.png" width={24} height={24} alt="" />
-    <Image className="brand-mark bm-dark" src="/assets/logo-mark-dark.png" width={24} height={24} alt="" />
+    <span className="brand-mark" aria-hidden="true" />
     <span className="brand-name">apiToken.sale</span>
   </Link>;
 }

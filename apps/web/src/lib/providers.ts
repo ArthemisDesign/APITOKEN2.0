@@ -76,10 +76,10 @@ export const DASHBOARD_PROVIDERS: DashboardProvider[] = [
   },
 ];
 
-/** Shared palette visible on both light and dark neutral chart surfaces. */
-export const DASHBOARD_CHART_COLORS = ["#c46848", "#168568", "#487cce", "#ae478b"] as const;
+/** Muted site-palette series remain visible on butter and charcoal chart surfaces. */
+export const DASHBOARD_CHART_COLORS = ["#c86176", "#7186b5", "#988352", "#9f78a7", "#668c94", "#aa7b62"] as const;
 
 /** Авто-карточка для провайдера, которого нет в реестре (например, «other»). */
 export function fallbackProvider(id: string, name: string): DashboardProvider {
-  return { id, name, api: "API provider", color: "#6f7a8a" };
+  return { id, name, api: "API provider", color: "#878682" };
 }

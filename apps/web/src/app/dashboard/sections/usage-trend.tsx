@@ -4,7 +4,7 @@ import { useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { UsageView } from "@/lib/api";
 import { useI18n } from "@/components/i18n-provider";
 import { buildUtcProviderUsageSeries, usageWindowDays } from "@/lib/usage-series";
-import { DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
+import { DASHBOARD_CHART_COLORS, DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
 import { formatNanoUsd, roundDivide, useDashboardCopy } from "./shared";
 import { usageChartGeometry } from "./usage-chart-data";
 import "./usage-charts.css";
@@ -13,7 +13,7 @@ const labels = {
   en: { title: "Daily spending", subtitle: "List-price value by provider", window: "Last 30 days", detail: "Day details", hint: "Hover or tap to explore · ← → to change day", models: "Spending by model", unattributed: "Unattributed" },
   ru: { title: "Расходы по дням", subtitle: "Стоимость по официальному тарифу в разрезе провайдеров", window: "Последние 30 дней", detail: "Детали за день", hint: "Наведите или нажмите · ← → для выбора дня", models: "Расходы по моделям", unattributed: "Без провайдера" },
 };
-const USAGE_PROVIDER_COLORS = ["#ef4444", "#172554", "#dc2626", "#1e3a8a"] as const;
+const USAGE_PROVIDER_COLORS = DASHBOARD_CHART_COLORS;
 
 export function UsageTrend({ usage }: { usage: UsageView }) {
   const copy = useDashboardCopy();

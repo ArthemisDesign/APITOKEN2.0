@@ -12,7 +12,7 @@ import {
   type ReferralSnapshot,
   type ReferralTeamMember,
 } from "@/lib/api";
-import { DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
+import { DASHBOARD_CHART_COLORS, DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
 import { CopyButton, formatNanoUsd, interpolate, PageHeading } from "./shared";
 import { usageChartGeometry } from "./usage-chart-data";
 import "./usage-charts.css";
@@ -25,7 +25,7 @@ const TABS = ["overview", "referrals", "team", "payouts", "docs"] as const;
 type ReferralTab = typeof TABS[number];
 type Language = "en" | "ru";
 // Earnings chart shares the Usage trend palette.
-const USAGE_PROVIDER_COLORS = ["#ef4444", "#172554", "#dc2626", "#1e3a8a"] as const;
+const USAGE_PROVIDER_COLORS = DASHBOARD_CHART_COLORS;
 
 const copy = {
   en: {

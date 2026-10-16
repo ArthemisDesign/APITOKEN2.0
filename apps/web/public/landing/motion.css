@@ -30,8 +30,8 @@ html:not(.mo-ready) .claim__val{opacity:0}
   max-width:var(--maxw);margin:0 auto;padding:0 var(--margin);
   display:grid;grid-template-columns:repeat(var(--cols),1fr);gap:var(--gutter);
 }
-.mo-grid i{display:block;height:100%;border-left:1px solid rgba(128,128,128,.2)}
-.mo-grid i:last-child{border-right:1px solid rgba(128,128,128,.2)}
+.mo-grid i{display:block;height:100%;border-left:1px solid var(--line)}
+.mo-grid i:last-child{border-right:1px solid var(--line)}
 
 /* ---------------------------------------------------------
    3 · VERTICAL SECTION MARKER
@@ -43,7 +43,7 @@ html:not(.mo-ready) .claim__val{opacity:0}
   font-family:var(--mono);font-size:10px;letter-spacing:.22em;
   text-transform:uppercase;color:var(--muted);opacity:.65;
 }
-.mo-vlabel b{color:var(--accent);font-weight:400}
+.mo-vlabel b{color:var(--accent-ink);font-weight:400}
 @media (max-width:1500px){.mo-vlabel{display:none}}
 
 .mo-rot{
@@ -63,12 +63,12 @@ html:not(.mo-ready) .claim__val{opacity:0}
 .btn:hover .sw i:last-child,
 .nav a:hover .sw i:last-child,
 .lnk--arrow:hover .sw i:last-child{transform:translateY(0)}
-.nav a .sw i:last-child{color:var(--accent)}
-/* on the coral hero plate the swap-in line must not be coral-on-coral */
-.hdr:not(.small) .nav a .sw i:last-child{color:#F4F5FA}
-[data-theme="dark"] .hdr:not(.small) .nav a .sw i:last-child{color:var(--ink)}
-/* docs pages have no coral plate — keep the accent swap there */
-.page-docs .hdr:not(.small) .nav a .sw i:last-child{color:var(--accent)}
+.nav a .sw i:last-child{color:var(--accent-ink)}
+/* The hover label stays butter on the navy hero in both themes. */
+.hdr:not(.small) .nav a .sw i:last-child{color:var(--paper)}
+[data-theme="dark"] .hdr:not(.small) .nav a .sw i:last-child{color:var(--paper)}
+/* Docs pages use the page's text accent. */
+.page-docs .hdr:not(.small) .nav a .sw i:last-child{color:var(--accent-ink)}
 
 /* ---------------------------------------------------------
    5 · (removed) schematic corner ticks
@@ -89,8 +89,7 @@ html:not(.mo-ready) .claim__val{opacity:0}
   font-size:clamp(26px,3.4vw,58px);font-weight:600;letter-spacing:-.04em;
   color:var(--g300);display:inline-flex;align-items:center;gap:52px;
 }
-/* g300 is the readable step on paper (3.72:1 against 2.16:1 for g200); on the
-   ink page g200 is already 8.19:1 and stays. */
+/* Use the darker neutral on butter and the lighter neutral on charcoal. */
 [data-theme="dark"] .mo-marquee__row span{color:var(--g200)}
 .mo-marquee__row span::after{
   content:"";width:9px;height:9px;background:var(--accent);flex:none;

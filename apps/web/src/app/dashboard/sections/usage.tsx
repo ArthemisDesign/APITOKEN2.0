@@ -12,7 +12,7 @@ import type {
 import { useI18n } from "@/components/i18n-provider";
 import type { DashboardCopy } from "@/lib/dashboard-copy";
 import { modelLabel } from "@/lib/model-label";
-import { DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
+import { DASHBOARD_CHART_COLORS, DASHBOARD_PROVIDERS, fallbackProvider } from "@/lib/providers";
 import {
   PageHeading, Stat,
   compareBigInt, formatNanoUsd, interpolate, localDashboardCopy, useDashboardCopy,
@@ -299,7 +299,7 @@ function formatBilledEventCount(count: number, locale: string, copy: DashboardCo
   const template = plural === "one" ? copy.billedEventOne : plural === "few" ? copy.billedEventsFew : copy.apiRequestsN;
   return interpolate(template, { n: count });
 }
-const MODEL_COLORS = ["#168578", "#638aca", "#9b79ba", "#b79450", "#6698a2", "#929aab"] as const;
+const MODEL_COLORS = DASHBOARD_CHART_COLORS;
 function fmtTokens(n: number, locale: string): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toLocaleString(locale, { maximumFractionDigits: 2 })}M`;
   if (n >= 1_000) return `${(n / 1_000).toLocaleString(locale, { maximumFractionDigits: 1 })}K`;
