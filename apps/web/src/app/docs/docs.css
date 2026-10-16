@@ -22,8 +22,8 @@
 .docs-sidebar{position:sticky;top:60px;align-self:start;height:calc(100vh - 60px);padding:28px 18px;
   --side-hover:rgba(46,46,46,.055);--side-active:var(--blue);--side-active-text:var(--paper);
   border-right:1px solid rgba(46,46,46,.1);overflow:visible;background:var(--bg-card)}
-[data-theme="dark"] .docs-sidebar{--side-hover:rgba(250,240,172,.065);--side-active:var(--paper);--side-active-text:var(--ink-2);
-  border-right-color:rgba(250,240,172,.1);background:var(--bg-card)}
+[data-theme="dark"] .docs-sidebar{--side-hover:rgba(255,255,255,.065);--side-active:var(--paper);--side-active-text:var(--ink-2);
+  border-right-color:rgba(255,255,255,.1);background:var(--bg-card)}
 .docs-sidebar>span{display:flex;align-items:center;gap:9px;margin:0;padding:8px 10px 10px;font-family:var(--font-mono);font-size:9px;font-weight:600;letter-spacing:.145em;text-transform:uppercase;color:var(--txt-4)}
 .docs-sidebar>span::after{content:"";height:1px;flex:1;background:var(--line)}
 .docs-sidebar nav{display:flex;flex-direction:column;gap:3px}

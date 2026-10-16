@@ -54,7 +54,7 @@
 .usage-trend-detail .trend-detail-primary{flex-direction:column;gap:3px;margin-bottom:5px}
 .usage-trend-detail .trend-detail-primary dt{display:flex;align-items:center;gap:6px;color:var(--paper)}
 .usage-trend-detail .trend-detail-primary dd{font:600 26px/1.3 var(--font-ui);letter-spacing:-.03em;color:var(--paper);text-align:left}
-.trend-detail-providers{display:grid;gap:9px;border-top:1px solid rgba(250,240,172,.32);padding-top:14px;margin-top:16px;font-size:11px}
+.trend-detail-providers{display:grid;gap:9px;border-top:1px solid rgba(255,255,255,.32);padding-top:14px;margin-top:16px;font-size:11px}
 .trend-detail-providers>span{color:var(--paper);font-size:10px}
 .trend-detail-providers>div{display:flex;justify-content:space-between;gap:10px;min-width:0}
 .trend-detail-providers b{font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:var(--paper)}
@@ -122,4 +122,4 @@
 .usage-trend-plot .trend-provider-area{opacity:.09}
 [data-theme="dark"] .usage-trend-plot .trend-provider-area{opacity:.3}
 .trend-detail-providers div>span{display:flex;align-items:center;gap:6px}
-.trend-detail-providers i{width:6px;height:6px;flex:none;border-radius:50%;box-shadow:0 0 0 1.5px rgba(250,240,172,.55)}
+.trend-detail-providers i{width:6px;height:6px;flex:none;border-radius:50%;box-shadow:0 0 0 1.5px rgba(255,255,255,.55)}

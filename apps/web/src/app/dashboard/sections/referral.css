@@ -21,7 +21,7 @@
 .app .rp .rp-stat:nth-child(2){background:var(--txt)}
 .app .rp .rp-stat:nth-child(2) :is(.rp-stat-l,.rp-stat-v,.rp-stat-f){color:var(--bg)}
 /* Dark theme: the inverted accent stat stops being a near-white block on the
-   dark canvas and becomes the same translucent butter panel as the other
+   dark canvas and becomes the same translucent white panel as the other
    accent surfaces. */
 [data-theme="dark"] .app .rp .rp-stat:nth-child(2){background:var(--accent-soft);border:1px solid var(--accent-line)}
 [data-theme="dark"] .app .rp .rp-stat:nth-child(2) :is(.rp-stat-l,.rp-stat-f){color:var(--txt-3)}

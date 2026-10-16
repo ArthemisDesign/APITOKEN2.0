@@ -64,7 +64,7 @@ html:not(.mo-ready) .claim__val{opacity:0}
 .nav a:hover .sw i:last-child,
 .lnk--arrow:hover .sw i:last-child{transform:translateY(0)}
 .nav a .sw i:last-child{color:var(--accent-ink)}
-/* The hover label stays butter on the navy hero in both themes. */
+/* The hover label stays white on the navy hero in both themes. */
 .hdr:not(.small) .nav a .sw i:last-child{color:var(--paper)}
 [data-theme="dark"] .hdr:not(.small) .nav a .sw i:last-child{color:var(--paper)}
 /* Docs pages use the page's text accent. */
@@ -89,7 +89,7 @@ html:not(.mo-ready) .claim__val{opacity:0}
   font-size:clamp(26px,3.4vw,58px);font-weight:600;letter-spacing:-.04em;
   color:var(--g300);display:inline-flex;align-items:center;gap:52px;
 }
-/* Use the darker neutral on butter and the lighter neutral on charcoal. */
+/* Use the darker neutral on white and the lighter neutral on charcoal. */
 [data-theme="dark"] .mo-marquee__row span{color:var(--g200)}
 .mo-marquee__row span::after{
   content:"";width:9px;height:9px;background:var(--accent);flex:none;

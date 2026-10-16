@@ -5,12 +5,12 @@
 @font-face{font-family:'TT Runs';font-style:normal;font-weight:700;font-display:swap;src:url('/landing/fonts/TTRuns-Bold.woff2') format('woff2')}
 @font-face{font-family:'TT Runs';font-style:normal;font-weight:800;font-display:swap;src:url('/landing/fonts/TTRuns-ExtraBold.woff2') format('woff2')}
 
-/* Butter palette shared by every customer route and the dashboard.
+/* Navy, red and white palette shared by every customer route and the dashboard.
    Light pages use pure white surfaces; dark pages use charcoal. Navy anchors the
    brand and terminals, while red is reserved for actions and small signals. */
 :root{
   color-scheme:light;
-  --paper:#FAF0AC;
+  --paper:#FFFFFF;
   --paper-2:#FFFFFF;
   --ink:#2E2E2E;
   --ink-2:#393A3C;
@@ -48,9 +48,9 @@
   --shadow:0 1px 2px rgba(46,46,46,.04),0 8px 30px rgba(46,46,46,.06);
   --term-bg:var(--blue-deep);
   --term-bar:var(--blue);
-  --term-line:rgba(250,240,172,.18);
+  --term-line:rgba(255,255,255,.18);
   --term-text:var(--paper);
-  --term-comment:#CBC8AB;
+  --term-comment:#C9C9C9;
   --term-key:#FFA4AF;
   --term-green:#BACC9C;
   --term-white:var(--paper);
@@ -73,18 +73,18 @@
   --bg-soft:#33353D;
   --bg-card:#393D4C;
   --dash-bg:var(--ink);
-  --line:rgba(250,240,172,.16);
-  --line-strong:rgba(250,240,172,.3);
+  --line:rgba(255,255,255,.16);
+  --line-strong:rgba(255,255,255,.3);
   --txt:var(--paper);
-  --txt-2:#E5DEB0;
-  --txt-3:#C9C6AC;
-  --txt-4:#B9B8A5;
+  --txt-2:#E5E5E5;
+  --txt-3:#C9C9C9;
+  --txt-4:#B9B9B9;
   --head:var(--paper);
-  /* Butter text stays legible on charcoal and tinted panels. Red remains a fill. */
+  /* White text stays legible on charcoal and tinted panels. Red remains a fill. */
   --accent-ink:var(--paper);
-  --accent-soft:rgba(250,240,172,.08);
-  --accent-line:rgba(250,240,172,.3);
-  --grid:rgba(250,240,172,.035);
+  --accent-soft:rgba(255,255,255,.08);
+  --accent-line:rgba(255,255,255,.3);
+  --grid:rgba(255,255,255,.035);
   --nav-bg:rgba(46,46,46,.9);
   --menu-bg:var(--ink);
   --cta-bg:var(--blue-deep);
@@ -165,9 +165,9 @@ p{margin:0 0 16px}
 
 /* ---- dark editorial surfaces (footer, CTA band) ---- */
 .sec--dark{background:var(--ink);color:var(--paper);
-  --txt:var(--paper);--txt-2:#E5DEB0;--txt-3:#C9C6AC;--txt-4:#B9B8A5;
+  --txt:var(--paper);--txt-2:#E5E5E5;--txt-3:#C9C9C9;--txt-4:#B9B9B9;
   --accent-ink:var(--paper);
-  --line:rgba(250,240,172,.14);--line-strong:rgba(250,240,172,.24);
+  --line:rgba(255,255,255,.14);--line-strong:rgba(255,255,255,.24);
   --accent-line:rgba(200,29,53,.5)}
 .sec--dark .btn:hover{border-color:var(--paper);background:transparent}
 .sec--dark .btn-primary{background:var(--paper);border-color:var(--paper);color:var(--ink)}
@@ -450,17 +450,17 @@ footer{padding:64px 0 40px;border-bottom:0}
    Отдельный класс .site-foot-full → легко откатить. */
 .site-foot-full{position:relative;overflow:hidden;padding:0;
   background:var(--ink-2);color:var(--paper);border-top:0;
-  --line:rgba(250,240,172,.14);--line-strong:rgba(250,240,172,.24)}
+  --line:rgba(255,255,255,.14);--line-strong:rgba(255,255,255,.24)}
 .site-foot-full .foot-inner{position:relative;z-index:2;padding:clamp(64px,7vw,110px) 0 32px}
 .site-foot-full .foot-brand .brand{color:var(--paper)}
 .site-foot-full .foot-brand p{color:var(--txt-3);font-size:14px}
 .site-foot-full .foot-col h4{font-family:var(--font-ui);font-size:13px;font-weight:600;letter-spacing:-.01em;text-transform:none;color:var(--paper)}
 .site-foot-full .foot-col a,.site-foot-full .foot-col>span{color:var(--txt-3);font-size:14px}
 .site-foot-full .foot-col a:hover{color:var(--paper)}
-.site-foot-full .foot-bottom{border-top-color:rgba(250,240,172,.14)}
+.site-foot-full .foot-bottom{border-top-color:rgba(255,255,255,.14)}
 /* the site footer is an ink panel in both themes, so the light-theme quiet tone
    reads only 3.16:1 there — it needs the dark-surface tone */
-.site-foot-full{--txt-2:#E5DEB0;--txt-3:#C9C6AC;--txt-4:#B9B8A5}
+.site-foot-full{--txt-2:#E5E5E5;--txt-3:#C9C9C9;--txt-4:#B9B9B9}
 .site-foot-full .foot-bottom small{color:var(--txt-4);font-size:13px}
 .site-foot-full .foot-legal{color:var(--txt-4);font-size:13px}
 .site-foot-full .foot-legal a{color:var(--txt-3)}
@@ -1089,9 +1089,9 @@ a.step:hover .step-cta::after{margin-left:4px}
   background:linear-gradient(180deg,var(--accent) 0%,var(--accent-2) 100%);color:var(--paper)}
 .credits-receipt-head{display:flex;align-items:center;justify-content:space-between;gap:10px;
   font:650 10px/1.3 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--paper);
-  padding-bottom:16px;border-bottom:1px dashed rgba(250,240,172,.4)}
+  padding-bottom:16px;border-bottom:1px dashed rgba(255,255,255,.4)}
 .credits-receipt-lines{display:grid;margin:0;padding:6px 0 14px}
-.credits-receipt-lines>div{display:flex;align-items:baseline;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px dashed rgba(250,240,172,.28)}
+.credits-receipt-lines>div{display:flex;align-items:baseline;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px dashed rgba(255,255,255,.28)}
 .credits-receipt-lines dt{font:500 12px/1.4 var(--font-ui);color:var(--paper)}
 .credits-receipt-lines dd{margin:0;font:680 13.5px/1.3 var(--font-ui);color:var(--paper);font-variant-numeric:tabular-nums;white-space:nowrap}
 .credits-receipt-lines dd.is-negative{color:var(--paper)}
@@ -1100,7 +1100,7 @@ a.step:hover .step-cta::after{margin-left:4px}
 .credits-receipt-total strong{font-family:var(--font-ui);font-size:clamp(38px,4vw,48px);font-weight:760;line-height:1;letter-spacing:-.04em;color:var(--paper);font-variant-numeric:tabular-nums lining-nums}
 .credits-receipt-total small{font-size:11.5px;line-height:1.45;color:var(--paper)}
 /* .topup-simple-footer stays the stable checkout hook (tests, legacy CSS). */
-.credits-receipt .topup-simple-footer{margin-top:auto;padding-top:16px;border-top:1px dashed rgba(250,240,172,.4)}
+.credits-receipt .topup-simple-footer{margin-top:auto;padding-top:16px;border-top:1px dashed rgba(255,255,255,.4)}
 .credits-receipt .topup-simple-footer span{color:var(--paper)}
 .credits-receipt .topup-simple-footer strong{color:var(--paper)}
 .credits-receipt-cta{white-space:nowrap;border:1px solid var(--ink);border-radius:99px;background:var(--ink);color:var(--paper);

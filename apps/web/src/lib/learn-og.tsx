@@ -29,18 +29,18 @@ export async function learnOgImage(slug: string, locale: Locale): Promise<ImageR
           background: "linear-gradient(135deg, #304072 0%, #303E6A 100%)",
           padding: "72px",
           fontFamily: "JetBrains Mono",
-          color: "#FAF0AC",
+          color: "#FFFFFF",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 30, fontWeight: 700, color: "#FAF0AC" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 30, fontWeight: 700, color: "#FFFFFF" }}>
           <div style={{ width: 22, height: 22, borderRadius: 6, background: "#C81D35" }} />
           apiToken.sale
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-          <div style={{ fontSize: 24, color: "#d6d0a0", textTransform: "uppercase", letterSpacing: 2 }}>{label}</div>
+          <div style={{ fontSize: 24, color: "#D6D6D6", textTransform: "uppercase", letterSpacing: 2 }}>{label}</div>
           <div style={{ fontSize: title.length > 46 ? 60 : 72, fontWeight: 700, lineHeight: 1.1, maxWidth: 1000 }}>{title}</div>
         </div>
-        <div style={{ fontSize: 26, color: "#d6d0a0" }}>Claude API · flat 50% off · one key</div>
+        <div style={{ fontSize: 26, color: "#D6D6D6" }}>Claude API · flat 50% off · one key</div>
       </div>
     ),
     {

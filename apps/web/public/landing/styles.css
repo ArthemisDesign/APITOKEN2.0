@@ -1,17 +1,17 @@
 /* =========================================================
    apiToken — variant: engineering / editorial
-   Direction: white pages + butter accents + navy surfaces + red actions,
+   Direction: white pages + white accents + navy surfaces + red actions,
    12-col grid, oversized display type, technical captions.
    Accent is swappable in one line (see --accent).
    ========================================================= */
 
 :root,[data-theme="dark"]{
-  /* Pure white page surfaces stay separate from the butter reference.
-     Butter belongs to the navy hero, diagram plates and action labels. */
+  /* Pure white page surfaces stay separate from the white reference.
+     White belongs to the navy hero, diagram plates and action labels. */
   --paper:#FFFFFF;
   --paper-rgb:255,255,255;
-  --butter:#FAF0AC;
-  --butter-rgb:250,240,172;
+  --white:#FFFFFF;
+  --white-rgb:255,255,255;
   --paper-2:#FFFFFF;
   --ink:#2E2E2E;
   --ink-rgb:46,46,46;
@@ -30,10 +30,10 @@
   --accent-rgb:48,64,114;
   --diagram:#303E6A;
   --accent-2:color-mix(in srgb,var(--accent) 85%,var(--ink));
-  /* Text accents use navy on white and butter on charcoal. */
+  /* Text accents use navy on white and white on charcoal. */
   --accent-ink:var(--accent);
   --accent-glow:rgba(var(--accent-rgb),.28);
-  /* Red marks actions and moving signals; filled controls use butter type. */
+  /* Red marks actions and moving signals; filled controls use white type. */
   --hot:#C81D35;
   --hot-rgb:200,29,53;
   --hot-2:#AE192F;
@@ -69,12 +69,12 @@
   --sec:clamp(72px,7vw,128px);
 }
 
-/* ---- DARK theme — charcoal surfaces retain their butter light tone ---- */
+/* ---- DARK theme — charcoal surfaces retain their white light tone ---- */
 [data-theme="dark"]{
   /* page inverts to ink; dark surfaces live on dedicated tokens so that
      --paper/--ink keep their literal meaning (light / dark) everywhere */
-  --paper:var(--butter);
-  --paper-rgb:var(--butter-rgb);
+  --paper:var(--white);
+  --paper-rgb:var(--white-rgb);
   --paper-2:color-mix(in srgb,var(--paper) 93%,var(--ink));
   --bg:var(--ink);
   --surface:color-mix(in srgb,var(--ink) 92%,var(--paper));
@@ -170,7 +170,7 @@
 [data-theme="dark"] .core{background:var(--surface);border-color:var(--line);box-shadow:none}
 [data-theme="dark"] .tut:hover{border-color:var(--g300);background:var(--surface-2)}
 [data-theme="dark"] .case__vis{background:var(--surface)}
-/* Navy hover fills keep butter labels in both themes. */
+/* Navy hover fills keep white labels in both themes. */
 [data-theme="dark"] .pick:hover,
 [data-theme="dark"] .pick:hover .pick__name,
 [data-theme="dark"] .pick:hover .pick__prov,[data-theme="dark"] .pick:hover .pick__specs,[data-theme="dark"] .pick:hover .pick__why,
@@ -179,7 +179,7 @@
 [data-theme="dark"] .pick:hover .pick__specs div{border-color:rgba(var(--ink-rgb),.4)}
 /* dark: the plain .tag sits on the ink page, g400 reads 3:1 — lift it to g100 */
 [data-theme="dark"] .tag{color:var(--g100)}
-/* The schematic's butter plates keep their own contrast in both themes. */
+/* The schematic's white plates keep their own contrast in both themes. */
 [data-theme="dark"] .netmob__core{background:var(--paper)}
 [data-theme="dark"] .netmob__core .netmob__name{color:var(--ink)}
 
@@ -234,7 +234,7 @@ body::before{
   text-wrap:balance;
 }
 .display--xxl{font-size:clamp(52px,11vw,208px);line-height:.86;letter-spacing:-.045em;display:flex;flex-direction:column}
-/* A ghosted headline is still content: use a darker step on butter and
+/* A ghosted headline is still content: use a darker step on white and
    a lighter step on charcoal. */
 .ghost{color:var(--g300)}
 [data-theme="dark"] .ghost{color:var(--g200)}
@@ -2129,7 +2129,7 @@ html.landing-home .hdr:not(.small) .burger span{background:var(--ink)}
 @media(min-width:1025px){
   html.landing-home .hdr:not(.small) .nav a{color:var(--ink)}
 }
-/* The navy hero keeps butter navigation in both themes. */
+/* The navy hero keeps white navigation in both themes. */
 html.landing-home .hdr:not(.small) .brand,
 html.landing-home .hdr:not(.small) .lnk,
 html.landing-home .hdr:not(.small) .theme-tgl{color:var(--paper)}
@@ -2145,20 +2145,20 @@ html.landing-home .hdr:not(.small) .burger span{background:var(--paper)}
 /* =========================================================
    ACTION LAYER — red as the action colour.
    Navy owns the surfaces; red marks what to press and what moves.
-   Red fills carry butter text. This block outranks the many
+   Red fills carry white text. This block outranks the many
    theme / plate variants of the same controls, hence !important.
    ========================================================= */
 /* primary CTAs + the header dashboard pill */
 .btn.btn--solid,
 .hdr .btn.btn--dark,
-.nav a.nav__dash{background:var(--hot)!important;border-color:var(--hot)!important;color:var(--butter)!important}
+.nav a.nav__dash{background:var(--hot)!important;border-color:var(--hot)!important;color:var(--white)!important}
 .btn.btn--solid:hover,
 .hdr .btn.btn--dark:hover,
-.nav a.nav__dash:hover{background:var(--hot-2)!important;border-color:var(--hot-2)!important;color:var(--butter)!important}
+.nav a.nav__dash:hover{background:var(--hot-2)!important;border-color:var(--hot-2)!important;color:var(--white)!important}
 
 /* active filters / tabs */
 .chip.on:not(.calc__opts .chip),
-.tab.on{background:var(--hot)!important;border-color:var(--hot)!important;color:var(--butter)!important}
+.tab.on{background:var(--hot)!important;border-color:var(--hot)!important;color:var(--white)!important}
 
 /* hero: the monumental braces turn red on the blue plate */
 .plate__mark path{stroke:var(--hot)!important}
@@ -2182,14 +2182,14 @@ html.landing-home .hdr:not(.small) .burger span{background:var(--paper)}
 .acc__q i,
 .tut:hover .tut__thumb::after,
 .lnk--arrow::after{color:var(--hot-ink)}
-.vid__stage:hover .vid__play{background:var(--hot);border-color:var(--hot);color:var(--butter)}
+.vid__stage:hover .vid__play{background:var(--hot);border-color:var(--hot);color:var(--white)}
 .pill--accent{border-color:var(--hot)}
 .b2b-side__link.is-active::before,
 .b2b-bot__av,
 .b2b-note__ic{background:var(--hot)}
-.b2b-bot__av,.b2b-note__ic{color:var(--butter)}
+.b2b-bot__av,.b2b-note__ic{color:var(--white)}
 input[type=range]{accent-color:var(--hot)}
-::selection{background:var(--hot);color:var(--butter)}
+::selection{background:var(--hot);color:var(--white)}
 :focus-visible{outline-color:var(--hot)}
 
 /* =========================================================
@@ -2400,7 +2400,7 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
 /* text on red buttons is paper instead of ink */
 .btn.btn--solid,.btn.btn--solid:hover,
 .hdr .btn.btn--dark,.hdr .btn.btn--dark:hover,
-.nav a.nav__dash,.nav a.nav__dash:hover{color:var(--butter)!important}
+.nav a.nav__dash,.nav a.nav__dash:hover{color:var(--white)!important}
 
 /* =========================================================
    CLIENT CALL 2026-10-12 · catalog
@@ -2418,7 +2418,7 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
 /* new models: a solid red "New" capsule and a red outline, no glow */
 .mcard--new,[data-theme="dark"] .mcard--new{border-color:var(--hot);box-shadow:none}
 .page-landing .mcard__badge--new{
-  background:var(--hot);color:var(--butter);border:0;
+  background:var(--hot);color:var(--white);border:0;
   padding:4px 10px;border-radius:var(--r-pill);
   font-size:11px;letter-spacing:.01em;line-height:1.3;
 }
@@ -2519,7 +2519,7 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
 .b2bm__k{color:var(--b2bm-k);font-weight:500}
 .b2bm__v + .b2bm__v{border-left:1px solid var(--b2bm-rule)}
 .b2bm__v b{font-weight:600}
-.b2bm__h{font-size:16px;font-weight:600;color:var(--butter);border-left:0!important}
+.b2bm__h{font-size:16px;font-weight:600;color:var(--white);border-left:0!important}
 .b2bm__h--b2c{background:var(--accent)}
 .b2bm__h--b2b{background:var(--hot)}
 .b2bm__note{font-size:13px;line-height:1.45;color:var(--b2bm-k);margin:12px 0 0}
@@ -2759,10 +2759,10 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
 .page-landing .sec::before{display:none}
 [data-theme="dark"] .page-landing .hero::after{content:none;display:none}
 
-/* The reference's butter belongs to the navy first screen. Pure white page,
+/* The reference's white belongs to the navy first screen. Pure white page,
    documentation, B2B and card backgrounds use #FFFFFF. */
 .page-landing .hero,
 html.landing-home .hdr:not(.small){
-  --paper:var(--butter);
-  --paper-rgb:var(--butter-rgb);
+  --paper:var(--white);
+  --paper-rgb:var(--white-rgb);
 }

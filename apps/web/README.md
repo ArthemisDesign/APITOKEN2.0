@@ -65,14 +65,14 @@ a normal build instead of failing the deployment. Verify the contract with
 
 ## Visual audit
 
-The customer-facing site uses the Butter palette: navy `#304072`, sunken navy `#303E6A`,
-butter `#FAF0AC`, red `#C81D35` (hover `#AE192F`), and charcoal `#2E2E2E`.
-The home hero keeps navy and butter in the default theme. Other light pages use pure white
-(`#FFFFFF`) surfaces for pages, cards, sidebars and browser chrome with charcoal text; dark pages use charcoal surfaces with butter text. Red actions
-keep butter labels in both themes. Shared tokens in `src/app/globals.css` cover app routes,
+The customer-facing site uses the navy, red and white palette: navy `#304072`, sunken navy `#303E6A`,
+pure white `#FFFFFF`, red `#C81D35` (hover `#AE192F`), and charcoal `#2E2E2E`.
+The home hero keeps navy and pure white in the default theme. Other light pages use pure white
+(`#FFFFFF`) surfaces for pages, cards, sidebars and browser chrome with charcoal text; dark pages use charcoal surfaces with white text. Red actions
+keep white labels in both themes. Shared tokens in `src/app/globals.css` cover app routes,
 including docs, authentication, and dashboard; `public/landing/styles.css` carries the same
 brand palette for the static RU/EN landing, B2B, and docs pages. Chart series use muted
-palette blends with at least 3:1 contrast on butter and charcoal; provider/payment logos
+palette blends with at least 3:1 contrast on white and charcoal; provider/payment logos
 retain their vendor colors. Keep scoped footer/inverted-panel text tokens readable in both themes.
 
 Landing, static docs and B2B navigation use equal-width language segments. Theme controls retain the
@@ -82,7 +82,7 @@ do not replace these with a separate mobile icon set or invert their state mappi
 describe the action. `theme:v1` is authoritative across app and landing, with `apitoken-theme` mirrored
 for existing pages. Mobile landing headers keep a stable 68px content row plus the device safe-area inset,
 with an opaque background. On the two home landings, the unscrolled header, hero and top canvas are
-the same navy surface (`#304072`) with butter text (`#FAF0AC`); the scrolled header is opaque white/charcoal. Browser `theme-color` follows the
+the same navy surface (`#304072`) with pure white text (`#FFFFFF`); the scrolled header is opaque white/charcoal. Browser `theme-color` follows the
 header and the selected site theme. Do not introduce a separate paper strip above the hero.
 Home landings disable root overscroll and cancel only outward single-finger boundary drags as a
 touch fallback. Inner scroll areas, horizontal gestures, forms and pinch zoom remain native.
