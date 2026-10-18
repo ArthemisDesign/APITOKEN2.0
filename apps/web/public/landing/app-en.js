@@ -39,13 +39,6 @@ const PROVIDERS = [
       { name: 'Gemini 3 Flash', id: 'gemini-3-flash', ctx: '1M',   in: '$0.20', out: '$1.00', caps: ['fast','cheap','long'], edge: '1M context at a light-model price' },
       { name: 'Gemini Image',   id: 'gemini-image',   ctx: '32K',  in: '$0.40', out: '$2.00', caps: ['image'], edge: 'Image generation and editing' }
     ]
-  },
-  {
-    name: 'Kimi', note: 'Moonshot',
-    models: [
-      { name: 'Kimi K2.5',      id: 'kimi-k2-5',      ctx: '256K', in: '$0.28', out: '$1.40', caps: ['cheap','coding','long'], edge: 'Strong coding at a minimal price' },
-      { name: 'Kimi K2 Turbo',  id: 'kimi-k2-turbo',  ctx: '128K', in: '$0.15', out: '$0.75', caps: ['fast','cheap'], edge: 'Lowest price in the catalog' }
-    ]
   }
 ];
 
@@ -84,7 +77,7 @@ const TUTORIALS = [
 
 const FAQ = [
   ['Where does the up to 50% discount come from?','We purchase model access in volume and redistribute it across clients. You pay the provider\'s official rate minus the discount — the request still goes to the same official API.'],
-  ['Which models are available?','Models from Anthropic, OpenAI, Google, Kimi and other providers. The catalog grows as new models are released, with no changes needed on your side.'],
+  ['Which models are available?','Models from Anthropic, OpenAI, Google and other providers. The catalog grows as new models are released, with no changes needed on your side.'],
   ['Can I use apiToken instead of my existing OpenAI API?','Yes. Just change the base URL and key — request and response formats stay the same, including streaming and tool calls.'],
   ['How fast can I connect?','About two minutes: sign up, create a key, swap the endpoint. No separate provider accounts needed.'],
   ['Are Claude Code and Cursor supported?','Yes, as well as Codex CLI, opencode, Cline and any SDK that supports Anthropic-, OpenAI- or Gemini-compatible routes.'],
@@ -95,7 +88,7 @@ const FAQ = [
   ['How do I get a B2B quote?','Fill out the short form in the Business terms section and we will return a calculation tailored to your volume.']
 ];
 
-const GROW_ITEMS = ['GPT','Claude','Gemini','Kimi','Llama','Qwen','DeepSeek','+ new provider','+ new model','+ ...'];
+const GROW_ITEMS = ['GPT','Claude','Gemini','Llama','Qwen','DeepSeek','+ new provider','+ new model','+ ...'];
 
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
