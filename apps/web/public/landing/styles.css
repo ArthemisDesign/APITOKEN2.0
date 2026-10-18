@@ -61,12 +61,12 @@
   --cols:12;
   --gutter:20px;
   --margin:20px;
-  --maxw:1600px;
+  --maxw:1440px;
 
   --sans:"TT Runs", "Inter Tight", Inter, system-ui, sans-serif;
   --mono:"TT Runs", "Inter Tight", Inter, system-ui, sans-serif;
 
-  --sec:clamp(72px,7vw,128px);
+  --sec:clamp(64px,6vw,108px);
 }
 
 /* ---- DARK theme — charcoal surfaces retain their white light tone ---- */
@@ -227,7 +227,7 @@ body::before{
 
 /* ---------- type ---------- */
 .display{
-  font-size:clamp(40px,7.4vw,132px);
+  font-size:clamp(36px,6.2vw,112px);
   line-height:.9;
   letter-spacing:-.035em;
   font-weight:600;
@@ -460,7 +460,7 @@ html{background:var(--bg)}
 }
 .sec:first-child::before,.sec--accent::before,.sec--dark::before{display:none}
 
-.sechead{margin-bottom:clamp(44px,4.4vw,76px);row-gap:18px;align-items:start;position:relative}
+.sechead{margin-bottom:clamp(32px,3.6vw,60px);row-gap:18px;align-items:start;position:relative}
 .sechead .display{margin-top:10px}
 .sechead__aside{display:flex;flex-direction:column;gap:18px;align-items:flex-start}
 .secnum{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
@@ -658,7 +658,7 @@ html{background:var(--bg)}
 .vid__prog i{position:absolute;inset:0 auto 0 0;width:0;background:var(--hot);transition:width .2s linear}
 .vid__state{min-width:64px}
 
-.steps{margin-top:44px;border-top:1px solid var(--line);row-gap:0}
+.steps{margin-top:32px;border-top:1px solid var(--line);row-gap:0}
 .steps li{padding:20px 0 0;font-size:14px;color:var(--muted)}
 .sec--dark .steps li{color:var(--g100)}
 .steps span{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--accent-ink);margin-bottom:8px}
@@ -880,7 +880,7 @@ input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(var(--hot-r
    13 · GROW
    ========================================================= */
 .grow{
-  position:relative;height:clamp(300px,38vw,520px);
+  position:relative;height:clamp(280px,32vw,440px);
   border:1px solid var(--line);border-radius:20px;
   overflow:hidden;margin-top:20px;
   background:var(--paper-2);
@@ -916,7 +916,7 @@ input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(var(--hot-r
 .acc__a p{padding:0 22px 26px;font-size:15px;color:var(--g400);max-width:70ch;line-height:1.55}
 
 /* Final + Footer */
-.final{padding:clamp(100px,12vw,220px) 0;background:var(--paper);position:relative;overflow:hidden}
+.final{padding:clamp(80px,9vw,168px) 0;background:var(--paper);position:relative;overflow:hidden}
 .final::before{
   content:"";position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
   width:120%;height:120%;
@@ -1668,11 +1668,11 @@ body{line-height:1.5}
   :root{
     --margin:16px;
     --gutter:14px;
-    --sec:clamp(64px,18vw,100px);
+    --sec:clamp(52px,15vw,84px);
   }
 
   /* typography */
-  .display{font-size:clamp(32px,11vw,56px)}
+  .display{font-size:clamp(30px,9.5vw,48px)}
   .display--xxl{font-size:clamp(40px,14vw,72px)}
   .lead{font-size:16px}
   .secdesc{font-size:14px}
@@ -1730,8 +1730,8 @@ body{line-height:1.5}
   .netmob__head{font-size:14px;bottom:-12px}
 
   /* sections general */
-  .sechead{margin-bottom:clamp(32px,8vw,52px)}
-  .sechead .display{font-size:clamp(32px,11vw,56px)}
+  .sechead{margin-bottom:clamp(28px,7vw,44px)}
+  .sechead .display{font-size:clamp(30px,9.5vw,48px)}
 
   /* filters */
   .filters{max-width:100%;overflow-x:auto;flex-wrap:nowrap;gap:3px;padding:5px;border-radius:999px}
@@ -1949,13 +1949,13 @@ html body,html body *,html body *::before,html body *::after,svg text{font-famil
 
 /* ---------- content ---------- */
 .b2b-body{
-  display:flex;flex-direction:column;gap:clamp(72px,8vw,120px);
+  display:flex;flex-direction:column;gap:clamp(60px,6.8vw,104px);
   width:100%;max-width:1280px;margin:0 auto;
-  padding:clamp(56px,8vh,104px) clamp(20px,5vw,64px) clamp(80px,8vw,140px);
+  padding:clamp(48px,7vh,88px) clamp(20px,5vw,64px) clamp(64px,7vw,120px);
 }
 .b2b-section{width:100%;max-width:1280px;margin:0 auto;scroll-margin-top:96px}
 .b2b-head{display:flex;flex-direction:column;gap:12px;margin-bottom:28px}
-.b2b-h{font-size:clamp(28px,3vw,44px);font-weight:600;letter-spacing:-.03em;line-height:1.08}
+.b2b-h{font-size:clamp(26px,2.7vw,40px);font-weight:600;letter-spacing:-.03em;line-height:1.08}
 .b2b-sub{font-size:clamp(14px,1.05vw,17px);line-height:1.55;color:var(--muted)}
 .b2b-blocktitle{font-size:clamp(18px,1.6vw,24px);font-weight:600;letter-spacing:-.02em}
 
@@ -2759,7 +2759,7 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
     align-self:center;height:auto;aspect-ratio:1120/720;
     width:min(100%,calc((100svh - var(--hdr-h,84px) - 150px) * 1120 / 720));justify-self:end;
   }
-  html[data-hero="a"] .page-landing .plate__h{font-size:min(4.4vw,9svh,70px);line-height:.98}
+  html[data-hero="a"] .page-landing .plate__h{font-size:min(4vw,8.2svh,64px);line-height:.98}
   html[data-hero="a"] .page-landing .hero .plate__claim .claim__val{font-size:clamp(44px,4vw,72px)}
   html[data-hero="a"] .page-landing .hero .plate__claim .claim__lab{font-size:clamp(14px,1vw,16px)}
   html[data-hero="a"] .page-landing .hero .hero__cta{align-self:start;margin-top:clamp(16px,2.4svh,28px)}
@@ -2792,3 +2792,19 @@ html.landing-home .hdr:not(.small){
   --paper-rgb:var(--white-rgb);
 }
 .page-landing .hero .plate__claim .claim__lab{color:var(--paper);opacity:1}
+
+/* Keep each lesson, its tabs and its steps in one compact, aligned column.
+   The height cap also leaves room around the player on short laptop screens. */
+.page-landing :is(#start,#integrations){--lesson-width:min(860px,calc(48svh * 16 / 9))}
+.page-landing :is(#start [data-video],#start .steps,#intTabs,#intVideo,#intSteps){
+  width:100%;max-width:var(--lesson-width);margin-left:auto;margin-right:auto;
+}
+.page-landing #intTabs{display:flex}
+.page-landing #start .steps{grid-template-columns:repeat(auto-fit,minmax(min(100%,120px),1fr));column-gap:12px}
+.page-landing #start .steps>li{grid-column:auto}
+.page-landing #intSteps{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,120px),1fr))}
+.page-landing #intSteps>div{min-width:0;padding:16px 14px}
+.page-landing .lib{max-width:1120px;margin-inline:auto}
+@media(max-width:640px){
+  .page-landing #start .steps{grid-template-columns:repeat(2,minmax(0,1fr))}
+}

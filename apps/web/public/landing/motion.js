@@ -218,7 +218,7 @@ $$('.netwrap').forEach(wrap => {
 /* ---------------------------------------------------------
    8 · PARALLAX PLANES
    --------------------------------------------------------- */
-$$('.vid, .term, .grow, .compare__col--after, .code').forEach(n => {
+$$('.term, .grow, .compare__col--after, .code').forEach(n => {
   gsap.fromTo(n, { y: 34 }, {
     y: -34, ease: 'none',
     scrollTrigger: { trigger: n, start: 'top bottom', end: 'bottom top', scrub: .8 }

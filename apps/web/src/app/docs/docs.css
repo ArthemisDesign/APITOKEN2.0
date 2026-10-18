@@ -41,10 +41,10 @@
 .docs-main section{padding:0;border:0;scroll-margin-top:92px}
 .docs-hero{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:20px 24px;margin-bottom:26px;max-width:940px;font-family:var(--font-ui)}
 .docs-hero>div{min-width:0;max-width:100%}
-.docs-hero h1{margin:0 0 8px;font-family:var(--font-display);font-size:clamp(34px,4.2vw,48px);font-weight:600;line-height:1.02;letter-spacing:-.035em;text-wrap:balance}
+.docs-hero h1{margin:0 0 8px;font-family:var(--font-display);font-size:clamp(32px,3.8vw,44px);font-weight:600;line-height:1.02;letter-spacing:-.035em;text-wrap:balance}
 .docs-hero p{max-width:900px;margin:0;color:var(--txt-2);font-size:18px;line-height:1.55}
 .docs-copy-page{flex:none;gap:7px;margin-top:6px}
-.docs-section{margin-bottom:72px!important}
+.docs-section{margin-bottom:60px!important}
 
 /* The agent handoff is a single copyable instruction, shown OpenRouter-style as
    a compact callout: info icon + dark chip with the one-line prompt and small
