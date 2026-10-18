@@ -2101,7 +2101,6 @@ html body,html body *,html body *::before,html body *::after,svg text{font-famil
 }
 @media(max-width:359px){
   .hdr .brand{font-size:14px;gap:6px;white-space:nowrap}
-  .hdr .brand sup{display:none}
   .hdr .hdr__in{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
 }
 

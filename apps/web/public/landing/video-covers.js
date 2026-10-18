@@ -28,7 +28,7 @@
     if (!topic) throw new Error(`Unknown video cover topic: ${id}`);
     const [line1, line2, subtitle] = topic[language === 'ru' ? 'ru' : 'en'];
     return `<div class="vcover vcover--${topic.palette}${compact ? ' vcover--compact' : ''}" data-cover="${id}" aria-hidden="true">
-      <div class="vcover-brand"><span>apiToken<span class="vcover-brand__reg">®</span></span><span class="vcover-number">${topic.number} / ${language === 'ru' ? 'УРОК' : 'GUIDE'}</span></div>
+      <div class="vcover-brand"><span>apiToken</span><span class="vcover-number">${topic.number} / ${language === 'ru' ? 'УРОК' : 'GUIDE'}</span></div>
       <div class="vcover-copy"><strong class="vcover-title"><span>${line1}</span><span>${line2}</span></strong><span class="vcover-subtitle">${subtitle}</span></div>
       <div class="vcover-art vcover-art--${id}">${art[id]}</div>
       ${compact ? `<span class="vcover-caption"><i></i>${language === 'ru' ? 'Инструкция' : 'Tutorial'}</span>` : ''}

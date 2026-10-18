@@ -82,7 +82,7 @@ export const DashboardSidebar = memo(function DashboardSidebar({
   }}>
     <button className="side-close" type="button" aria-label={copy.closeMenu} onClick={onClose}>×</button>
     <Link className="brand side-brand" href={landingHref(language)} aria-label="apiToken home">
-      <span className="side-brand__mark" aria-hidden="true" />apiToken<sup>®</sup>
+      <span className="side-brand__mark" aria-hidden="true" />apiToken
     </Link>
     <nav className="side-nav">
       {navigation.map((item, index) => <div key={`${item.label}-${index}`} className="side-nav-item">
