@@ -2109,9 +2109,11 @@ html body,html body *,html body *::before,html body *::after,svg text{font-famil
   .hdr .hdr__in{padding-left:max(12px,env(safe-area-inset-left));padding-right:max(12px,env(safe-area-inset-right))}
 }
 
-/* The landing starts with one solid blue surface, including the fixed header
-   and the browser's top safe area. Docs and B2B retain their own page chrome. */
-html.landing-home{background:var(--accent);overscroll-behavior-y:none}
+/* The opening surface follows the chosen theme, including the fixed header
+   and browser safe area. Keep the approved navy in light mode and use the
+   page's charcoal in dark mode so the toggle is visible before scrolling. */
+html.landing-home{--hero-bg:var(--accent);--hero-diagram:var(--diagram);background:var(--hero-bg);overscroll-behavior-y:none}
+html.landing-home[data-theme="dark"]{--hero-bg:var(--bg);--hero-diagram:var(--ink-2)}
 /* Keep BOTH document backgrounds aligned with the header. A blue html alone
    leaves the light body surface available to Safari's browser chrome. Content
    gets its own surface so this does not recolour transparent sections. */
@@ -2139,7 +2141,7 @@ html.landing-home .hdr::before{display:none}
    Extend the actual opaque header surface above its box, not just the canvas
    colour that Safari may ignore when compositing its status area. */
 html.landing-home .hdr::after{content:"";position:absolute;left:0;right:0;bottom:100%;height:100vh;background:inherit;pointer-events:none}
-html.landing-home .hdr:not(.small){background:var(--accent)}
+html.landing-home .hdr:not(.small){background:var(--hero-bg)}
 html.landing-home .hdr:not(.small) .hdr__in{border-bottom-color:transparent}
 html.landing-home .hdr:not(.small) .brand,
 html.landing-home .hdr:not(.small) .lnk,
@@ -2150,7 +2152,7 @@ html.landing-home .hdr:not(.small) .burger span{background:var(--ink)}
 @media(min-width:1025px){
   html.landing-home .hdr:not(.small) .nav a{color:var(--ink)}
 }
-/* The navy hero keeps white navigation in both themes. */
+/* Both opening surfaces keep white navigation. */
 html.landing-home .hdr:not(.small) .brand,
 html.landing-home .hdr:not(.small) .lnk,
 html.landing-home .hdr:not(.small) .theme-tgl{color:var(--paper)}
@@ -2465,8 +2467,8 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
    shows on the first screen and the page reads as continuing.
    The braces are gone (the octopus mark will live in the header).
    ========================================================= */
-.page-landing .hero{background:var(--accent)}
-.page-landing .plate{min-height:0;border-bottom:0}
+.page-landing .hero{background:var(--hero-bg)}
+.page-landing .plate{min-height:0;border-bottom:0;background:transparent}
 .page-landing .plate__in{padding-bottom:12px}
 .page-landing .plate{overflow:visible}
 .page-landing .plate__h{font-size:min(clamp(44px,6.6vw,120px),13svh)}
@@ -2476,7 +2478,7 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
 .page-landing .hero .band::before{display:none}
 .page-landing .hero .netwrap{
   border:1px solid rgba(var(--paper-rgb),.35);
-  background-color:var(--diagram);
+  background-color:var(--hero-diagram);
 }
 /* dark theme: fade the blue field into the ink page instead of a hard cut */
 [data-theme="dark"] .page-landing .hero::after{
