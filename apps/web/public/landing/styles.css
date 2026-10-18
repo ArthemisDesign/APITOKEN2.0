@@ -1219,7 +1219,12 @@ body{line-height:1.5}
   z-index:0;
 }
 .netwrap .net, .netwrap .netlist, .netwrap .netmob{position:relative;z-index:1}
-.net{position:absolute;inset:0;width:100%;height:100%}
+.net{position:absolute;inset:0;width:100%;height:100%;display:block}
+
+/* Grid and card coordinates scale together inside the SVG; the CSS grid
+   remains only for the narrow-screen HTML fallback. */
+.net__grid-line{fill:none;stroke:rgba(var(--paper-rgb),.4);stroke-width:1}
+@media(min-width:821px){.netwrap::before{content:none}}
 
 /* NB: vector-effect is switched OFF here on purpose — and explicitly,
    because the legacy `.net__*` block above still declares it and an
@@ -2720,9 +2725,9 @@ html.landing-home .hdr:not(.small) .brand__mark{background:var(--paper)!importan
 .page-landing .net .node .n-count{font-size:18px}
 .page-landing .net .c-name{font-size:44px}
 .page-landing .net .c-tick{font-size:17px}
-.page-landing .net .p-name{font-size:28px}
-.page-landing .net .p-code{font-size:17px}
-.page-landing .net .p-note{font-size:14px}
+.page-landing .net .p-name{font-size:25px}
+.page-landing .net .p-code{font-size:15px}
+.page-landing .net .p-note{font-size:13px}
 @media (max-width:1024px){.page-landing .hero .band{padding-left:var(--margin);padding-right:var(--margin)}}
 
 /* header logo: larger octopus and wordmark */
