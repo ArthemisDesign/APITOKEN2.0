@@ -2797,15 +2797,13 @@ html.landing-home .hdr:not(.small){
 }
 .page-landing .hero .plate__claim .claim__lab{color:var(--paper);opacity:1}
 
-/* The navy field stays put. A paper headline plate gives light mode dark,
-   readable type; dark mode returns to white type directly on the navy. */
+/* Keep the navy field visible behind the headline in both themes.
+   Light mode uses black type; dark mode uses white type. */
 .page-landing .hero .plate__h{
-  padding:clamp(16px,1.8vw,28px);
-  border-radius:var(--r-l);
-  background:var(--paper);color:var(--ink);
+  background:transparent;color:#000000;
 }
 [data-theme="dark"] .page-landing .hero .plate__h{
-  background:transparent;color:var(--paper);
+  color:var(--paper);
 }
 
 /* Keep each lesson, its tabs and its steps in one compact, aligned column.
