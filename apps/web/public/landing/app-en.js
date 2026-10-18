@@ -76,7 +76,7 @@ const TUTORIALS = [
 ];
 
 const FAQ = [
-  ['Where does the up to 50% discount come from?','We purchase model access in volume and redistribute it across clients. You pay the provider\'s official rate minus the discount — the request still goes to the same official API.'],
+  ['How can you offer discounts of 50% or more?','We purchase model access in volume and redistribute it across clients. You pay the provider\'s official rate minus the discount — the request still goes to the same official API.'],
   ['Which models are available?','Models from Anthropic, OpenAI, Google and other providers. The catalog grows as new models are released, with no changes needed on your side.'],
   ['Can I use apiToken instead of my existing OpenAI API?','Yes. Just change the base URL and key — request and response formats stay the same, including streaming and tool calls.'],
   ['How fast can I connect?','About two minutes: sign up, create a key, swap the endpoint. No separate provider accounts needed.'],
