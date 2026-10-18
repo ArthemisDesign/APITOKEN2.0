@@ -406,6 +406,19 @@ html{background:var(--bg)}
 .btn--full{width:100%;margin-top:8px}
 .ctas{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 
+/* Give the opening and closing B2B actions more visual weight. */
+.page-landing :is(.hero__cta,.final .ctas)>.btn[data-b2b]{
+  min-width:0;max-width:100%;min-height:64px;
+  padding:16px 28px;font-size:18px;line-height:1.25;
+}
+@media(max-width:640px){
+  .page-landing :is(.hero__cta,.final .ctas)>.btn[data-b2b]{
+    width:100%;min-height:60px;padding:14px 18px;font-size:16px;white-space:normal;text-align:center;
+  }
+  .page-landing :is(.hero__cta,.final .ctas)>.btn[data-b2b] .sw{min-width:0;max-width:100%}
+  .page-landing :is(.hero__cta,.final .ctas)>.btn[data-b2b] .sw i:last-child{width:100%}
+}
+
 /* =========================================================
    SECTIONS
    ========================================================= */
