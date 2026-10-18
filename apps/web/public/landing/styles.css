@@ -138,7 +138,6 @@
 [data-theme="dark"] input,
 [data-theme="dark"] .calc__spend input,
 [data-theme="dark"] .adv input,
-[data-theme="dark"] .adv select,
 [data-theme="dark"] .ent__form input{color:var(--fg)}
 [data-theme="dark"] .calc__spend{background:var(--surface-2)}
 [data-theme="dark"] .btn{border-color:var(--line);color:var(--fg)}
@@ -809,26 +808,17 @@ input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(var(--hot-r
   background:var(--ink);color:var(--paper);
   position:sticky;top:110px;
 }
-.calc__line{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding-bottom:16px;margin-bottom:16px;border-bottom:1px solid rgba(var(--paper-rgb),.10)}
+.calc__line{display:flex;justify-content:space-between;align-items:baseline;padding-bottom:16px;margin-bottom:16px;border-bottom:1px solid rgba(var(--paper-rgb),.10)}
 .calc__lab{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
 .calc__val{font-family:var(--mono);font-size:clamp(18px,1.7vw,26px)}
 .calc__save{padding:26px 0 28px;border-top:1px solid rgba(var(--paper-rgb),.10);margin-top:8px}
 .calc__big{display:block;font-size:clamp(48px,7vw,112px);line-height:.84;letter-spacing:-.055em;font-weight:600;color:var(--accent-ink);margin-top:10px}
 .calc__year{display:block;font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:14px}
-.calc__out :is(.calc__val,.calc__big,.calc__year){min-width:0;overflow-wrap:anywhere}
-.calc__val{text-align:right}
 .adv{margin-top:22px;padding-top:22px;border-top:1px solid rgba(var(--paper-rgb),.10)}
-.adv__grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.adv__grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .adv label,.ent__form label{display:flex;flex-direction:column;gap:7px;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-.adv label{min-width:0}
-.adv input,.adv select,.ent__form input{border-bottom:1px solid var(--line);padding:9px 0;font-size:15px;letter-spacing:-.02em;text-transform:none;outline:none;transition:border-color .2s}
-.adv input,.adv select{width:100%;min-width:0;min-height:44px}
-.adv select{background:transparent;color:inherit;cursor:pointer}
-.adv select option{background:var(--bg);color:var(--fg)}
-.adv input:focus,.adv select:focus,.ent__form input:focus{border-color:var(--accent)}
-.adv__help,.adv__error{font-size:13px;line-height:1.5;color:var(--paper)}
-.adv__help{margin:0 0 16px}
-.adv__error{margin:16px 0 0;padding:10px 12px;border:1px solid currentColor;border-radius:var(--r-s)}
+.adv input,.ent__form input{border-bottom:1px solid var(--line);padding:9px 0;font-size:15px;letter-spacing:-.02em;text-transform:none;outline:none;transition:border-color .2s}
+.adv input:focus,.ent__form input:focus{border-color:var(--accent)}
 
 /* =========================================================
    10 · ENTERPRISE
@@ -1055,7 +1045,7 @@ input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(var(--hot-r
 .compare__col{border:1px solid var(--line);border-radius:var(--r-l);padding:28px 26px}
 .calc__out,.ent__form{border:1px solid var(--line);border-radius:var(--r-l);padding:28px 26px}
 .calc__spend{border:1px solid var(--line);border-radius:var(--r-pill);padding:12px 22px}
-.adv input,.adv select,.ent__form input{border:1px solid var(--line);border-radius:var(--r-pill);padding:11px 16px}
+.adv input,.ent__form input{border:1px solid var(--line);border-radius:var(--r-pill);padding:11px 16px}
 
 /* --- small visualisations --- */
 .case__vis{border-radius:var(--r-m)}
@@ -1474,15 +1464,14 @@ body{line-height:1.5}
 .calc__out .lnk--arrow{color:var(--paper)}
 .calc__out .adv{border-top-color:rgba(var(--paper-rgb),.14)}
 .calc__out .adv label{color:var(--g300)}
-.calc__out .adv input,.calc__out .adv select{
+.calc__out .adv input{
   background:transparent;color:var(--paper);
   border-color:rgba(var(--paper-rgb),.22);
 }
-.calc__out .adv input:focus,.calc__out .adv select:focus{border-color:var(--accent)}
+.calc__out .adv input:focus{border-color:var(--accent)}
 
 @media (max-width:1024px){
   .calc__in{border-right:0;border-bottom:1px solid var(--line)}
-  .adv input,.adv select{font-size:16px}
 }
 
 /* =========================================================
@@ -2402,8 +2391,8 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
 .calc__out .calc__line,.calc__out .calc__save,.calc__out .adv{border-color:rgba(var(--paper-rgb),.24)}
 .calc__out .lnk--arrow,.calc__out .lnk--arrow:hover{color:var(--paper)}
 .calc__out .adv label{color:rgba(var(--paper-rgb),.78)}
-.calc__out .adv input,.calc__out .adv select{border-color:rgba(var(--paper-rgb),.4)}
-.calc__out .adv input:focus,.calc__out .adv select:focus{border-color:var(--paper)}
+.calc__out .adv input{border-color:rgba(var(--paper-rgb),.4)}
+.calc__out .adv input:focus{border-color:var(--paper)}
 
 /* catalog · cards fill blue on hover again (they stay non-clickable: default cursor) */
 .mcard:hover,[data-theme="dark"] .mcard:hover{background:var(--accent);border-color:var(--accent);color:var(--paper)}
