@@ -28,6 +28,21 @@ a browser extension.
 
 ## Recommended production-build audit
 
+### Static landing calculator
+
+The RU/EN landing pages load `public/landing/calculator.js` before their localized app script.
+The advanced estimate uses the displayed catalog's discounted Claude/GPT text rates, cache reads
+at 10% of fresh input, and the homepage's flat 50% comparison. Input/output volumes are monthly;
+the cache percentage is the share of total input read from an existing cache. Cache writes,
+storage, media and request-specific long-context charges are outside this estimate.
+
+Regression tests: `pnpm --filter @claude-api/web exec vitest run src/lib/landing-calculator.test.ts src/lib/landing-calculator-ui.test.ts`.
+In the browser check cache 0/100%, zero and invalid counts, model changes, closing the panel,
+editing the basic budget, and narrow screens in both languages. Opus 5 with 12M input, 3M output
+and 40% cache must show $113.40 before the discount, $56.70 after it and $680.40 annual savings.
+
+### Full application
+
 Build and start the exact optimized app that will be deployed:
 
 ```bash

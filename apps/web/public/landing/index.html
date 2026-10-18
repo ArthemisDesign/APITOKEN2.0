@@ -205,14 +205,16 @@
           <span class="calc__year" id="resYr">$120 000 в год</span>
         </div>
         <a class="btn btn--solid btn--full" href="/landing/b2b.html" data-b2b>Получить B2B предложение</a>
-        <button class="lnk lnk--arrow" id="advToggle">Расширенный калькулятор</button>
+        <button class="lnk lnk--arrow" id="advToggle" type="button" aria-expanded="false" aria-controls="adv">Расширенный калькулятор</button>
         <div class="adv" id="adv" hidden>
+          <p class="adv__help" id="advHelp">Расчёт месячных расходов на текстовые запросы Claude и GPT по ценам каталога сайта. Кэш — доля входных токенов, прочитанных из кэша (0–100%). Запись в кэш не учитывается.</p>
           <div class="adv__grid">
-            <label>Входные токены<input type="text" value="12 000 000"></label>
-            <label>Выходные токены<input type="text" value="3 000 000"></label>
-            <label>Кэш<input type="text" value="40%"></label>
-            <label>Модель<input type="text" value="claude-opus-5"></label>
+            <label for="advInputTokens">Входные токены<input id="advInputTokens" type="text" inputmode="numeric" value="12 000 000" aria-describedby="advHelp advError"></label>
+            <label for="advOutputTokens">Выходные токены<input id="advOutputTokens" type="text" inputmode="numeric" value="3 000 000" aria-describedby="advHelp advError"></label>
+            <label for="advCache">Доля входных токенов из кэша<input id="advCache" type="text" inputmode="decimal" value="40%" aria-describedby="advHelp advError"></label>
+            <label for="advModel">Модель<select id="advModel" aria-describedby="advHelp advError"></select></label>
           </div>
+          <p class="adv__error" id="advError" role="alert" hidden></p>
         </div>
       </div>
     </div>
@@ -431,6 +433,7 @@
 <script src="/landing/vendor/lenis.min.js"></script>
 <script src="/landing/vendor/split-type.min.js"></script>
 <script src="/landing/video-covers.js"></script>
+<script src="/landing/calculator.js"></script>
 <script src="/landing/app.js"></script>
 <script src="/landing/grow.js"></script>
 <script src="/landing/b2b-modal.js"></script>

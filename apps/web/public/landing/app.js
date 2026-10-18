@@ -347,6 +347,7 @@ $$('[data-count]').forEach(n => countIO.observe(n));
   const profWrap = $('#calcProfiles'), params = $('#calcParams'), input = $('#spendInput');
   if (!profWrap) return;
   let profile = PROFILES[1], devs = 25, usage = 2;
+  let advanced = null;
   const USAGE = ['Низкая', 'Средняя', 'Высокая', 'Очень высокая'];
 
   /* A chip group with a gliding thumb behind the active chip — same feel as
@@ -413,11 +414,11 @@ $$('[data-count]').forEach(n => countIO.observe(n));
   let rafSave = null, shownSave = null;
   function fmtMoney(n) { return money(n); }
   function tweenSave(to) {
+    cancelAnimationFrame(rafSave);
     if (shownSave === null) shownSave = to;
     const from = shownSave;
     shownSave = to;
     if (Math.round(from) === Math.round(to)) { $('#resMo').textContent = fmtMoney(to); $('#resYr').textContent = fmtMoney(to * 12) + ' в год'; return; }
-    cancelAnimationFrame(rafSave);
     const t0 = performance.now(), dur = 340;
     const step = (t) => {
       const k = Math.min(1, (t - t0) / dur);
@@ -431,6 +432,7 @@ $$('[data-count]').forEach(n => countIO.observe(n));
   }
 
   function recalc(fromProfile) {
+    advanced?.close();
     let spend;
     if (fromProfile) { spend = estimate(); input.value = Math.round(spend).toLocaleString('ru-RU').replace(/,/g, ' '); }
     else spend = +input.value.replace(/[^\d]/g, '') || 0;
@@ -443,7 +445,20 @@ $$('[data-count]').forEach(n => countIO.observe(n));
 
   input.oninput = () => recalc(false);
   input.onblur  = () => { input.value = (+input.value.replace(/[^\d]/g, '') || 0).toLocaleString('ru-RU').replace(/,/g, ' '); };
-  $('#advToggle').onclick = () => { const a = $('#adv'); a.hidden = !a.hidden; };
+  advanced = window.apiTokenCalculator.bind({
+    providers: PROVIDERS, language: 'ru', onClose: () => recalc(false),
+    onResult(result) {
+      cancelAnimationFrame(rafSave); shownSave = null;
+      $('#resNow').textContent = window.apiTokenCalculator.formatMoney(result.now, 'ru-RU');
+      $('#resNew').textContent = window.apiTokenCalculator.formatMoney(result.next, 'ru-RU');
+      $('#resMo').textContent = window.apiTokenCalculator.formatMoney(result.save, 'ru-RU');
+      $('#resYr').textContent = window.apiTokenCalculator.formatMoney(result.year, 'ru-RU') + ' в год';
+    },
+    onInvalid() {
+      cancelAnimationFrame(rafSave); shownSave = null;
+      ['resNow', 'resNew', 'resMo', 'resYr'].forEach(id => { $('#' + id).textContent = '—'; });
+    },
+  });
 
   renderParams(); recalc(true);
 })();

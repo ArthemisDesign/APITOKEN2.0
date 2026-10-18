@@ -205,14 +205,16 @@
           <span class="calc__year" id="resYr">$120 000 a year</span>
         </div>
         <a class="btn btn--solid btn--full" href="/landing/b2b-en.html#offer" data-b2b>Get a B2B quote</a>
-        <button class="lnk lnk--arrow" id="advToggle">Advanced calculator</button>
+        <button class="lnk lnk--arrow" id="advToggle" type="button" aria-expanded="false" aria-controls="adv">Advanced calculator</button>
         <div class="adv" id="adv" hidden>
+          <p class="adv__help" id="advHelp">Estimate monthly text-request costs for Claude and GPT using this site's catalog prices. Cache is the share of input tokens read from cache (0–100%). Cache writes are excluded.</p>
           <div class="adv__grid">
-            <label>Input tokens<input type="text" value="12 000 000"></label>
-            <label>Output tokens<input type="text" value="3 000 000"></label>
-            <label>Cache<input type="text" value="40%"></label>
-            <label>Model<input type="text" value="claude-opus-5"></label>
+            <label for="advInputTokens">Input tokens<input id="advInputTokens" type="text" inputmode="numeric" value="12 000 000" aria-describedby="advHelp advError"></label>
+            <label for="advOutputTokens">Output tokens<input id="advOutputTokens" type="text" inputmode="numeric" value="3 000 000" aria-describedby="advHelp advError"></label>
+            <label for="advCache">Cached input share<input id="advCache" type="text" inputmode="decimal" value="40%" aria-describedby="advHelp advError"></label>
+            <label for="advModel">Model<select id="advModel" aria-describedby="advHelp advError"></select></label>
           </div>
+          <p class="adv__error" id="advError" role="alert" hidden></p>
         </div>
       </div>
     </div>
@@ -431,6 +433,7 @@
 <script src="/landing/vendor/lenis.min.js"></script>
 <script src="/landing/vendor/split-type.min.js"></script>
 <script src="/landing/video-covers.js"></script>
+<script src="/landing/calculator.js"></script>
 <script src="/landing/app-en.js"></script>
 <script src="/landing/grow.js"></script>
 <script src="/landing/b2b-modal.js"></script>

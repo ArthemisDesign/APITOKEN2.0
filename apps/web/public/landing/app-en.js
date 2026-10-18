@@ -279,6 +279,7 @@ $$('[data-count]').forEach(n => countIO.observe(n));
   const profWrap = $('#calcProfiles'), params = $('#calcParams'), input = $('#spendInput');
   if (!profWrap) return;
   let profile = PROFILES[1], devs = 25, usage = 2;
+  let advanced = null;
   const USAGE = ['Low', 'Medium', 'High', 'Very high'];
 
   chipGroup(profWrap, PROFILES.map(p => p.name), PROFILES.indexOf(profile), i => {
@@ -339,6 +340,7 @@ $$('[data-count]').forEach(n => countIO.observe(n));
   }
 
   function recalc(fromProfile) {
+    advanced?.close();
     let spend;
     if (fromProfile) { spend = estimate(); input.value = Math.round(spend).toLocaleString('en-US').replace(/,/g, ' '); }
     else spend = +input.value.replace(/[^\d]/g, '') || 0;
@@ -352,7 +354,18 @@ $$('[data-count]').forEach(n => countIO.observe(n));
 
   input.oninput = () => recalc(false);
   input.onblur  = () => { input.value = (+input.value.replace(/[^\d]/g, '') || 0).toLocaleString('en-US').replace(/,/g, ' '); };
-  $('#advToggle').onclick = () => { const a = $('#adv'); a.hidden = !a.hidden; };
+  advanced = window.apiTokenCalculator.bind({
+    providers: PROVIDERS, language: 'en', onClose: () => recalc(false),
+    onResult(result) {
+      $('#resNow').textContent = window.apiTokenCalculator.formatMoney(result.now, 'en-US');
+      $('#resNew').textContent = window.apiTokenCalculator.formatMoney(result.next, 'en-US');
+      $('#resMo').textContent = window.apiTokenCalculator.formatMoney(result.save, 'en-US');
+      $('#resYr').textContent = window.apiTokenCalculator.formatMoney(result.year, 'en-US') + ' / year';
+    },
+    onInvalid() {
+      ['resNow', 'resNew', 'resMo', 'resYr'].forEach(id => { $('#' + id).textContent = '—'; });
+    },
+  });
 
   renderParams(); recalc(true);
 })();
