@@ -79,8 +79,8 @@ export function UsageTrend({ usage }: { usage: UsageView }) {
         <div className="usage-trend-x" aria-hidden="true">{axisMarks.map((mark, i) => <span key={mark} style={{ left: `${geometry.x(mark) / 10}%`, transform: i === 0 ? "none" : i === axisMarks.length - 1 ? "translateX(-100%)" : "translateX(-50%)" }}>{date(points[mark]!.dayTs)}</span>)}</div>
         <p className="usage-trend-hint">{text.hint}</p>
       </div>
-      {point && <aside key={index} className="usage-trend-detail" aria-label={text.detail} data-day-index={index}>
-        {/* Reserve provider rows between days; let the card grow when labels wrap. */}
+      {point && <aside className="usage-trend-detail" aria-label={text.detail} data-day-index={index} tabIndex={0}>
+        {/* Keep the panel mounted and reserve each provider's row while changing days. */}
         <span className="trend-detail-label">{text.detail}</span><h3>{date(point.dayTs, true)}</h3>
         <dl><div className="trend-detail-primary"><dt>{copy.officialValueCol}</dt><dd>{money(point.official)}</dd></div><div><dt>{copy.chargedCol}</dt><dd>{money(point.charged)}</dd></div><div><dt>{copy.billedEvents}</dt><dd>{point.requests.toLocaleString(locale)}</dd></div></dl>
         <div className="trend-detail-providers"><span>{copy.officialValueCol}</span>{providers.map((provider, providerIndex) => { const value = geometry.layers[providerIndex]!.values[index]!; return <div key={provider.id ?? "legacy-unattributed"} className={value > 0n ? undefined : "is-empty"} aria-hidden={value > 0n ? undefined : true}><span><i style={{ background: provider.color }} />{provider.name}</span><b>{money(value)}</b></div>; })}</div>
