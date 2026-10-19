@@ -2408,7 +2408,7 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
    CLIENT CALL 2026-10-12 · calculator
    ========================================================= */
 /* compact: not a full-width slab — a narrower block with tighter rhythm */
-.page-landing .calc{max-width:1120px;margin-right:auto}
+.page-landing .calc{max-width:1120px;margin-inline:auto}
 .page-landing .calc__in,.page-landing .calc__out{padding:clamp(22px,2vw,32px)}
 .page-landing .calc__step{padding-bottom:20px;margin-bottom:20px}
 /* step questions read as questions: larger, sentence case */
