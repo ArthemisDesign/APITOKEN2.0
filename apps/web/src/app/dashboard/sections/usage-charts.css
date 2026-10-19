@@ -82,7 +82,7 @@
 .usage-model-bar-head strong{min-width:0;flex:1;font-weight:500;overflow-wrap:anywhere}
 .usage-model-bar-head b{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 .usage-model-bar-bottom{display:flex;align-items:center;gap:12px}
-.usage-model-bar-track{height:7px;flex:1;background:var(--bg-soft);border-radius:3px;overflow:hidden}
+.usage-model-bar-track{height:7px;flex:1;background:var(--line-strong);border-radius:3px;overflow:hidden}
 .usage-model-bar-track i{display:block;height:100%;border-radius:3px}
 .usage-model-bar-bottom>span{width:44px;text-align:right;color:var(--txt-3);font-size:11px;font-variant-numeric:tabular-nums}
 @media(max-width:1100px){.usage-trend-body{grid-template-columns:minmax(0,1fr) 190px;gap:20px}.usage-trend-detail{padding:16px}}
