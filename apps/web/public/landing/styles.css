@@ -463,6 +463,7 @@ html{background:var(--bg)}
 .sechead{margin-bottom:clamp(32px,3.6vw,60px);row-gap:18px;align-items:start;position:relative}
 .sechead .display{margin-top:10px}
 .sechead__aside{display:flex;flex-direction:column;gap:18px;align-items:flex-start}
+@media(min-width:1025px){.page-landing #start .sechead__aside{align-self:center}}
 .secnum{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
 .meta{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
 
