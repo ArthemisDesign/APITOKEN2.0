@@ -2798,40 +2798,40 @@ html.landing-home .hdr:not(.small){
 .page-landing .hero .plate__claim .claim__lab{color:var(--paper);opacity:1}
 
 /* Keep the navy field visible behind the headline in both themes.
-   Light mode uses black type; dark mode uses white type. */
+   Light mode uses white type; dark mode uses black type. */
 .page-landing .hero .plate__h{
-  background:transparent;color:#000000;
+  background:transparent;color:var(--paper);
 }
 [data-theme="dark"] .page-landing .hero .plate__h{
-  color:var(--paper);
+  color:#000000;
 }
 
-/* The light opening screen uses one dark foreground throughout. Keep its
+/* The dark opening screen uses one dark foreground throughout. Keep its
    navy surfaces and red actions; diagram plates become transparent outlines
    so their labels also remain dark instead of introducing white text. */
-html.landing-home:not([data-theme="dark"]){--hero-fg:#000000}
-html.landing-home:not([data-theme="dark"]) .hdr:not(.small) :is(.brand,.lnk,.theme-tgl,.nav a,.nav a .sw i,.lang__link){color:var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) .hdr:not(.small) .brand__mark{background:var(--hero-fg)!important}
-html.landing-home:not([data-theme="dark"]) .hdr:not(.small) .burger span{background:var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) .hdr:not(.small) :is(.theme-tgl,.lang){border-color:var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) .hdr:not(.small) .lang{background:transparent}
-html.landing-home:not([data-theme="dark"]) .hdr:not(.small) .lang::before{background:transparent;border:1px solid var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) .hdr:not(.small) .lang__link.is-active{font-weight:600}
-html.landing-home:not([data-theme="dark"]) .hero :is(.plate,.plate__labels .meta,.plate__foot .lead,.claim__val,.claim__lab,.band__lead,.hero__cta .btn){color:var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) .hero .hero__cta .btn{border-color:var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) .hero .hero__cta .btn:hover{background:rgba(0,0,0,.12);border-color:var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) :is(.hero .btn--solid,.hdr:not(.small) .btn--dark,.hdr:not(.small) .nav__dash){color:var(--hero-fg)!important}
-html.landing-home:not([data-theme="dark"]) .hero .netwrap{border-color:var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) .hero .net__grid-line{stroke:rgba(0,0,0,.4)}
-html.landing-home:not([data-theme="dark"]) .hero .netwrap::before{
+html.landing-home[data-theme="dark"]{--hero-fg:#000000}
+html.landing-home[data-theme="dark"] .hdr:not(.small) :is(.brand,.lnk,.theme-tgl,.nav a,.nav a .sw i,.lang__link){color:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hdr:not(.small) .brand__mark{background:var(--hero-fg)!important}
+html.landing-home[data-theme="dark"] .hdr:not(.small) .burger span{background:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hdr:not(.small) :is(.theme-tgl,.lang){border-color:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hdr:not(.small) .lang{background:transparent}
+html.landing-home[data-theme="dark"] .hdr:not(.small) .lang::before{background:transparent;border:1px solid var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hdr:not(.small) .lang__link.is-active{font-weight:600}
+html.landing-home[data-theme="dark"] .hero :is(.plate,.plate__labels .meta,.plate__foot .lead,.claim__val,.claim__lab,.band__lead,.hero__cta .btn){color:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hero .hero__cta .btn{border-color:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hero .hero__cta .btn:hover{background:rgba(0,0,0,.12);border-color:var(--hero-fg)}
+html.landing-home[data-theme="dark"] :is(.hero .btn--solid,.hdr:not(.small) .btn--dark,.hdr:not(.small) .nav__dash){color:var(--hero-fg)!important}
+html.landing-home[data-theme="dark"] .hero .netwrap{border-color:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hero .net__grid-line{stroke:rgba(0,0,0,.4)}
+html.landing-home[data-theme="dark"] .hero .netwrap::before{
   background-image:linear-gradient(rgba(0,0,0,.4) 1px,transparent 1px),linear-gradient(90deg,rgba(0,0,0,.4) 1px,transparent 1px);
 }
-html.landing-home:not([data-theme="dark"]) .hero :is(.net__links,.net__flow,.net__out) path{stroke:var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) .hero .net :is(.node,.core,.prodcard) rect{fill:none;stroke:var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) .hero .net text{fill:var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) .hero :is(.netmob,.netmob__label,.netmob__list b,.netmob__more,.netmob__name,.netmob__tick,.netmob__code,.netmob__note,.netmob__head){color:var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) .hero :is(.netmob__group,.netmob__list li,.netmob__more,.netmob__core,.netmob__product){background:transparent;border-color:var(--hero-fg);color:var(--hero-fg)}
-html.landing-home:not([data-theme="dark"]) .hero :is(.netmob__arrow,.netmob__flow){background:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hero :is(.net__links,.net__flow,.net__out) path{stroke:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hero .net :is(.node,.core,.prodcard) rect{fill:none;stroke:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hero .net text{fill:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hero :is(.netmob,.netmob__label,.netmob__list b,.netmob__more,.netmob__name,.netmob__tick,.netmob__code,.netmob__note,.netmob__head){color:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hero :is(.netmob__group,.netmob__list li,.netmob__more,.netmob__core,.netmob__product){background:transparent;border-color:var(--hero-fg);color:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hero :is(.netmob__arrow,.netmob__flow){background:var(--hero-fg)}
 
 /* Keep each lesson, its tabs and its steps in one compact, aligned column.
    The height cap also leaves room around the player on short laptop screens. */
