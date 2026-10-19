@@ -4,7 +4,7 @@
 .app .rp .p-sub,.app .rp .rp-sub,.app .rp .rp-card-sub{font-size:14px;line-height:1.6}
 .app .rp .rp-title{margin:0 0 10px;font:600 24px/1.3 var(--font-ui);letter-spacing:-.02em;text-transform:none;text-wrap:balance}
 .app .rp .rp-card-title{margin:0 0 10px;font:600 21px/1.3 var(--font-ui);letter-spacing:-.02em;text-transform:none;color:var(--txt)}
-.app .rp .rp-card{padding:28px;border:0;border-radius:24px;background:var(--bg-card);box-shadow:var(--shadow)}
+.app .rp .rp-card{padding:28px;border:1px solid var(--dashboard-card-border);border-radius:24px;background:var(--bg-card);box-shadow:var(--shadow)}
 .app .rp .rp-stack{gap:24px}
 .app .rp .rp-overview-stack{margin-top:30px;gap:30px}
 .app .rp .rp-providers-section{padding:0}
@@ -15,6 +15,7 @@
 /* Separate, equal-height KPI cards: neutral balance and activity, inverted earnings. */
 .app .rp .rp-stats{gap:12px;border:0;border-radius:0;background:transparent;overflow:visible;grid-template-columns:repeat(4,minmax(0,1fr))}
 .app .rp .rp-stat{display:grid;grid-template-rows:1fr auto minmax(3em,auto);gap:10px;min-height:168px;padding:22px;border:0;border-radius:20px;background:var(--bg-card)}
+.app .rp .rp-stat:not(:nth-child(2)){border:1px solid var(--dashboard-card-border)}
 .app .rp .rp-stat-l{min-height:2.8em;margin:0;color:var(--txt-3);font-size:12px;line-height:1.4;letter-spacing:0;text-transform:none}
 .app .rp .rp-stat-v{font:600 clamp(28px,2.5vw,36px)/1.2 var(--font-ui);letter-spacing:-.025em;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .app .rp .rp-stat-f{margin:0;font-size:12px;line-height:1.5;color:var(--txt-3)}
@@ -34,7 +35,7 @@
 
 /* Provider tiles use the same geometry and type hierarchy as Usage. */
 .app .rp .uprovider-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
-.app .rp .uprovider-card{min-height:220px;padding:24px;border-radius:20px;box-shadow:none}
+.app .rp .uprovider-card{min-height:220px;padding:24px;border-color:var(--dashboard-card-border);border-radius:20px;box-shadow:none}
 .app .rp .uprovider-card::before{inset:0 24px auto;height:3px;border-radius:0 0 6px 6px}
 .app .rp .uprovider-name strong{font-size:16px;line-height:1.3}
 .app .rp .uprovider-name>span{font-size:11px;line-height:1.5;letter-spacing:0}
@@ -44,19 +45,19 @@
 /* Referral earnings reuses the Usage trend chart (.usage-trend classes from
    usage-charts.css); only the section frame stays scoped here. */
 .app .rp .referral-earnings-graph{margin:0}
-.app .rp .referral-earnings-graph .usage-trend{margin-top:0;border:0;box-shadow:var(--shadow)}
+.app .rp .referral-earnings-graph .usage-trend{margin-top:0;border:1px solid var(--dashboard-card-border);box-shadow:var(--shadow)}
 
 /* Supporting content: quiet surfaces, sentence-case headings, readable tables and forms. */
-.app .rp .rp-formula{padding:28px;border:0;border-radius:24px;background:var(--bg-card);box-shadow:var(--shadow);text-align:left}
+.app .rp .rp-formula{padding:28px;border:1px solid var(--dashboard-card-border);border-radius:24px;background:var(--bg-card);box-shadow:var(--shadow);text-align:left}
 .app .rp .rp-formula-l{margin:0 0 14px;font:600 21px/1.3 var(--font-ui);letter-spacing:-.02em;text-transform:none;color:var(--txt)}
 .app .rp .rp-formula-v{justify-content:flex-start;font-size:clamp(23px,2.6vw,32px)}
 .app .rp .rp-formula-b{margin:20px 0 0;font-size:14px;line-height:1.6}
 .app .rp .rp-formula-x{border:0;border-radius:12px;background:var(--accent-soft);font-size:13px;text-align:left}
-.app .rp .rp-table-wrap{border-radius:16px}
+.app .rp .rp-table-wrap{border-color:var(--dashboard-card-border);border-radius:16px}
 .app .rp .rp-table th{padding:14px 16px;font-size:12px;line-height:1.4;letter-spacing:0;text-transform:none}
 .app .rp .rp-table td,.app .rp .rp-table .rp-num{font-size:13px;line-height:1.5}
 .app .rp .rp-table td small{font-size:12px}
-.app .rp .referral-directory-toolbar{padding:20px;border:0;border-radius:20px;background:var(--bg-card)}
+.app .rp .referral-directory-toolbar{padding:20px;border:1px solid var(--dashboard-card-border);border-radius:20px;background:var(--bg-card)}
 .app .rp .referral-tab-panel>.table-scroll{border-radius:20px;background:var(--bg-card)}
 .app .rp .referral-directory-table th{font-size:12px;line-height:1.4;letter-spacing:0;text-transform:none}
 .app .rp .referral-directory-table td{font-size:13px;line-height:1.5}
@@ -69,7 +70,7 @@
 .app .rp .rp-invite-action,.app .rp .rp-wallet-edit .btn{padding-top:0;margin-top:24px}
 .app .rp :is(.rp-gate-hero,.rp-gate-invite,.referral-disabled-card){border-radius:24px}
 .app .rp .rp-gate-facts{gap:12px;border:0;border-radius:0;background:transparent;overflow:visible}
-.app .rp .rp-gate-facts>div{border:0;border-radius:20px;background:var(--bg-card)}
+.app .rp .rp-gate-facts>div{border:1px solid var(--dashboard-card-border);border-radius:20px;background:var(--bg-card)}
 
 @media(max-width:1180px){
   .app .rp .uprovider-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -102,7 +103,7 @@
   .app .rp .rp-wallet-actions{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}
   .app .rp .rp-wallet-actions .btn{width:100%;min-height:44px;justify-content:center}
   .app .rp .rp-wallet-edit .btn{min-height:44px;padding-block:10px;justify-content:center}
-  .app .rp .rp-docs-stack .rp-formula{padding:16px 0;border-radius:0;box-shadow:none;background:transparent}
+  .app .rp .rp-docs-stack .rp-formula{padding:16px 0;border:0;border-radius:0;box-shadow:none;background:transparent}
   .app .rp .rp-formula-l{font-size:20px;line-height:1.35}
   .app .rp .rp-note{padding:14px 16px}
   /* Partner lists become labelled records on phones, not cropped desktop tables. */
@@ -111,7 +112,7 @@
   .app .rp :is(.rp-table,.referral-directory-table){display:block;width:100%;min-width:0}
   .app .rp :is(.rp-table,.referral-directory-table) thead{display:none}
   .app .rp :is(.rp-table,.referral-directory-table) tbody{display:grid;gap:12px}
-  .app .rp :is(.rp-table,.referral-directory-table) tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 16px;padding:16px;border:1px solid var(--line);border-radius:16px;background:var(--bg-card)}
+  .app .rp :is(.rp-table,.referral-directory-table) tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 16px;padding:16px;border:1px solid var(--dashboard-card-border);border-radius:16px;background:var(--bg-card)}
   .app .rp :is(.rp-table,.referral-directory-table) td{display:flex;min-width:0;flex-direction:column;align-items:flex-start;gap:5px;padding:0;border:0;text-align:left;white-space:normal;overflow-wrap:anywhere}
   .app .rp :is(.rp-table,.referral-directory-table) td[data-label]::before{content:attr(data-label);color:var(--txt-3);font-size:11px;line-height:1.4;font-weight:400}
   .app .rp :is(.rp-table,.referral-directory-table) :is(td:first-child,td[colspan],.rp-mobile-action,.rp-mobile-wide){grid-column:1/-1}

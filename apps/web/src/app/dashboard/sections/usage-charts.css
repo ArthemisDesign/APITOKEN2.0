@@ -1,4 +1,4 @@
-.usage-trend{--trend-color:var(--accent);margin-top:30px;padding:28px;border:1px solid var(--line);border-radius:22px;background:var(--bg-card);color:var(--txt);min-width:0}
+.usage-trend{--trend-color:var(--accent);margin-top:30px;padding:28px;border:1px solid var(--dashboard-card-border);border-radius:22px;background:var(--bg-card);color:var(--txt);min-width:0}
 [data-theme="dark"] .usage-trend{--trend-color:var(--paper)}
 .usage-trend-head{display:flex;justify-content:space-between;align-items:flex-start;gap:20px}
 .usage-trend-head h2{margin:0;font:600 21px/1.3 var(--font-ui);letter-spacing:-.025em}
