@@ -3,7 +3,7 @@ export function DashboardLoading({ label = "Loading your account…" }: { label?
     <div className="app dashboard-loading dashboard-shell-loading" role="status" aria-live="polite">
       <p className="sr-only">{label}</p>
       <aside className="side dashboard-shell-side" aria-hidden="true">
-        <span className="brand side-brand">apiToken.sale</span>
+        <span className="brand side-brand"><span className="side-brand__mark" aria-hidden="true" />apiToken</span>
         <div className="dashboard-shell-nav">
           {[0, 1, 2, 3, 4, 5, 6].map((item) => <span className="skl dashboard-shell-nav-row" key={item} />)}
         </div>

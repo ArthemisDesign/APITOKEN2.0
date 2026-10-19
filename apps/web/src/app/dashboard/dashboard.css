@@ -560,11 +560,12 @@
   --side-active:var(--paper);--side-active-text:var(--ink-2);--side-active-icon:rgba(46,46,46,.08);
   background:var(--bg-card);
   border-right-color:rgba(255,255,255,.1)}
-/* Brand in the landing style: red square mark + tight wordmark on the sidebar surface. */
-.side-brand{display:inline-flex;align-items:center;gap:10px;margin:2px 10px 27px;
-  font-family:var(--font-display);font-weight:700;font-size:18px;letter-spacing:-.04em;color:var(--txt)}
-.side-brand__mark{width:13px;height:13px;background:var(--accent);border-radius:2px;flex:none;
-  box-shadow:0 0 0 5px var(--accent-soft)}
+/* Use the landing's octopus and wordmark in the sidebar's current text colour. */
+.side-brand{display:inline-flex;align-items:center;gap:12px;margin:2px 10px 27px;
+  font-family:var(--font-display);font-weight:600;font-size:24px;line-height:1;letter-spacing:-.03em;color:var(--txt)}
+.side-brand__mark{width:32px;height:27px;background:currentColor;flex:none;
+  -webkit-mask:url(/landing/octopus.svg) center/contain no-repeat;
+          mask:url(/landing/octopus.svg) center/contain no-repeat}
 .side-nav{display:flex;flex-direction:column;gap:2px;flex:1;min-height:max-content;overflow:visible;padding:0 2px 8px}
 .side-nav button{display:flex;align-items:center;gap:12px;width:100%;min-height:38px;padding:10px 12px;
   border:1px solid transparent;background:transparent;border-radius:8px;cursor:pointer;text-align:left;
