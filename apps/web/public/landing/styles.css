@@ -881,7 +881,9 @@ input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(var(--hot-r
    13 · GROW
    ========================================================= */
 .grow{
-  position:relative;height:clamp(280px,32vw,440px);
+  --line:rgba(var(--ink-rgb),.14);--fg:var(--ink);
+  position:relative;min-height:280px;height:auto;
+  display:flex;flex-wrap:wrap;align-items:center;align-content:center;justify-content:center;gap:12px;padding:24px;
   border:1px solid var(--line);border-radius:20px;
   overflow:hidden;margin-top:20px;
   background:var(--paper-2);
@@ -889,23 +891,28 @@ input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(var(--hot-r
   background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
   background-size:44px 44px;
 }
-/* the pop-in keyframes were never defined, so the chips stayed invisible */
-@keyframes pop{to{opacity:1;transform:scale(1)}}
-.grow span{
-  /* grow.js moves chips with `translate`; the pop-in keeps `transform` */
-  position:absolute;left:0;top:0;
-  padding:clamp(10px,1.1vw,18px) clamp(16px,1.8vw,28px);border:1px solid var(--line);
-  font-family:var(--mono);font-size:clamp(13px,1.25vw,19px);letter-spacing:.03em;color:var(--ink);white-space:nowrap;
-  opacity:0;transform:scale(.92);animation:pop .8s ease forwards;
+.grow__hint{color:var(--paper);font-size:14px;line-height:1.5}
+.grow.is-floating{display:block;height:clamp(280px,32vw,440px);padding:0}
+.grow__chip{
+  position:relative;display:inline-flex;align-items:center;justify-content:center;gap:10px;
+  min-height:44px;max-width:100%;padding:12px 18px;border:1px solid var(--line);
+  font-family:var(--mono);font-size:clamp(13px,1.1vw,17px);letter-spacing:0;color:var(--fg);white-space:nowrap;
   border-radius:999px;background:var(--paper);
-  box-shadow:var(--shadow-xs);will-change:translate;
+  box-shadow:var(--shadow-xs);cursor:pointer;
+  transition:color .2s,background-color .2s,border-color .2s,box-shadow .2s;
 }
-.grow span.new{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.grow__chip::after{content:'↗';font-size:.9em;opacity:.7}
+.grow.is-floating .grow__chip{position:absolute;left:0;top:0;will-change:translate}
+.grow__chip.new{background:var(--accent);color:var(--paper);border-color:var(--accent)}
 /* dark theme: the field returns to the deep ink panel */
-[data-theme="dark"] .grow{background-color:var(--ink-2);
+[data-theme="dark"] .grow{--line:rgba(var(--paper-rgb),.25);--fg:var(--paper);background-color:var(--ink-2);
   background-image:linear-gradient(rgba(var(--paper-rgb),.08) 1px,transparent 1px),linear-gradient(90deg,rgba(var(--paper-rgb),.08) 1px,transparent 1px)}
-[data-theme="dark"] .grow span{border-color:rgba(var(--paper-rgb),.25);color:var(--paper);background:rgba(var(--paper-rgb),.05)}
-[data-theme="dark"] .grow span.new{background:var(--paper);color:var(--accent);border-color:var(--paper)}
+[data-theme="dark"] .grow__chip{background:rgba(var(--paper-rgb),.05)}
+[data-theme="dark"] .grow__chip.new{background:var(--paper);color:var(--ink);border-color:var(--paper)}
+.grow .grow__chip:is(:hover,:focus-visible){background:var(--hot);border-color:var(--hot);color:var(--paper)}
+.grow__chip:focus-visible{outline:2px solid var(--hot);outline-offset:3px}
+.page-landing .mcard{scroll-margin-top:calc(var(--hdr-h,84px) + 24px)}
+.page-landing .mcard:is(:target,:focus){outline:2px solid var(--hot);outline-offset:4px}
 
 /* FAQ */
 .acc{border-top:1px solid var(--line);border-radius:12px;overflow:hidden}
@@ -1053,7 +1060,7 @@ input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(var(--hot-r
 .case__vis--stack span,.route__in,.route__split{border-radius:var(--r-pill)}
 .case__vis--bars i{border-radius:var(--r-pill) var(--r-pill) 3px 3px}
 .case__vis--flow i{border-radius:var(--r-s)}
-.grow span{border-radius:var(--r-pill)}
+.grow__chip{border-radius:var(--r-pill)}
 .mo-rot{border-radius:2px}
 
 /* --- separators calm down --- */
@@ -1075,7 +1082,7 @@ input[type=range]:active::-moz-range-thumb{box-shadow:0 0 0 7px rgba(var(--hot-r
   .netwrap .node,.netwrap .core{display:none}
 
   .grow{height:auto;min-height:0;padding:22px 16px;display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
-  .grow span{position:static;left:auto;top:auto;translate:none;opacity:1;transform:none;animation:none}
+  .grow__chip{position:relative;left:auto;top:auto}
 
   .flow__fan{height:56px}
   .term__body,.code{font-size:11px}

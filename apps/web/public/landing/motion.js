@@ -50,7 +50,7 @@ if (window.Lenis && window.MO_SMOOTH !== false && !REDUCED && !TOUCH) {
   gsap.ticker.lagSmoothing(0);
 
   // anchor links go through Lenis so easing stays consistent
-  $$('a[href^="#"]').forEach(a => a.addEventListener('click', e => {
+  $$('a[href^="#"]:not([data-model-id])').forEach(a => a.addEventListener('click', e => {
     const id = a.getAttribute('href');
     if (id.length < 2) return;
     const t = document.querySelector(id);
@@ -218,7 +218,7 @@ $$('.netwrap').forEach(wrap => {
 /* ---------------------------------------------------------
    8 · PARALLAX PLANES
    --------------------------------------------------------- */
-$$('.term, .grow, .compare__col--after, .code').forEach(n => {
+$$('.term, .compare__col--after, .code').forEach(n => {
   gsap.fromTo(n, { y: 34 }, {
     y: -34, ease: 'none',
     scrollTrigger: { trigger: n, start: 'top bottom', end: 'bottom top', scrub: .8 }

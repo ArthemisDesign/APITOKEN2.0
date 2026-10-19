@@ -88,8 +88,6 @@ const FAQ = [
   ['How do I get a B2B quote?','Fill out the short form in the Business terms section and we will return a calculation tailored to your volume.']
 ];
 
-const GROW_ITEMS = ['GPT','Claude','Gemini','Llama','Qwen','DeepSeek','+ new provider','+ new model','+ ...'];
-
 const $  = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const el = (tag, cls, html) => {
@@ -129,6 +127,7 @@ const observeReveals = () => $$('.reveal:not(.in)').forEach(n => io.observe(n));
 
   CAPS.forEach(c => {
     const b = el('button', 'chip' + (c.id === active ? ' on' : ''), c.name);
+    b.dataset.cap = c.id;
     b.onclick = () => {
       active = c.id;
       $$('.chip', wrapF).forEach(x => x.classList.toggle('on', x === b));
@@ -139,6 +138,9 @@ const observeReveals = () => $$('.reveal:not(.in)').forEach(n => io.observe(n));
 
   function card(m) {
     const n = el('article', 'mcard' + (m.isNew ? ' mcard--new' : ''));
+    n.id = 'model-' + m.id;
+    n.tabIndex = -1;
+    n.setAttribute('aria-label', m.name);
     n.innerHTML = `
       <div class="mcard__top">
         <span class="mcard__name">${m.name}</span>
@@ -172,6 +174,30 @@ const observeReveals = () => $$('.reveal:not(.in)').forEach(n => io.observe(n));
     });
   }
   render();
+
+  // Cloud links always reveal their exact card, including after filtering.
+  document.addEventListener('click', event => {
+    const link = event.target instanceof Element
+      ? event.target.closest('#growField a[data-model-id]') : null;
+    if (!link || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (!ALL_MODELS.some(m => m.id === link.dataset.modelId)) return;
+    event.preventDefault();
+    if (active !== 'all') wrapF.querySelector('[data-cap="all"]').click();
+    const target = document.getElementById('model-' + link.dataset.modelId);
+    if (!target) return;
+    const hash = '#' + target.id;
+    if (location.hash !== hash) history.pushState(null, '', hash);
+    target.focus({ preventScroll: true });
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (window.__lenis && !reduced) {
+      // Rendering a different filter changes page height; refresh before measuring.
+      window.__lenis.resize();
+      window.__lenis.scrollTo(target, { duration: .9 });
+    } else {
+      target.scrollIntoView({ block: 'start', behavior: reduced ? 'instant' : 'smooth' });
+    }
+  });
+
 })();
 
 const videoCleanup = new WeakMap();
