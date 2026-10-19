@@ -306,6 +306,16 @@ html{background:var(--bg)}
 .hdr__acts .theme-tgl{width:34px;flex:none}
 .hdr__acts .lnk{width:52px;justify-content:center;text-align:center;flex:none}
 .hdr__acts .btn{width:130px;flex:none;padding-left:0;padding-right:0}
+/* The middle six grid columns share the page centre. At compact desktop
+   widths, centre the links in the actual space between the two side groups. */
+@media (min-width:1025px){
+  .hdr__in > .nav{justify-content:center;white-space:nowrap}
+}
+@media (min-width:1025px) and (max-width:1279px){
+  .hdr__in.grid{display:flex;gap:20px}
+  .hdr__in > .brand,.hdr__in > .hdr__acts{flex:none}
+  .hdr__in > .nav{flex:1;min-width:0}
+}
 .lang{
   position:relative;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch;gap:2px;width:94px;flex:none;
   padding:3px;border:1px solid var(--line);border-radius:999px;
