@@ -40,11 +40,11 @@
 .vcover-editor{transform:rotate(5deg)}
 .vcover-editor__body{display:grid;gap:2cqw;padding:2.5cqw}
 .vcover-editor__body>div{display:grid;gap:1cqw;padding:1.4cqw;border:1px solid color-mix(in srgb,var(--cover-fg) 20%,transparent);border-radius:.8cqw;font-size:.75em}
-.vcover-editor__body>div:last-child{border-color:var(--hot);background:color-mix(in srgb,var(--hot) 14%,transparent)}
+.vcover-editor__body>div:last-child{background:color-mix(in srgb,var(--hot) 14%,transparent)}
 .vcover-braces{font-size:8cqw;line-height:1;letter-spacing:-.12em;color:var(--cover-accent);font-weight:500}
 .vcover-models{display:grid;gap:1.7cqw;transform:rotate(-6deg)}
 .vcover-models>div{display:flex;align-items:center;gap:1.8cqw;padding:1.7cqw 2.2cqw;border:1px solid color-mix(in srgb,var(--cover-fg) 25%,transparent);border-radius:1.2cqw;background:var(--cover-bg)}
-.vcover-models>div:nth-child(2){margin-left:3cqw;margin-right:-3cqw;background:var(--ink);color:var(--paper);border-color:var(--hot)}
+.vcover-models>div:nth-child(2){margin-left:3cqw;margin-right:-3cqw;background:var(--ink);color:var(--paper)}
 .vcover-models .vcover-logo{width:3.8cqw;height:3.8cqw}
 .vcover-models__route{display:flex;justify-content:space-between;align-items:center;gap:1cqw;padding:1cqw 2cqw;font-size:.8em;letter-spacing:.06em}
 .vcover-models__route>b{font-size:2em;color:var(--hot)}

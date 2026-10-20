@@ -24,7 +24,7 @@
 /* Dark theme: the inverted accent stat stops being a near-white block on the
    dark canvas and becomes the same translucent white panel as the other
    accent surfaces. */
-[data-theme="dark"] .app .rp .rp-stat:nth-child(2){background:var(--accent-soft);border:1px solid var(--accent-line)}
+[data-theme="dark"] .app .rp .rp-stat:nth-child(2){background:var(--accent-soft);border:1px solid var(--dashboard-card-border)}
 [data-theme="dark"] .app .rp .rp-stat:nth-child(2) :is(.rp-stat-l,.rp-stat-f){color:var(--txt-3)}
 [data-theme="dark"] .app .rp .rp-stat:nth-child(2) .rp-stat-v{color:var(--accent-ink)}
 

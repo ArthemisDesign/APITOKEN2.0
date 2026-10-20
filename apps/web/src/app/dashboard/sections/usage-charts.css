@@ -52,17 +52,15 @@
 .trend-detail-providers>div{display:flex;justify-content:space-between;gap:10px;min-width:0}
 .trend-detail-providers b{font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;color:var(--paper)}
 .trend-detail-providers div>span{color:var(--paper);overflow-wrap:anywhere}
-/* Dark theme: the day-detail panel stops being a solid red block and becomes
-   a quiet navy panel with a red outline, matching the receipt and the
-   balance hero card. */
-[data-theme="dark"] .usage-trend-detail{background:var(--blue-deep);color:var(--paper);border:1px solid var(--accent);box-shadow:none}
+/* The dark day-detail panel shares the neutral card frame and navy surface. */
+[data-theme="dark"] .usage-trend-detail{background:var(--blue-deep);color:var(--paper);border:1px solid var(--dashboard-card-border);box-shadow:none}
 [data-theme="dark"] .usage-trend-detail .trend-detail-label{color:var(--paper)}
 [data-theme="dark"] .usage-trend-detail h3{color:var(--paper)}
 [data-theme="dark"] .usage-trend-detail dt{color:var(--paper)}
 [data-theme="dark"] .usage-trend-detail dd{color:var(--paper)}
 [data-theme="dark"] .usage-trend-detail .trend-detail-primary dt{color:var(--paper)}
 [data-theme="dark"] .usage-trend-detail .trend-detail-primary dd{color:var(--paper)}
-[data-theme="dark"] .usage-trend-detail .trend-detail-providers{border-top-color:rgba(200,29,53,.4)}
+[data-theme="dark"] .usage-trend-detail .trend-detail-providers{border-top-color:var(--line-strong)}
 [data-theme="dark"] .usage-trend-detail .trend-detail-providers>span{color:var(--paper)}
 [data-theme="dark"] .usage-trend-detail .trend-detail-providers b{color:var(--paper)}
 [data-theme="dark"] .usage-trend-detail .trend-detail-providers div>span{color:var(--paper)}
