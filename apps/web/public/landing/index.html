@@ -216,11 +216,13 @@
         <button class="lnk lnk--arrow" id="advToggle">Расширенный калькулятор</button>
         <div class="adv" id="adv" hidden>
           <div class="adv__grid">
-            <label>Входные токены<input type="text" value="12 000 000"></label>
-            <label>Выходные токены<input type="text" value="3 000 000"></label>
-            <label>Кэш<input type="text" value="40%"></label>
-            <label>Модель<input type="text" value="claude-opus-5"></label>
+            <label>Входные токены<input type="text" inputmode="numeric" data-calc-field="inputTokens" aria-describedby="advStatus" value="12 000 000"></label>
+            <label>Выходные токены<input type="text" inputmode="numeric" data-calc-field="outputTokens" aria-describedby="advStatus" value="3 000 000"></label>
+            <label>Кэш<input type="text" inputmode="decimal" data-calc-field="cachePercent" aria-describedby="advStatus" value="40%"></label>
+            <label>Модель<input type="text" data-calc-field="modelId" aria-describedby="advStatus" list="advModels" spellcheck="false" value="claude-opus-5"></label>
           </div>
+          <datalist id="advModels"></datalist>
+          <p class="calc__lab" id="advStatus" role="status" aria-live="polite"></p>
         </div>
       </div>
     </div>
@@ -440,6 +442,7 @@
 <script src="/landing/vendor/lenis.min.js"></script>
 <script src="/landing/vendor/split-type.min.js"></script>
 <script src="/landing/video-covers.js"></script>
+<script src="/landing/calculator.js"></script>
 <script src="/landing/app.js"></script>
 <script src="/landing/grow.js"></script>
 <script src="/landing/b2b-modal.js"></script>

@@ -305,6 +305,7 @@ $$('[data-count]').forEach(n => countIO.observe(n));
   const profWrap = $('#calcProfiles'), params = $('#calcParams'), input = $('#spendInput');
   if (!profWrap) return;
   let profile = PROFILES[1], devs = 25, usage = 2;
+  let advanced;
   const USAGE = ['Low', 'Medium', 'High', 'Very high'];
 
   chipGroup(profWrap, PROFILES.map(p => p.name), PROFILES.indexOf(profile), i => {
@@ -365,6 +366,7 @@ $$('[data-count]').forEach(n => countIO.observe(n));
   }
 
   function recalc(fromProfile) {
+    advanced?.close();
     let spend;
     if (fromProfile) { spend = estimate(); input.value = Math.round(spend).toLocaleString('en-US').replace(/,/g, ' '); }
     else spend = +input.value.replace(/[^\d]/g, '') || 0;
@@ -378,7 +380,7 @@ $$('[data-count]').forEach(n => countIO.observe(n));
 
   input.oninput = () => recalc(false);
   input.onblur  = () => { input.value = (+input.value.replace(/[^\d]/g, '') || 0).toLocaleString('en-US').replace(/,/g, ' '); };
-  $('#advToggle').onclick = () => { const a = $('#adv'); a.hidden = !a.hidden; };
+  advanced = window.LandingCalculator.bind({ language: 'en', onBasic: () => recalc(false) });
 
   renderParams(); recalc(true);
 })();

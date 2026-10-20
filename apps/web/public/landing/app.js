@@ -373,6 +373,7 @@ $$('[data-count]').forEach(n => countIO.observe(n));
   const profWrap = $('#calcProfiles'), params = $('#calcParams'), input = $('#spendInput');
   if (!profWrap) return;
   let profile = PROFILES[1], devs = 25, usage = 2;
+  let advanced;
   const USAGE = ['Низкая', 'Средняя', 'Высокая', 'Очень высокая'];
 
   /* A chip group with a gliding thumb behind the active chip — same feel as
@@ -457,6 +458,7 @@ $$('[data-count]').forEach(n => countIO.observe(n));
   }
 
   function recalc(fromProfile) {
+    advanced?.close();
     let spend;
     if (fromProfile) { spend = estimate(); input.value = Math.round(spend).toLocaleString('ru-RU').replace(/,/g, ' '); }
     else spend = +input.value.replace(/[^\d]/g, '') || 0;
@@ -469,7 +471,10 @@ $$('[data-count]').forEach(n => countIO.observe(n));
 
   input.oninput = () => recalc(false);
   input.onblur  = () => { input.value = (+input.value.replace(/[^\d]/g, '') || 0).toLocaleString('ru-RU').replace(/,/g, ' '); };
-  $('#advToggle').onclick = () => { const a = $('#adv'); a.hidden = !a.hidden; };
+  advanced = window.LandingCalculator.bind({
+    language: 'ru', onBasic: () => recalc(false),
+    beforeAdvanced: () => { cancelAnimationFrame(rafSave); rafSave = null; shownSave = null; },
+  });
 
   renderParams(); recalc(true);
 })();

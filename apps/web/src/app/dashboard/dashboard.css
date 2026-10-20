@@ -587,7 +587,7 @@
 [data-theme="dark"] .side{
   --side-hover:rgba(255,255,255,.065);--side-icon:rgba(255,255,255,.055);
   --side-active:var(--paper);--side-active-text:var(--ink-2);--side-active-icon:rgba(46,46,46,.08);
-  background:var(--bg-card);
+  background:var(--ink);
   border-right-color:rgba(255,255,255,.1)}
 /* Use the landing's octopus and wordmark in the sidebar's current text colour. */
 .side-brand{display:inline-flex;align-items:center;gap:12px;margin:2px 10px 27px;
@@ -635,6 +635,7 @@
     var(--dash-bg)}
 .app-top{position:sticky;top:0;z-index:5;min-height:72px;padding:0 40px;
   background:var(--bg-card);border-bottom:1px solid var(--line)}
+[data-theme="dark"] .app .app-top{background:var(--ink)}
 .app-top-in{display:flex;align-items:center;gap:14px;width:100%;max-width:1280px;min-height:71px;margin:0 auto}
 .app-burger{display:none;background:none;border:0;font-size:22px;color:var(--txt);cursor:pointer}
 /* Keep every section title on one line; truncate instead of growing the sticky top bar. */
