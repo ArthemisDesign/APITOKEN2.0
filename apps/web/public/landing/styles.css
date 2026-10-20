@@ -2303,48 +2303,44 @@ a:focus-visible,button:focus-visible,[role="button"]:focus-visible,[tabindex]:fo
 }
 [data-theme="dark"] .mcard--new{border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
 
-/* why apiToken · the four figures in one even row instead of stacked rows */
-.numbers{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+/* Four independent metrics, with only quiet dividers between neighbours. */
+.numbers{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));row-gap:40px;border:0}
 .numbers .num{
-  display:flex;flex-direction:column;align-items:flex-start;gap:14px;
-  padding:clamp(28px,3vw,48px) clamp(16px,1.6vw,28px);
-  border-top:0;border-bottom:0;border-left:1px solid var(--line);
+  display:flex;flex-direction:column;align-items:flex-start;gap:0;
+  min-width:0;position:relative;grid-column:auto;padding:0 clamp(20px,2.4vw,36px);
+  border:0;border-left:1px solid var(--line);
 }
 .numbers .num:first-child{border-left:0;padding-left:0}
-.numbers .num:last-child{border-bottom:0}
-.numbers .num__val{font-size:clamp(56px,7.4vw,136px);line-height:.9}
-.numbers .num__desc{max-width:28ch}
-@media (max-width:960px){
-  .numbers{grid-template-columns:repeat(2,1fr)}
-  .numbers .num:nth-child(odd){border-left:0;padding-left:0}
-  .numbers .num:nth-child(n+3){border-top:1px solid var(--line)}
+.numbers .num:last-child{padding-right:0}
+.numbers .num__val{
+  margin-bottom:18px;font-size:clamp(44px,4.5vw,72px);line-height:1;
+  letter-spacing:-.045em;white-space:nowrap;font-variant-numeric:tabular-nums;
 }
-@media (max-width:560px){
-  .numbers{grid-template-columns:1fr}
-  .numbers .num{border-left:0;padding-left:0}
-  .numbers .num + .num{border-top:1px solid var(--line)}
+.page-landing .numbers .num__lab{
+  min-height:2.8em;margin-bottom:10px;font-size:14px;line-height:1.4;
+  font-weight:500;letter-spacing:-.01em;text-transform:none;
 }
-
-/* why apiToken · take A: the million leads in a double-width cell */
-.numbers--a{grid-template-columns:1.8fr 1fr 1fr 1fr}
-/* one size across the row so the captions line up */
-.numbers--a .num__val{font-size:clamp(46px,5.6vw,108px);white-space:nowrap}
-/* take B: "One balance" is a word, not a number */
-.numbers .num__val--word{font-size:clamp(34px,3.6vw,66px);line-height:.95;letter-spacing:-.04em}
-/* take C: bare 50 · 1 · 1 · 40 read as a puzzle; the captions decode it */
-.numbers--c .num__val{font-size:clamp(80px,11vw,210px)}
-.numbers--c .num__lab{font-size:12px}
+.numbers .num__desc{max-width:30ch;margin:0;font-size:15px;line-height:1.55}
+/* The word metric in the optional alternate layout needs two compact lines. */
+.numbers .num__val--word{font-size:clamp(28px,2.8vw,40px);line-height:1;letter-spacing:-.03em;white-space:normal}
 .numbers[hidden]{display:none}
 @media (max-width:960px){
-  .numbers--a{grid-template-columns:repeat(2,1fr)}
-  .numbers--a .num:first-child{grid-column:1/-1;padding-left:0}
-  .numbers--a .num:nth-child(2){border-left:0;padding-left:0;border-top:1px solid var(--line)}
-  .numbers--a .num:nth-child(3){border-left:1px solid var(--line);padding-left:clamp(16px,1.6vw,28px);border-top:1px solid var(--line)}
-  .numbers--a .num:nth-child(4){border-left:0;padding-left:0}
+  .numbers{grid-template-columns:repeat(2,minmax(0,1fr));row-gap:36px}
+  .numbers .num:nth-child(odd){border-left:0;padding-left:0}
+  .numbers .num:nth-child(even){padding-right:0}
+  .numbers .num__val{font-size:56px}
+  .numbers .num__val--word{font-size:30px}
+  .page-landing .numbers .num__lab{min-height:0}
 }
 @media (max-width:560px){
-  .numbers--a{grid-template-columns:1fr}
-  .numbers--a .num:nth-child(3){border-left:0;padding-left:0}
+  .numbers{grid-template-columns:minmax(0,1fr);row-gap:24px}
+  .numbers .num{border-left:0;padding:0}
+  .numbers .num + .num{padding-top:24px}
+  .numbers .num + .num::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;background:var(--line)}
+  .numbers .num__val{margin-bottom:12px;font-size:48px}
+  .numbers .num__val--word{font-size:28px}
+  .page-landing .numbers .num__lab{margin-bottom:8px}
+  .numbers .num__desc{max-width:40ch}
 }
 
 /* =========================================================
