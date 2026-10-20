@@ -547,6 +547,34 @@
    sidebar surface reads full-height (light theme showed a bg-soft gap below the fold). On mobile the
    single-column .app-main paints bg-soft over it, so this is invisible there. */
 .app{--dashboard-card-border:color-mix(in srgb,var(--txt) 45%,var(--bg-card));display:grid;grid-template-columns:264px minmax(0,1fr);min-height:100vh;position:relative;z-index:2;background:var(--dash-bg)}
+/* Dashboard dark surfaces use the agreed brand palette rather than the shared
+   blue-grey page tokens. Keep provider colours and semantic status tokens. */
+[data-theme="dark"] .app{
+  color:var(--paper);
+  --bg:var(--ink);
+  --bg-soft:var(--ink);
+  --bg-card:var(--blue-deep);
+  --dash-bg:var(--ink);
+  --ink-2:var(--ink);
+  --txt:var(--paper);
+  --txt-2:var(--paper);
+  --txt-3:var(--paper);
+  --txt-4:var(--paper);
+  --head:var(--paper);
+  --accent-soft:var(--blue);
+  --accent-line:var(--accent);
+  --term-bg:var(--ink);
+  --term-comment:var(--paper);
+  --term-key:var(--paper);
+  --term-green:var(--paper);
+  --term-dot:var(--paper);
+  --dashboard-chart-1:#C81D35;
+  --dashboard-chart-2:#FFFFFF;
+  --dashboard-chart-3:#A8A8A8;
+  --dashboard-chart-4:#AE192F;
+  --dashboard-chart-5:#D4D4D4;
+  --dashboard-chart-6:#8A8A8A;
+}
 /* No double-tap-zoom delay on dashboard controls; panning/pinch stay intact. */
 .app button,.app a,.app summary,.app select,.app .btn{touch-action:manipulation}
 /* The desktop navigation fits as one composition and follows the page scroll without an inner
@@ -1855,3 +1883,18 @@ body.app-body .bg-decor{display:none!important}
 
 /* Dark labels keep readable contrast on the lighter payout status fills. */
 .referral-payout-roadmap .lock,.referral-payout-roadmap .pay{color:var(--ink)}
+
+/* Red/navy blends made decorative panels purple or brown. Use solid brand
+   surfaces here; charts, provider identities and status fills retain meaning. */
+[data-theme="dark"] .app .app-main{background:var(--dash-bg)}
+[data-theme="dark"] .app :is(.pricing-banner-partner,.pricing-banner-flat,.secret-card,.support-bot,.overview-onboarding,.rp-formula,.rp-hero,.rp-gate-hero,.rp-gate-invite){background:var(--bg-card)}
+[data-theme="dark"] .app .support-bot-glow,
+[data-theme="dark"] .app .rp-gate-hero::after{background:none}
+[data-theme="dark"] .app .support-bot-av{background:var(--accent);box-shadow:none}
+[data-theme="dark"] .app .uprovider-card::before{background:var(--accent)}
+[data-theme="dark"] .app .uprovider-discount{background:var(--bg-soft);border-color:var(--line-strong);color:var(--paper)}
+[data-theme="dark"] .app .uprovider-guide{color:var(--paper)}
+[data-theme="dark"] .app .overview-progress{background:var(--bg-soft)}
+[data-theme="dark"] .app .usage-analytics-card .uchart{background:var(--bg-card)}
+[data-theme="dark"] .app .usage-analytics-card .uchart-col:is(:hover,.is-hover){background:var(--bg-soft)}
+[data-theme="dark"] .app .key-table tbody tr:hover{background:var(--bg-soft)}

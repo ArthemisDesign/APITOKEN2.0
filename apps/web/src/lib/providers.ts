@@ -76,8 +76,15 @@ export const DASHBOARD_PROVIDERS: DashboardProvider[] = [
   },
 ];
 
-/** Muted site-palette series remain visible on butter and charcoal chart surfaces. */
-export const DASHBOARD_CHART_COLORS = ["#c86176", "#7186b5", "#988352", "#9f78a7", "#668c94", "#aa7b62"] as const;
+/** Theme-aware chart series; fallbacks preserve the existing light palette. */
+export const DASHBOARD_CHART_COLORS = [
+  "var(--dashboard-chart-1, #c86176)",
+  "var(--dashboard-chart-2, #7186b5)",
+  "var(--dashboard-chart-3, #988352)",
+  "var(--dashboard-chart-4, #9f78a7)",
+  "var(--dashboard-chart-5, #668c94)",
+  "var(--dashboard-chart-6, #aa7b62)",
+] as const;
 
 /** Авто-карточка для провайдера, которого нет в реестре (например, «other»). */
 export function fallbackProvider(id: string, name: string): DashboardProvider {
