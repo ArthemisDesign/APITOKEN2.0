@@ -4,22 +4,44 @@
   // the notch/status area must not leave a paper or transparent strip over coral.
   if (document.documentElement.classList.contains('landing-home')) {
     // Suppress boundary rubber-banding/pull-to-refresh on touch browsers that
-    // do not honour root overscroll-behavior. Normal scrolling, inner scrollers,
-    // horizontal gestures, form controls and pinch zoom remain native.
+    // do not honour root overscroll-behavior. Horizontal gestures belong only
+    // to inner scrollers; form controls, pinch zoom and vertical scroll stay native.
     let touch = null;
     document.addEventListener('touchstart', event => {
-      touch = event.touches.length === 1 ? {x:event.touches[0].clientX,y:event.touches[0].clientY} : null;
+      const point = event.touches[0];
+      touch = event.touches.length === 1 ? {x:point.clientX,y:point.clientY,startX:point.clientX,startY:point.clientY,axis:null} : null;
     }, {passive:true});
     document.addEventListener('touchmove', event => {
       if (!touch || event.touches.length !== 1) { touch = null; return; }
       const point = event.touches[0];
       const dx = point.clientX - touch.x, dy = point.clientY - touch.y;
-      touch = {x:point.clientX,y:point.clientY};
-      if (!event.cancelable || Math.abs(dy) <= Math.abs(dx) || !dy) return;
+      touch.x = point.clientX; touch.y = point.clientY;
+      if (!event.cancelable || (!dx && !dy)) return;
       const target = event.target instanceof Element ? event.target : null;
       if (target?.closest('input,textarea,select,[contenteditable="true"]')) return;
       const root = document.scrollingElement;
       if (!root) return;
+      if (!touch.axis) {
+        const totalX = point.clientX - touch.startX, totalY = point.clientY - touch.startY;
+        if (Math.max(Math.abs(totalX), Math.abs(totalY)) < 4) return;
+        // Lock the gesture axis so small sideways jitter cannot cancel a vertical swipe.
+        touch.axis = Math.abs(totalX) >= Math.abs(totalY) ? 'x' : 'y';
+      }
+      if (touch.axis === 'x') {
+        if (!dx) return;
+        for (let node = target; node && node !== document.body && node !== root; node = node.parentElement) {
+          const style = getComputedStyle(node);
+          if (!/^(auto|scroll)$/.test(style.overflowX)) continue;
+          const remaining = node.scrollWidth - node.clientWidth;
+          // Modern RTL scrollers use negative scrollLeft, starting at the right edge.
+          const left = style.direction === 'rtl' ? remaining + node.scrollLeft : node.scrollLeft;
+          if (remaining > 1 && (dx > 0 ? left > 0 : left < remaining - 1)) return;
+        }
+        // No inner scroller can consume this direction: do not chain into the page.
+        event.preventDefault();
+        return;
+      }
+      if (!dy) return;
       for (let node = target; node && node !== document.body && node !== root; node = node.parentElement) {
         if (!/^(auto|scroll)$/.test(getComputedStyle(node).overflowY)) continue;
         const remaining = node.scrollHeight - node.clientHeight;

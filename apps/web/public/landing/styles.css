@@ -185,6 +185,13 @@
 
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth;overflow-x:clip}
+/* Contain the viewport's horizontal pan without making body a scroll container
+   around sticky elements. Tables and code keep their own local scroll areas. */
+@media(max-width:1024px){
+  html{overflow-x:hidden;overscroll-behavior-x:none;touch-action:pan-y pinch-zoom}
+  body{width:100%;max-width:100%;overscroll-behavior-x:none}
+  :is(.code,.term__body,.docs-code pre){overscroll-behavior-x:contain;touch-action:auto}
+}
 body{
   background:var(--bg);color:var(--fg);
   font-family:var(--sans);
@@ -1760,9 +1767,9 @@ body{line-height:1.5}
   .sechead .display{font-size:clamp(30px,9.5vw,48px)}
 
   /* filters */
-  .filters{max-width:100%;overflow-x:auto;flex-wrap:nowrap;gap:3px;padding:5px;border-radius:999px}
+  .filters{max-width:100%;overflow:visible;flex-wrap:wrap;gap:3px;padding:5px;border-radius:0}
   .filters .chip{flex:none}
-  .ask__opts{max-width:100%;overflow-x:auto;flex-wrap:nowrap}
+  .ask__opts{max-width:100%;overflow:visible;flex-wrap:wrap}
   .ask__opts .chip{flex:none}
 
   /* cards */
@@ -1774,11 +1781,8 @@ body{line-height:1.5}
   .pick{min-height:0;padding:20px}
   .pick__name{font-size:20px}
 
-  /* integrations — the tab row must scroll inside the viewport: inline-flex
-     keeps the element shrink-to-fit, so the row would overflow its own scroll
-     box and swallow the overflowing tabs. Make it a block flex, cap the width
-     at the parent and scroll horizontally. */
-  .tabs{display:flex;flex-wrap:nowrap;overflow-x:auto;border-radius:999px;max-width:100%;width:100%}
+  /* All integration choices stay visible without a sideways swipe. */
+  .tabs{display:flex;flex-wrap:wrap;overflow:visible;border-radius:0;max-width:100%;width:100%}
   .tab{flex:none;white-space:nowrap}
   .intsteps{flex-direction:column}
   .intsteps div{border-right:0;border-bottom:1px solid var(--line);padding:18px 16px}
@@ -1791,7 +1795,8 @@ body{line-height:1.5}
   .term__out{padding:20px}
 
   /* calculator */
-  .calc{grid-template-columns:1fr;border-radius:var(--r-l)}
+  .calc{grid-template-columns:minmax(0,1fr);border-radius:var(--r-l)}
+  .calc>.calc__in,.calc>.calc__out{grid-column:1/-1;min-width:0}
   .calc__in{border-right:0;border-bottom:1px solid var(--line)}
   .calc__out{position:static;margin-top:0;border-radius:0 0 var(--r-l) var(--r-l)}
 

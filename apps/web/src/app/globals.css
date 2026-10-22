@@ -99,6 +99,13 @@
 html{scroll-behavior:smooth;background:var(--bg)}
 /* overscroll-behavior:none — no rubber-band past the top/bottom of the page (landing, dashboard, docs) */
 html,body{overflow-x:clip;max-width:100%;overscroll-behavior:none}
+/* Keep the viewport fixed horizontally while body stays outside the sticky
+   scroll chain; local table and code scrollers remain independent. */
+@media(max-width:1080px){
+  html{overflow-x:hidden;overscroll-behavior-x:none;touch-action:pan-y pinch-zoom}
+  body{width:100%}
+  :is(.table-scroll,.tier-table-wrap,.term-body,.blog-prose pre,.code-card,.rp-table-wrap,.referral-subnav,.ib-code pre,.mp-table-wrap,.learn-table-wrap,.learn-filters){overscroll-behavior-x:contain;touch-action:auto}
+}
 body{
   margin:0;background:var(--bg);color:var(--txt-2);
   font-family:var(--font-ui);font-size:15px;line-height:1.6;
