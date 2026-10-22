@@ -2819,19 +2819,19 @@ html.landing-home .hdr:not(.small){
   background:transparent;color:var(--paper);
 }
 
-/* Dark mode uses charcoal type on navy and white type on charcoal plates.
+/* Dark mode uses red type on navy and white type on charcoal plates.
    Diagram plates share the dark page surface and neutral borders. */
-html.landing-home[data-theme="dark"]{--hero-fg:var(--ink);--hero-card:var(--ink);--hero-card-fg:var(--white)}
+html.landing-home[data-theme="dark"]{--hero-fg:var(--hot);--hero-card:var(--ink);--hero-card-fg:var(--white)}
 html.landing-home[data-theme="dark"] .hdr:not(.small) :is(.brand,.lnk,.theme-tgl,.nav a,.nav a .sw i){color:var(--hero-fg)}
 html.landing-home[data-theme="dark"] .hdr:not(.small) .lang__link{color:var(--hero-card-fg)}
 html.landing-home[data-theme="dark"] .hdr:not(.small) .brand__mark{background:var(--hero-fg)!important}
 html.landing-home[data-theme="dark"] .hdr:not(.small) .burger span{background:var(--hero-fg)}
-html.landing-home[data-theme="dark"] .hdr:not(.small) .theme-tgl{border-color:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hdr:not(.small) .theme-tgl{border-color:var(--ink)}
 html.landing-home[data-theme="dark"] .hdr:not(.small) .lang{background:var(--hero-card);border-color:transparent}
 html.landing-home[data-theme="dark"] .hdr:not(.small) .lang::before{background:var(--white);border:0}
 html.landing-home[data-theme="dark"] .hdr:not(.small) .lang__link.is-active{color:var(--hero-card)}
 html.landing-home[data-theme="dark"] .hero :is(.plate,.plate__h,.plate__labels .meta,.plate__foot .lead,.claim__val,.claim__lab,.band__lead,.hero__cta .btn){color:var(--hero-fg)}
-html.landing-home[data-theme="dark"] .hero .hero__cta .btn{border-color:var(--hero-fg)}
+html.landing-home[data-theme="dark"] .hero .hero__cta .btn{border-color:var(--ink)}
 html.landing-home[data-theme="dark"] .hero .hero__cta .btn:hover{background:var(--hero-card);color:var(--hero-card-fg)}
 html.landing-home[data-theme="dark"] .hero .net :is(.node:not(.node--more),.core,.prodcard) rect{fill:var(--hero-card)}
 html.landing-home[data-theme="dark"] .hero .net :is(.node:not(.node--more),.prodcard) rect{stroke:none}
