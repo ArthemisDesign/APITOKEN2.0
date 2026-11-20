@@ -72,6 +72,11 @@ Next.js loads the app family from src/app/fonts.ts. Static RU/EN pages use
 public/landing/fonts.css with the same WOFF2 files and Latin/Cyrillic glyphs.
 The supplied font archive is the Trial edition.
 
+Documentation and instructional prose use 18 px text with 1.7 line spacing and a roughly
+70-character reading measure; narrow screens use 16 px. Guide code uses 15/14 px, while
+compact onboarding and support steps use 16 px. Check long paragraphs, numbered steps,
+inline code and error explanations in both themes when changing these reading surfaces.
+
 The customer-facing site uses the navy, red and white palette: navy `#304072`, sunken navy `#303E6A`,
 pure white `#FFFFFF`, red `#C81D35` (hover `#AE192F`), and charcoal `#2E2E2E`.
 The home hero keeps navy and pure white in the default theme. Other light pages use pure white

@@ -758,6 +758,17 @@ body.app-body .bg-decor{display:none!important}
 /* Support panel inside the dashboard follows the same sans hierarchy; the public /support page keeps its own. */
 .app .panel .support-bot-head h2,.app .panel .support-how-title,.app .panel .support-step h3,.app .panel .support-topics-title{font-family:var(--font-ui);font-weight:680;letter-spacing:-.02em}
 .app .panel .support-step,.app .panel .support-note{border-radius:var(--overview-radius)}
+.app .panel .support-bot-main{max-width:70ch}
+.app .panel .support-bot-desc,.app .panel .support-card p,.app .panel .support-card li{max-width:70ch;font-size:18px;line-height:1.7}
+.app .panel .support-bot-desc{margin-bottom:24px}
+.app .panel .support-card p{margin-bottom:20px}
+.app .panel .support-card ul{gap:16px}
+.app .panel .support-flow{gap:20px}
+.app .panel .support-step h3{margin-bottom:12px;font-size:18px;line-height:1.4}
+.app .panel .support-step p,.app .panel .support-note p,.app .panel .support-mini>p,
+.app .panel .support-mini-list li,.app .panel .support-bot-points li,.app .panel .support-official{font-size:16px;line-height:1.65}
+.app .panel .support-note p{max-width:70ch}
+.app .panel .support-mini-list{gap:14px}
 .overview-alert{display:grid;grid-template-columns:36px minmax(0,1fr) auto;align-items:center;gap:14px;padding:15px 18px;
   border:1px solid var(--dashboard-card-border);border-radius:12px;background:var(--bg-card)}
 .overview-alert.warning{background:color-mix(in srgb,var(--warn) 7%,var(--bg-card))}
@@ -833,14 +844,14 @@ body.app-body .bg-decor{display:none!important}
 .overview-onboarding{display:grid;grid-template-columns:minmax(210px,.8fr) minmax(0,1.8fr) auto;align-items:center;gap:28px;padding:24px 28px;border-color:var(--dashboard-card-border);
   background:linear-gradient(105deg,var(--accent-soft),var(--bg-card) 52%)}
 .overview-onboarding-copy h2{margin:7px 0 5px;font:680 18px/1.3 var(--font-ui);letter-spacing:-.02em}
-.overview-onboarding-copy p{margin:0;font-size:12.5px;line-height:1.5;color:var(--txt-3)}
+.overview-onboarding-copy p{margin:0;max-width:70ch;font-size:16px;line-height:1.65;color:var(--txt-3)}
 .overview-onboarding ol{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:0;padding:0;list-style:none}
 .overview-onboarding li{display:grid;grid-template-columns:27px minmax(0,1fr);align-items:start;gap:9px}
 .overview-onboarding li>span{display:grid;place-items:center;width:27px;height:27px;border:1px solid var(--accent-line);border-radius:50%;
   background:var(--bg-card);font:700 10px var(--font-mono);color:var(--accent-ink)}
-.overview-onboarding li>div{display:flex;min-width:0;flex-direction:column;gap:2px}
-.overview-onboarding li strong{font-size:11.5px;line-height:1.35;color:var(--txt)}
-.overview-onboarding li small{font-size:10.5px;line-height:1.4;color:var(--txt-4)}
+.overview-onboarding li>div{display:flex;min-width:0;flex-direction:column;gap:6px}
+.overview-onboarding li strong{font-size:16px;line-height:1.4;color:var(--txt)}
+.overview-onboarding li small{font-size:16px;line-height:1.65;color:var(--txt-4)}
 
 .overview-metric-card{display:flex;min-height:190px;flex-direction:column;padding:23px 24px}
 .overview-metric-mark{display:grid;place-items:center;width:32px;height:32px;border:1px solid color-mix(in srgb,var(--line) 84%,transparent);
@@ -941,13 +952,13 @@ body.app-body .bg-decor{display:none!important}
   padding-bottom:22px;border-bottom:1px solid var(--line);margin-bottom:22px}
 .cc-eyebrow{font-family:var(--font-mono);font-size:11px;letter-spacing:.05em;color:var(--txt-4);text-transform:uppercase}
 .cc-head h2{font-family:var(--font-bit);font-weight:700;font-size:22px;margin:10px 0 8px}
-.cc-head p{color:var(--txt-2);font-size:14px;margin:0;max-width:62ch}
+.cc-head p{color:var(--txt-2);font-size:18px;line-height:1.7;margin:0;max-width:70ch}
 .cc-btns{display:flex;flex-direction:column;gap:8px;flex:none}
 .cc-body{display:grid;grid-template-columns:1.6fr 1fr;gap:28px}
 .cc-steps{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
 .cc-step .n{font-family:var(--font-bit);font-weight:700;font-size:20px;color:var(--accent-ink)}
-.cc-step b{display:block;margin:8px 0 4px;font-size:14px}
-.cc-step p{font-family:var(--font-mono);font-size:12px;color:var(--txt-4);margin:0;line-height:1.5}
+.cc-step b{display:block;margin:8px 0 8px;font-size:16px;line-height:1.4}
+.cc-step p{font-family:var(--font-mono);font-size:16px;color:var(--txt-4);margin:0;line-height:1.65}
 .cc-ep{background:var(--bg-soft);border:1px solid var(--line);border-radius:8px;padding:16px}
 .cc-ep-l{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--txt-4)}
 .ep-row{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:10px 0}
@@ -963,7 +974,7 @@ body.app-body .bg-decor{display:none!important}
 .ep-card .ep-row{border-top:1px solid var(--line)}
 .setup-card{display:flex;justify-content:space-between;align-items:center;gap:24px}
 .setup-card h2{font-family:var(--font-bit);font-weight:700;font-size:20px;margin:6px 0}
-.setup-card p{color:var(--txt-2);font-size:14px;margin:0;max-width:60ch}
+.setup-card p{color:var(--txt-2);font-size:18px;line-height:1.7;margin:0;max-width:70ch}
 .setup-card .btn{flex:none}
 
 .claim-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:18px}
@@ -1487,6 +1498,16 @@ body.app-body .bg-decor{display:none!important}
 .rp-docs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
 .rp-docs .rp-card{display:flex;flex-direction:column;gap:10px}
 .rp-docs .rp-card>div{color:var(--txt-2);font-size:13px;line-height:1.65}
+.app .panel.rp .rp-how{gap:14px;padding-left:24px}
+.app .panel.rp .rp-how li{max-width:70ch;font-size:16px;line-height:1.7}
+.app .panel.rp .rp-docs-stack{gap:28px}
+.app .panel.rp .rp-docs-stack .rp-how{max-width:70ch;font-size:18px;gap:18px}
+.app .panel.rp .rp-docs-stack .rp-how li,
+.app .panel.rp .rp-docs-stack .rp-card>div,
+.app .panel.rp .rp-docs .rp-card>div{max-width:70ch;font-size:18px;line-height:1.7}
+.app .panel.rp .rp-docs-stack .rp-card-title{margin-bottom:18px}
+.app .panel.rp .rp-docs-stack .rp-formula-b{max-width:70ch;font-size:18px;line-height:1.7}
+.app .panel.rp .rp-docs-stack .rp-formula-x{max-width:70ch;font-size:16px;line-height:1.7;white-space:normal}
 @media (max-width:1040px){
   .rp-stats{grid-template-columns:repeat(2,1fr)}
   .rp-stat{border-bottom:1px solid var(--line)}
@@ -1888,6 +1909,13 @@ body.app-body .bg-decor{display:none!important}
   .app .panel .support-step{padding:18px 16px}
   .app .panel .support-step-top{margin-bottom:12px}
   .app .panel .support-note{align-items:flex-start}
+  .app .panel .support-bot-desc,.app .panel .support-card p,.app .panel .support-card li,
+  .app .cc-head p,.app .setup-card p{font-size:16px}
+  .app .panel.rp .rp-docs-stack .rp-how,
+  .app .panel.rp .rp-docs-stack .rp-how li,
+  .app .panel.rp .rp-docs-stack .rp-formula-b,
+  .app .panel.rp .rp-docs-stack .rp-card>div,
+  .app .panel.rp .rp-docs .rp-card>div{font-size:16px}
 }
 
 /* Dark labels keep readable contrast on the lighter payout status fills. */

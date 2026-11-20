@@ -33,7 +33,7 @@
 .docs-panel.active{display:block}
 
 .docs-note{
-  font-size:14px;line-height:1.55;color:var(--g400);margin:16px 0;
+  font-size:var(--docs-reader-size);line-height:1.7;color:var(--g400);margin:22px 0;max-width:72ch;
 }
 [data-theme="dark"] .docs-note{color:var(--muted)}
 .docs-note b{color:var(--ink)}
@@ -66,7 +66,7 @@
 .docs-table code{font-size:11px;color:var(--accent-ink)}
 
 .docs-footnote{
-  margin-top:18px;font-size:13px;line-height:1.55;color:var(--muted);max-width:78ch;
+  margin-top:22px;font-size:var(--docs-reader-size);line-height:1.7;color:var(--muted);max-width:72ch;
 }
 
 /* example calc */
@@ -175,7 +175,9 @@
 [data-theme="dark"] .docs-side-burger{background:var(--surface)}
 
 /* main column */
-.docs-main{min-width:0}
+.docs-main{--docs-reader-size:18px;--docs-code-size:15px;min-width:0}
+/* Limit prose measure without narrowing tables, examples, or interface controls. */
+.docs-main :is(.docs-note,.docs-footnote,.docs-sechead p,.docs-hero .lead,.docs-support-copy p,.docs-step__body > p,.docs-builder__head p,.docs-guide__head > p,.docs-endpoint-card p,.docs-notes-list li,.docs-card__head p){overflow-wrap:anywhere}
 .docs-sec{padding:clamp(32px,3.5vw,56px) 0;border-top:1px solid var(--line)}
 .docs-sechead{display:flex;gap:clamp(16px,2vw,32px);margin-bottom:clamp(24px,2.5vw,44px)}
 .docs-secnum{
@@ -186,8 +188,8 @@
   font-size:clamp(22px,2.35vw,36px);font-weight:600;letter-spacing:-.03em;line-height:1.12;
   margin-bottom:12px;
 }
-.docs-sechead p{font-size:15px;line-height:1.6;color:var(--g400);max-width:74ch}
-.docs-sechead p + p{margin-top:10px}
+.docs-sechead p{font-size:var(--docs-reader-size);line-height:1.7;color:var(--g400);max-width:72ch}
+.docs-sechead p + p{margin-top:18px}
 [data-theme="dark"] .docs-sechead p{color:var(--g100)}
 
 /* hero */
@@ -201,7 +203,7 @@
   font-size:clamp(28px,3.2vw,50px);font-weight:600;letter-spacing:-.04em;line-height:1.06;
   margin-bottom:16px;
 }
-.docs-hero .lead{font-size:16px;line-height:1.6;color:var(--g400);max-width:62ch}
+.docs-hero .lead{font-size:var(--docs-reader-size);line-height:1.7;color:var(--g400);max-width:65ch}
 [data-theme="dark"] .docs-hero .lead{color:var(--g100)}
 .docs-copy-page{flex-shrink:0}
 
@@ -250,7 +252,7 @@
 [data-theme="dark"] .docs-support-icon{background:rgba(var(--paper-rgb),.07)}
 .docs-support-copy{flex:1;min-width:220px}
 .docs-support-copy h2{font-size:clamp(18px,1.8vw,24px);font-weight:600;letter-spacing:-.02em;margin-bottom:6px}
-.docs-support-copy p{font-size:14px;color:var(--g400);margin:0}
+.docs-support-copy p{font-size:var(--docs-reader-size);line-height:1.7;color:var(--g400);margin:0;max-width:72ch}
 [data-theme="dark"] .docs-support-copy p{color:var(--muted)}
 .docs-support-actions{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
 .docs-support-actions .btn{display:inline-flex;align-items:center;gap:8px}
@@ -258,15 +260,15 @@
 .docs-support-online i{width:7px;height:7px;border-radius:50%;background:var(--accent)}
 
 /* numbered steps */
-.docs-steps{display:flex;flex-direction:column;gap:clamp(22px,2.2vw,36px)}
+.docs-steps{display:flex;flex-direction:column;gap:clamp(28px,2.8vw,44px)}
 .docs-step{display:flex;gap:clamp(14px,1.6vw,24px)}
 .docs-step__num{
   font-family:var(--mono);font-size:12px;color:var(--accent-ink);
   padding-top:6px;flex-shrink:0;width:20px;
 }
 .docs-step__body{flex:1;min-width:0}
-.docs-step__body h4{font-size:16px;font-weight:600;letter-spacing:-.01em;margin-bottom:6px}
-.docs-step__body > p{font-size:14px;line-height:1.6;color:var(--g400);margin:0 0 14px}
+.docs-step__body h4{font-size:20px;font-weight:600;letter-spacing:-.01em;margin-bottom:10px}
+.docs-step__body > p{font-size:var(--docs-reader-size);line-height:1.7;color:var(--g400);margin:0 0 20px;max-width:72ch}
 [data-theme="dark"] .docs-step__body > p{color:var(--muted)}
 
 /* builder (quickstart) */
@@ -281,7 +283,7 @@
   color:var(--accent-ink);margin-bottom:10px;
 }
 .docs-builder__head h3{font-size:clamp(18px,1.8vw,24px);font-weight:600;letter-spacing:-.02em;margin-bottom:8px}
-.docs-builder__head p{font-size:14px;color:var(--g400);margin:0}
+.docs-builder__head p{font-size:var(--docs-reader-size);line-height:1.7;color:var(--g400);margin:0;max-width:72ch}
 [data-theme="dark"] .docs-builder__head p{color:var(--muted)}
 .docs-builder .docs-tabs{margin-bottom:24px}
 /* dark: the pill inverts to the dark surface so the lifted g100 label keeps
@@ -303,7 +305,7 @@
   display:block;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;
   color:var(--accent-ink);margin-bottom:10px;
 }
-.docs-guide__head > p{font-size:14px;line-height:1.6;color:var(--g400);max-width:74ch;margin:0 0 14px}
+.docs-guide__head > p{font-size:var(--docs-reader-size);line-height:1.7;color:var(--g400);max-width:72ch;margin:0 0 20px}
 [data-theme="dark"] .docs-guide__head > p{color:var(--muted)}
 .docs-guide__row{
   display:flex;align-items:center;gap:14px;flex-wrap:wrap;
@@ -342,6 +344,8 @@
   margin-right:28px;flex-shrink:0;
 }
 .docs-codebar + pre.code{border-top-left-radius:0;border-top-right-radius:0;overflow-x:auto}
+.docs-main pre.code{max-width:100%;font-size:var(--docs-code-size);line-height:1.7;overflow-x:auto}
+.docs-main pre.code code{font-size:inherit;line-height:inherit}
 
 /* endpoints overview */
 .docs-endpoints{display:flex;flex-direction:column;gap:14px}
@@ -373,8 +377,8 @@
   padding:18px 20px;display:flex;flex-direction:column;gap:10px;
 }
 [data-theme="dark"] .docs-endpoint-card{background:var(--surface)}
-.docs-endpoint-card h3{font-size:15.5px;font-weight:600;letter-spacing:-.01em;margin:0}
-.docs-endpoint-card p{font-size:13px;line-height:1.55;color:var(--g400);margin:0}
+.docs-endpoint-card h3{font-size:20px;font-weight:600;letter-spacing:-.01em;margin:0}
+.docs-endpoint-card p{font-size:var(--docs-reader-size);line-height:1.7;color:var(--g400);margin:0;max-width:72ch}
 [data-theme="dark"] .docs-endpoint-card p{color:var(--muted)}
 .docs-endpoint-card ul{list-style:none;margin:auto 0 0;padding:0;display:flex;flex-direction:column;gap:8px;padding-top:12px;border-top:1px solid var(--line-soft)}
 .docs-endpoint-card li{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -419,24 +423,25 @@
 [data-theme="dark"] .docs-table--simple td:first-child{color:var(--fg)}
 .docs-table--simple td code{font-family:var(--mono);font-size:12px;color:var(--accent-ink)}
 .docs-errors td:first-child code{font-size:13px;font-weight:600}
+.docs-errors td:not(:first-child){font-size:16px;line-height:1.7;overflow-wrap:anywhere}
 
 /* notes list */
 .docs-notes-list{
   list-style:none;margin:clamp(24px,2.5vw,40px) 0 0;padding:0;
-  display:flex;flex-direction:column;gap:10px;
+  display:flex;flex-direction:column;gap:18px;
 }
 .docs-notes-list li{
-  position:relative;padding-left:18px;font-size:13.5px;line-height:1.55;color:var(--muted);
+  position:relative;padding-left:20px;font-size:var(--docs-reader-size);line-height:1.7;color:var(--muted);max-width:72ch;
 }
 .docs-notes-list li::before{
-  content:"";position:absolute;left:0;top:8px;width:6px;height:6px;border-radius:50%;background:var(--accent);
+  content:"";position:absolute;left:0;top:calc(.85em - 3px);width:6px;height:6px;border-radius:50%;background:var(--accent);
 }
 
 /* doc cards (request/response with header) */
 .docs-card{margin:clamp(22px,2.2vw,36px) 0;border:0;padding:0;background:transparent}
-.docs-card__head{margin-bottom:14px}
-.docs-card__head h3{font-size:clamp(16px,1.6vw,20px);font-weight:600;letter-spacing:-.015em;margin:0 0 8px}
-.docs-card__head p{font-size:14px;line-height:1.6;color:var(--g400);margin:0;max-width:78ch}
+.docs-card__head{margin-bottom:20px}
+.docs-card__head h3{font-size:clamp(18px,1.8vw,22px);font-weight:600;letter-spacing:-.015em;margin:0 0 10px}
+.docs-card__head p{font-size:var(--docs-reader-size);line-height:1.7;color:var(--g400);margin:0;max-width:72ch}
 [data-theme="dark"] .docs-card__head p{color:var(--muted)}
 
 /* next cards */
@@ -483,6 +488,7 @@
 }
 
 @media (max-width:640px){
+  .docs-main{--docs-reader-size:16px;--docs-code-size:14px}
   /* copy buttons were 28-30px tall — under the 40px touch target on a phone */
   .docs-codebar button,.docs-endpoints-base button{min-height:40px;padding-top:0;padding-bottom:0}
   .docs-agent-chip-btn{min-width:40px;min-height:40px}
@@ -502,17 +508,24 @@
   .docs-support-actions .btn{width:100%;justify-content:center}
   .docs-step{gap:12px}
   .docs-step__num{width:16px}
+  .docs-step__body h4,.docs-endpoint-card h3{font-size:18px}
+  .docs-main pre.code{padding:20px 18px}
   .docs-endpoints-base code{font-size:12px}
   .docs-provider-head{flex-direction:column;align-items:flex-start;gap:8px}
   .docs-table{min-width:640px;font-size:12px}
   .docs-table th,.docs-table td{padding:10px 12px}
   .docs-table--simple{min-width:0}
   .docs-table--simple td:first-child{white-space:normal}
+  /* Error explanations read as full-width paragraphs on a phone. */
+  .docs-errors,.docs-errors tbody,.docs-errors tr,.docs-errors td{display:block;width:100%}
+  .docs-errors thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+  .docs-errors tr{padding:12px 0;border-bottom:1px solid var(--line-soft)}
+  .docs-errors tr:last-child{border-bottom:0}
+  .docs-errors td{padding:6px 14px;border-bottom:0}
   .docs-calc{padding:16px 18px}
   .docs-calc__row{font-size:14px}
   .docs-calc__row b{font-size:15px}
   .docs-calc__row--save b{font-size:18px}
-  .docs-footnote{font-size:12px}
   .docs-cta{width:100%;margin-top:24px}
   .docs-cta .btn{width:100%}
 }
