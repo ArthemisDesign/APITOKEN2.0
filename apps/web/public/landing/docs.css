@@ -147,7 +147,7 @@
 .docs-sidebar__nav a.active svg{background:rgba(var(--paper-rgb),.09);color:var(--side-active-text)}
 [data-theme="dark"] .docs-sidebar__nav a.active svg{background:rgba(var(--ink-rgb),.08)}
 
-/* Landing-consistent TT Firs Neue weights for the complete docs shell. */
+/* Landing-consistent TT Interphases Pro weights for the complete docs shell. */
 .docs-sidebar,.docs-main{font-weight:400}
 .docs-sidebar *,.docs-main *{font-weight:400!important}
 .docs-sidebar :where(a,button,label),.docs-main :where(a,button,label,th,.meta,.secnum){font-weight:500!important}

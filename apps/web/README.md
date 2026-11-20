@@ -65,10 +65,11 @@ a normal build instead of failing the deployment. Verify the contract with
 
 ## Visual audit
 
-All page text uses the local TT Firs Neue family, including the landing, dashboard, docs and
-authentication screens. The supplied variable normal and italic faces cover weights 100–900.
+All page text in this font preview uses the local TT Interphases Pro family, including the landing,
+dashboard, docs and authentication screens. Normal and italic WOFF2 faces retain weights 100–900
+from the supplied variable font, with standard width and a fixed upright or italic slant.
 Next.js loads the app family from src/app/fonts.ts. Static RU/EN pages use
-public/landing/fonts.css with the same WOFF2 files and complete Latin/Cyrillic character sets.
+public/landing/fonts.css with the same WOFF2 files and Latin/Cyrillic glyphs.
 The supplied font archive is the Trial edition.
 
 The customer-facing site uses the navy, red and white palette: navy `#304072`, sunken navy `#303E6A`,

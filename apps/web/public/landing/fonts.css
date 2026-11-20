@@ -1,11 +1,11 @@
-/* TT Firs Neue variable faces from the supplied archive, with Latin and Cyrillic glyphs. */
+/* TT Interphases Pro variable faces from the supplied archive, with Latin and Cyrillic glyphs. */
 @font-face{
-  font-family:"TT Firs Neue";
-  src:url("/landing/fonts/TTFirsNeue-Variable.woff2") format("woff2");
+  font-family:"TT Interphases Pro";
+  src:url("/landing/fonts/TTInterphasesPro-Variable.woff2") format("woff2");
   font-weight:100 900;font-style:normal;font-display:swap;
 }
 @font-face{
-  font-family:"TT Firs Neue";
-  src:url("/landing/fonts/TTFirsNeue-VariableItalic.woff2") format("woff2");
+  font-family:"TT Interphases Pro";
+  src:url("/landing/fonts/TTInterphasesPro-VariableItalic.woff2") format("woff2");
   font-weight:100 900;font-style:italic;font-display:swap;
 }
