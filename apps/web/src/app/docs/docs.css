@@ -36,7 +36,8 @@
 .docs-site{font-weight:400}
 .docs-site *{font-weight:400!important}
 .docs-site :where(a,button,label,th,.docs-sidebar a,.docs-sidebar>span,.eyebrow){font-weight:500!important}
-.docs-site :where(h1,h1 *,h2,h2 *,h3,h3 *,h4,h4 *,h5,h5 *,h6,h6 *,strong,strong *,b,b *,.docs-brand,.docs-brand *){font-weight:600!important}
+.docs-site :where(h3,h3 *,h4,h4 *,h5,h5 *,h6,h6 *,strong,strong *,b,b *,.docs-brand,.docs-brand *){font-weight:600!important}
+.docs-site :where(h1,h1 *,h2,h2 *){font-weight:500!important}
 .docs-main{width:100%;max-width:1280px;margin:0 auto;padding:42px 56px 90px}
 .docs-main section{padding:0;border:0;scroll-margin-top:92px}
 .docs-hero{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:20px 24px;margin-bottom:26px;max-width:940px;font-family:var(--font-ui)}

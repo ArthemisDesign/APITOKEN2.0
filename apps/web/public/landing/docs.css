@@ -151,7 +151,8 @@
 .docs-sidebar,.docs-main{font-weight:400}
 .docs-sidebar *,.docs-main *{font-weight:400!important}
 .docs-sidebar :where(a,button,label),.docs-main :where(a,button,label,th,.meta,.secnum){font-weight:500!important}
-.docs-sidebar :where(strong,strong *,b,b *,.docs-side-brand,.docs-side-brand *),.docs-main :where(h1,h1 *,h2,h2 *,h3,h3 *,h4,h4 *,h5,h5 *,h6,h6 *,strong,strong *,b,b *){font-weight:600!important}
+.docs-sidebar :where(strong,strong *,b,b *,.docs-side-brand,.docs-side-brand *),.docs-main :where(h3,h3 *,h4,h4 *,h5,h5 *,h6,h6 *,strong,strong *,b,b *){font-weight:600!important}
+.docs-main :where(h1,h1 *,h2,h2 *){font-weight:500!important}
 .docs-side-foot{
   display:flex;align-items:center;gap:10px;flex:none;margin-top:12px;
   padding:12px 18px 0 2px;border-top:1px solid var(--line);
