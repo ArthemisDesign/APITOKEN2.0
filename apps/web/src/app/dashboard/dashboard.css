@@ -700,7 +700,7 @@ body.app-body .bg-decor{display:none!important}
 [data-theme="dark"] .side-nav .side-link.on{box-shadow:0 10px 28px -18px rgba(46,46,46,.9)}
 .app-top-h{flex:1;display:flex;flex-direction:column;line-height:1.2;min-width:0}
 
-/* TT Runs weight scale: calm body, clear controls, restrained headings. */
+/* TT Chocolates weight scale: calm body, clear controls, restrained headings. */
 .app{font-weight:400}
 .app *{font-weight:400!important}
 .app :where(a,button,label,th,.side-link,.side-group,.eyebrow,.pill){font-weight:500!important}

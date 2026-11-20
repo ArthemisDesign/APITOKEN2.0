@@ -1,46 +1,22 @@
-import { Inter_Tight } from "next/font/google";
 import localFont from "next/font/local";
 
-export const interTight = Inter_Tight({
-  variable: "--font-inter-tight",
-  subsets: ["latin", "cyrillic"],
-  weight: ["300", "400", "500", "600", "700", "800"],
-  style: "normal",
+export const ttChocolates = localFont({
+  src: [
+    { path: "../../public/landing/fonts/TTChocolates-Thin.woff2", weight: "200", style: "normal" },
+    { path: "../../public/landing/fonts/TTChocolates-Light.woff2", weight: "300", style: "normal" },
+    { path: "../../public/landing/fonts/TTChocolates-Regular.woff2", weight: "400 500", style: "normal" },
+    { path: "../../public/landing/fonts/TTChocolates-Bold.woff2", weight: "600 700", style: "normal" },
+    { path: "../../public/landing/fonts/TTChocolates-Black.woff2", weight: "800 900", style: "normal" },
+    { path: "../../public/landing/fonts/TTChocolates-ThinItalic.woff2", weight: "200", style: "italic" },
+    { path: "../../public/landing/fonts/TTChocolates-LightItalic.woff2", weight: "300", style: "italic" },
+    { path: "../../public/landing/fonts/TTChocolates-RegularItalic.woff2", weight: "400 500", style: "italic" },
+    { path: "../../public/landing/fonts/TTChocolates-BoldItalic.woff2", weight: "600 700", style: "italic" },
+    { path: "../../public/landing/fonts/TTChocolates-BlackItalic.woff2", weight: "800 900", style: "italic" },
+  ],
+  variable: "--font-tt-chocolates",
   display: "swap",
   preload: true,
   fallback: ["system-ui", "-apple-system", "Segoe UI", "sans-serif"],
 });
 
-export const jetBrainsMono = localFont({
-  src: "./fonts/jetbrains-mono-variable.woff2",
-  variable: "--font-jetbrains-mono",
-  weight: "100 800",
-  style: "normal",
-  display: "swap",
-  preload: true,
-  fallback: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "monospace"],
-});
-
-export const handjet = localFont({
-  src: "./fonts/handjet-variable.woff2",
-  variable: "--font-handjet",
-  weight: "100 900",
-  style: "normal",
-  display: "optional",
-  preload: true,
-  fallback: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "monospace"],
-  adjustFontFallback: false,
-});
-
-export const bitcountGrid = localFont({
-  src: "./fonts/bitcount-grid-single.woff2",
-  variable: "--font-bitcount-grid",
-  weight: "400",
-  style: "normal",
-  display: "optional",
-  preload: false,
-  fallback: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "monospace"],
-  adjustFontFallback: false,
-});
-
-export const fontVariables = `${interTight.variable} ${jetBrainsMono.variable}`;
+export const fontVariables = ttChocolates.variable;

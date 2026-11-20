@@ -32,7 +32,7 @@
 .docs-sidebar a.active{color:var(--side-active-text);background:var(--side-active);font-weight:600;box-shadow:0 8px 22px -16px rgba(46,46,46,.65)}
 .docs-sidebar a.active::before{content:"";position:absolute;left:-3px;top:11px;bottom:11px;width:3px;border-radius:99px;background:var(--accent)}
 
-/* Match the landing's TT Runs hierarchy without synthetic heavy weights. */
+/* Match the landing's TT Chocolates hierarchy without synthetic heavy weights. */
 .docs-site{font-weight:400}
 .docs-site *{font-weight:400!important}
 .docs-site :where(a,button,label,th,.docs-sidebar a,.docs-sidebar>span,.eyebrow){font-weight:500!important}
