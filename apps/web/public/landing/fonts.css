@@ -1,51 +1,11 @@
-/* TT Chocolates with the complete Latin and Cyrillic character sets. */
+/* TT Firs Neue variable faces from the supplied archive, with Latin and Cyrillic glyphs. */
 @font-face{
-  font-family:"TT Chocolates";
-  src:url("/landing/fonts/TTChocolates-Thin.woff2") format("woff2");
-  font-weight:200;font-style:normal;font-display:swap;
+  font-family:"TT Firs Neue";
+  src:url("/landing/fonts/TTFirsNeue-Variable.woff2") format("woff2");
+  font-weight:100 900;font-style:normal;font-display:swap;
 }
 @font-face{
-  font-family:"TT Chocolates";
-  src:url("/landing/fonts/TTChocolates-Light.woff2") format("woff2");
-  font-weight:300;font-style:normal;font-display:swap;
-}
-@font-face{
-  font-family:"TT Chocolates";
-  src:url("/landing/fonts/TTChocolates-Regular.woff2") format("woff2");
-  font-weight:400 500;font-style:normal;font-display:swap;
-}
-@font-face{
-  font-family:"TT Chocolates";
-  src:url("/landing/fonts/TTChocolates-Bold.woff2") format("woff2");
-  font-weight:600 700;font-style:normal;font-display:swap;
-}
-@font-face{
-  font-family:"TT Chocolates";
-  src:url("/landing/fonts/TTChocolates-Black.woff2") format("woff2");
-  font-weight:800 900;font-style:normal;font-display:swap;
-}
-@font-face{
-  font-family:"TT Chocolates";
-  src:url("/landing/fonts/TTChocolates-ThinItalic.woff2") format("woff2");
-  font-weight:200;font-style:italic;font-display:swap;
-}
-@font-face{
-  font-family:"TT Chocolates";
-  src:url("/landing/fonts/TTChocolates-LightItalic.woff2") format("woff2");
-  font-weight:300;font-style:italic;font-display:swap;
-}
-@font-face{
-  font-family:"TT Chocolates";
-  src:url("/landing/fonts/TTChocolates-RegularItalic.woff2") format("woff2");
-  font-weight:400 500;font-style:italic;font-display:swap;
-}
-@font-face{
-  font-family:"TT Chocolates";
-  src:url("/landing/fonts/TTChocolates-BoldItalic.woff2") format("woff2");
-  font-weight:600 700;font-style:italic;font-display:swap;
-}
-@font-face{
-  font-family:"TT Chocolates";
-  src:url("/landing/fonts/TTChocolates-BlackItalic.woff2") format("woff2");
-  font-weight:800 900;font-style:italic;font-display:swap;
+  font-family:"TT Firs Neue";
+  src:url("/landing/fonts/TTFirsNeue-VariableItalic.woff2") format("woff2");
+  font-weight:100 900;font-style:italic;font-display:swap;
 }

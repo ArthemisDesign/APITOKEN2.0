@@ -65,11 +65,11 @@ a normal build instead of failing the deployment. Verify the contract with
 
 ## Visual audit
 
-All page text uses the local TT Chocolates family, including the landing, dashboard, docs and
-authentication screens. The supplied normal and italic faces cover weights 200, 300, 400, 700
-and 900. Regular also serves weight 500, Bold serves 600, and Black serves 800. Next.js loads the
-app family from `src/app/fonts.ts`; static RU/EN pages use `public/landing/fonts.css` with the same
-WOFF2 files and complete Latin/Cyrillic character sets.
+All page text uses the local TT Firs Neue family, including the landing, dashboard, docs and
+authentication screens. The supplied variable normal and italic faces cover weights 100–900.
+Next.js loads the app family from src/app/fonts.ts. Static RU/EN pages use
+public/landing/fonts.css with the same WOFF2 files and complete Latin/Cyrillic character sets.
+The supplied font archive is the Trial edition.
 
 The customer-facing site uses the navy, red and white palette: navy `#304072`, sunken navy `#303E6A`,
 pure white `#FFFFFF`, red `#C81D35` (hover `#AE192F`), and charcoal `#2E2E2E`.

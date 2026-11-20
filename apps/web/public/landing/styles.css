@@ -63,8 +63,8 @@
   --margin:20px;
   --maxw:1440px;
 
-  --sans:"TT Chocolates", system-ui, sans-serif;
-  --mono:"TT Chocolates", system-ui, sans-serif;
+  --sans:"TT Firs Neue", system-ui, sans-serif;
+  --mono:"TT Firs Neue", system-ui, sans-serif;
 
   --sec:clamp(64px,6vw,108px);
 }
@@ -1874,7 +1874,7 @@ body{line-height:1.5}
   border-right:1px solid rgba(var(--ink-rgb),.1);
   background:var(--paper);
 }
-/* All landing, docs and B2B copy — including code and SVG labels — uses TT Chocolates. */
+/* All landing, docs and B2B copy — including code and SVG labels — uses TT Firs Neue. */
 html body,html body *,html body *::before,html body *::after,svg text{font-family:var(--sans)!important}
 [data-theme="dark"] .b2b-side{--side-hover:rgba(var(--paper-rgb),.065);--side-active:var(--paper);--side-active-text:var(--ink);
   border-right-color:rgba(var(--paper-rgb),.1);background:var(--ink)}
@@ -1914,7 +1914,7 @@ html body,html body *,html body *::before,html body *::after,svg text{font-famil
 .b2b-side__link.is-active svg{background:rgba(var(--paper-rgb),.09);color:var(--side-active-text)}
 [data-theme="dark"] .b2b-side__link.is-active svg{background:rgba(var(--ink-rgb),.08)}
 
-/* Landing-consistent TT Runs weights for the B2B/OpenKeys shell. */
+/* Landing-consistent TT Firs Neue weights for the B2B/OpenKeys shell. */
 .b2b-app{font-weight:400}
 .b2b-app *{font-weight:400!important}
 .b2b-app :where(a,button,label,th,.b2b-side__link,.b2b-side__label){font-weight:500!important}
